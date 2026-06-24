@@ -18,7 +18,8 @@ const getMyProfile = catchAsync(async (req: Request, res: Response) => {
 
 const updateMyProfile = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
-  const avatar = req.file ? `/uploads/images/${req.file.filename}` : undefined;
+  // processAndUpload middleware puts the file path in req.body.image
+  const avatar = req.body.image || undefined;
   const result = await UserService.updateMyProfile(user._id.toString(), {
     ...req.body,
     ...(avatar && { avatar }),
