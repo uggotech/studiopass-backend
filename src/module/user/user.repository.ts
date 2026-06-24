@@ -1,113 +1,50 @@
-import { TUser } from "./user.interface";
 import { User } from "./user.model";
+import { TUser } from "./user.interface";
+import { UserRole } from "shared/roles";
 
-type QueryOptions = {
-  select?: Record<string, 0 | 1> | string;
-  sort?: Record<string, 1 | -1> | string;
-  limit?: number;
-  skip?: number;
-  populate?: string | string[];
+const findById = (id: string): Promise<TUser | null> => {
+  return User.findById(id).lean();
 };
 
-type FindOneOptions = Pick<QueryOptions, "select" | "populate">;
+const findByAuthId = (authId: string): Promise<TUser | null> => {
+  return User.findOne({ auth: authId }).lean();
+};
+
+const findByPartnerIdAndRole = (partnerId: string, role: UserRole): Promise<TUser | null> => {
+  return User.findOne({ partnerId, role } as any).lean();
+};
+
+const create = (data: Partial<TUser>): Promise<TUser> => {
+  return User.create(data);
+};
+
+const updateById = (id: string, data: Partial<TUser>): Promise<TUser | null> => {
+  return User.findByIdAndUpdate(id, data, { new: true }).lean();
+};
+
+const findAllByRole = async (
+  filter: Record<string, unknown>,
+  options: { skip: number; limit: number },
+): Promise<TUser[]> => {
+  return User.find(filter)
+    .populate("stationId", "name stationCode category")
+    .populate("partnerId", "name")
+    .sort({ createdAt: -1 })
+    .skip(options.skip)
+    .limit(options.limit)
+    .lean();
+};
+
+const countByRole = (filter: Record<string, unknown>): Promise<number> => {
+  return User.countDocuments(filter);
+};
 
 export const UserRepository = {
-  create(payload: Partial<TUser>) {
-    return User.create(payload);
-  },
-
-  findById(id: string, options: FindOneOptions = {}) {
-    let query = User.findById(id);
-
-    if (options.select) {
-      query = query.select(options.select);
-    }
-
-    if (options.populate) {
-      if (Array.isArray(options.populate)) {
-        options.populate.forEach((path) => {
-          query = query.populate(path);
-        });
-      } else {
-        query = query.populate(options.populate);
-      }
-    }
-
-    return query;
-  },
-
-  findOne(filter: object, options: FindOneOptions = {}) {
-    let query = User.findOne(filter);
-
-    if (options.select) {
-      query = query.select(options.select);
-    }
-
-    if (options.populate) {
-      if (Array.isArray(options.populate)) {
-        options.populate.forEach((path) => {
-          query = query.populate(path);
-        });
-      } else {
-        query = query.populate(options.populate);
-      }
-    }
-
-    return query;
-  },
-
-  findMany(filter: object = {}, options: QueryOptions = {}) {
-    let query = User.find(filter);
-
-    if (options.select) {
-      query = query.select(options.select);
-    }
-
-    if (options.sort) {
-      query = query.sort(options.sort);
-    }
-
-    if (typeof options.skip === "number") {
-      query = query.skip(options.skip);
-    }
-
-    if (typeof options.limit === "number") {
-      query = query.limit(options.limit);
-    }
-
-    if (options.populate) {
-      if (Array.isArray(options.populate)) {
-        options.populate.forEach((path) => {
-          query = query.populate(path);
-        });
-      } else {
-        query = query.populate(options.populate);
-      }
-    }
-
-    return query;
-  },
-
-  updateById(id: string, payload: object) {
-    return User.findByIdAndUpdate(id, payload, {
-      returnDocument: 'after',
-      runValidators: true,
-    });
-  },
-
-  deleteById(id: string) {
-    return User.findByIdAndDelete(id);
-  },
-  deleteMany(filter: object) {
-    return User.deleteMany(filter);
-  },
-
-  async exists(filter: object) {
-    const doc = await User.exists(filter);
-    return Boolean(doc);
-  },
-
-  count(filter: object = {}) {
-    return User.countDocuments(filter);
-  },
+  findById,
+  findByAuthId,
+  findByPartnerIdAndRole,
+  create,
+  updateById,
+  findAllByRole,
+  countByRole,
 };

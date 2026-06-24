@@ -5,37 +5,31 @@ import app from "./app";
 import config from "./config";
 import { errorLogger, logger } from "./logger/logger";
 import ConnectDB from "./db";
-import { syncUserIndexes } from "module/user/user.model";
 import seedSuperAdmin from "./db/seedSuperAdmin";
+import seedCountries from "./db/seedCountries";
+import { initMinio } from "./util/minio";
 
-// ============ CREATE SERVER ============
 const server = http.createServer(app);
 
 export { server };
 
-// ============ MAIN ============
 async function main() {
   try {
-    // 1. Connect MongoDB
     await ConnectDB();
-
-    // 2. Ensure indexes
-    await syncUserIndexes();
-
-    // 3. Seed super admin
     await seedSuperAdmin();
+    await seedCountries();
 
-    // 4. Connect Redis
     try {
       await redisClient.connect();
       logger.info("Redis connected successfully");
     } catch (error) {
       logger.warn(
-        `Redis unavailable, continuing with MongoDB reads only: ${error instanceof Error ? error.message : String(error)}`,
+        `Redis unavailable, continuing with MongoDB only: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
-    // 5. Start server
+    await initMinio();
+
     const port = Number(config.port) || 5000;
 
     server.listen(port, "0.0.0.0", () => {
@@ -53,7 +47,6 @@ async function main() {
 
 main();
 
-// ============ GRACEFUL SHUTDOWN ============
 async function gracefulShutdown(signal: string) {
   logger.info(`${signal} received. Starting graceful shutdown...`);
 

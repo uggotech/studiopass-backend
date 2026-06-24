@@ -1,4 +1,4 @@
-import config from "@config/index";
+import config from "config";
 import { TResetPassword, TCreateAccount } from "./emailTemplate.type";
 const themes = {
   "theme-red": {

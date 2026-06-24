@@ -8,18 +8,33 @@
     // ============ PATHS ============
     "rootDir": "./src",
     "outDir": "./dist",
-    "baseUrl": "./src",                         // ✅ For path aliases relative to src
-    "paths": {                                  // ✅ Clean imports
-      "@config/*": ["config/*"],
-      "@middlewares/*": ["middlewares/*"],
-      "@routes/*": ["routes/*"],
-      "@shared/*": ["shared/*"],
-      "@util/*": ["util/*"],
-      "@utils/*": ["util/*"]
+    "paths": {
+      "config": ["./src/config"],
+      "shared": ["./src/shared"],
+      "module": ["./src/module"],
+      "errors": ["./src/errors"],
+      "logger": ["./src/logger"],
+      "redis": ["./src/redis"],
+      "jwt": ["./src/jwt"],
+      "mail": ["./src/mail"],
+      "types": ["./src/types"],
+      "Builder": ["./src/Builder"],
+      "db": ["./src/db"],
+      "config/*": ["./src/config/*"],
+      "shared/*": ["./src/shared/*"],
+      "module/*": ["./src/module/*"],
+      "errors/*": ["./src/errors/*"],
+      "logger/*": ["./src/logger/*"],
+      "redis/*": ["./src/redis/*"],
+      "jwt/*": ["./src/jwt/*"],
+      "mail/*": ["./src/mail/*"],
+      "types/*": ["./src/types/*"],
+      "Builder/*": ["./src/Builder/*"],
+      "db/*": ["./src/db/*"]
     },
 
     // ============ DEPRECATION ============
-    "ignoreDeprecations": "5.0",                // ✅ Suppress baseUrl deprecation warning
+    "ignoreDeprecations": "5.0",
 
     // ============ MODULE RESOLUTION ============
     "moduleResolution": "node",

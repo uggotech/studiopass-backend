@@ -4,7 +4,8 @@ export type OTPType = "account_verification" | "login";
 export type OTPProvider = "phone";
 
 export interface TOTP {
-  userId: Types.ObjectId;
+  _id: Types.ObjectId;
+  userId: Types.ObjectId; // → Auth (not User)
   otp: string;
   type: OTPType;
   provider: OTPProvider;
@@ -22,11 +23,11 @@ export type TOTPCreate = Omit<TOTP, "attempts" | "maxAttempts" | "isUsed"> & {
 };
 
 export type createOTPData = {
-  userId: Types.ObjectId;
+  userId: Types.ObjectId; // → Auth (not User)
   type: OTPType;
   provider: OTPProvider;
   target: string; // phone number
-  countryName: string; // used to route to AT or Firebase
+  countryName: string; // used to route to AT or Twilio
 };
 
 export type PartialTOTP = Partial<TOTP>;

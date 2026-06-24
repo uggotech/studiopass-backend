@@ -1,11 +1,11 @@
-import AfricasTalking from "africastalking";
 import config from "config";
+import AfricasTalking from "africastalking";
 import { logger } from "logger/logger";
 
 // ─── Country List ─────────────────────────────────────────────────────────────
 // Countries supported via Africa's Talking SMS gateway.
 // If user's countryName matches one of these (case-insensitive), AT is used.
-// Otherwise, Firebase Phone Auth is used as the fallback.
+// Otherwise, Twilio is used as the fallback for international SMS.
 
 export const AFRICAS_TALKING_COUNTRIES: string[] = [
   "Nigeria",

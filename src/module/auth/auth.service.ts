@@ -1,267 +1,259 @@
 import { StatusCodes } from "http-status-codes";
-import { Types } from "mongoose";
-
-import config from "config";
-import AppError from "errors/AppError";
-import { createJwtToken, verifyJwtToken } from "jwt";
-import { OTPService } from "module/otp/otp.service";
-import { checkProfileComplete } from "module/user/user.interface";
-import { UserRepository } from "module/user/user.repository";
-import { LoginProvider, UserRole } from "./auth.interface";
+import bcrypt from "bcryptjs";
+import AppError from "../../errors/AppError";
 import { AuthRepository } from "./auth.repository";
-import { buildTokenPayload } from "./auth.util";
+import { UserRepository } from "../user/user.repository";
+import { OtpRepository } from "../otp/otp.repository";
+import { CountryRepository } from "../country/country.repository";
+import createJwtToken from "../../jwt/createJwtToken";
+import config from "../../config";
+import { UserRole } from "shared/roles";
+import { LoginProvider } from "./auth.interface";
+import { OTPType } from "../otp/otp.interface";
 
-// ─── Payload Types ────────────────────────────────────────────────────────────
+// TODO: uncomment when SMS providers are configured
+// import generateOTP from "../../util/generateOTP";
+// import { sendAtOtp, isAfricasTalkingCountry } from "../../util/africasTalking";
+// import { sendTwilioOtp } from "../../util/twilioOtp";
 
-type TInitiateAuthPayload = {
-  phone: string;
-  countryCode: string;
-  countryName: string;
+const OTP_EXPIRY_MINUTES = 30;
+const OTP_MAX_ATTEMPTS = 5;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const buildFullPhone = (phone: string, countryCode: string): string => {
+  const clean = phone.replace(/^0+/, "");
+  return `${countryCode}${clean}`;
 };
 
-type TVerifyOtpPayload = {
-  phone: string;
-  countryCode: string;
-  otp: string;
-};
+const generateTokens = (userId: string, authId: string, role: string) => {
+  const accessPayload = { userId, authId, role };
+  const refreshPayload = { authId, type: "refresh" };
 
-type TResendOtpPayload = {
-  phone: string;
-  countryCode: string;
-};
-
-type TRefreshAccessTokenPayload = {
-  refreshToken: string;
-};
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const buildSessionTokens = (
-  authDoc: {
-    _id: Types.ObjectId;
-    phone?: string;
-    role: UserRole;
-    loginProvider: LoginProvider;
-  },
-  userId: Types.ObjectId,
-) => {
-  const tokenPayload = buildTokenPayload(authDoc, userId);
-  return {
-    accessToken: createJwtToken(
-      tokenPayload,
-      config.jwt.jwt_secret as string,
-      config.jwt.jwt_expire_in || "7d",
-    ),
-    refreshToken: createJwtToken(
-      tokenPayload,
-      (config.jwt.jwt_refresh_secret || config.jwt.jwt_secret) as string,
-      config.jwt.jwt_refresh_expire_in || "30d",
-    ),
-  };
-};
-
-/** Compose E.164-ish phone string for storage/lookup (countryCode + phone). */
-const buildFullPhone = (countryCode: string, phone: string) =>
-  `${countryCode}${phone.replace(/^\+/, "")}`;
-
-// ─── Service ──────────────────────────────────────────────────────────────────
-
-/**
- * Initiate Auth — unified entry point for registration and login.
- * Creates account data if nothing exists, and sends appropriate OTP based on state.
- */
-const initiateAuth = async (payload: TInitiateAuthPayload) => {
-  const fullPhone = buildFullPhone(payload.countryCode, payload.phone);
-
-  let authDoc = await AuthRepository.findOne({ phone: fullPhone });
-  let userDoc = authDoc ? await UserRepository.findOne({ auth: authDoc._id }) : null;
-
-  let message: string;
-  let otpType: "account_verification" | "login";
-
-  if (!authDoc) {
-    // Brand new account creation
-    authDoc = await AuthRepository.create({
-      phone: fullPhone,
-      countryCode: payload.countryCode,
-      loginProvider: LoginProvider.PHONE,
-      isPhoneVerified: false,
-    });
-
-    userDoc = await UserRepository.create({
-      auth: authDoc._id as Types.ObjectId,
-      phone: fullPhone,
-      phoneCountryCode: payload.countryCode,
-      countryName: payload.countryName,
-      profileCompleted: false,
-      role: authDoc.role,
-    });
-
-    message = "Account created. Please verify your phone number with the OTP sent.";
-    otpType = "account_verification";
-  } else if (!authDoc.isPhoneVerified) {
-    // Existing unverified account — update info if needed and send verification OTP
-    if (userDoc && userDoc.countryName !== payload.countryName) {
-      await UserRepository.updateById(String(userDoc._id), {
-        countryName: payload.countryName,
-      });
-    }
-    message = "Account verification OTP sent to your phone number.";
-    otpType = "account_verification";
-  } else {
-    // Existing verified account — login flow
-    if (authDoc.status !== "active") {
-      throw new AppError(StatusCodes.UNAUTHORIZED, "Your account is suspended or inactive.");
-    }
-    message = "Login OTP sent to your phone number.";
-    otpType = "login";
-  }
-
-  const countryName = userDoc?.countryName || payload.countryName;
-
-  await OTPService.createOTP({
-    userId: authDoc._id as Types.ObjectId,
-    type: otpType,
-    provider: "phone",
-    target: fullPhone,
-    countryName,
-  });
-
-  return {
-    message,
-    data: { phone: fullPhone },
-  };
-};
-
-/**
- * Verify OTP — unified verification for both account creation and login.
- */
-const verifyOtp = async (payload: TVerifyOtpPayload) => {
-  const fullPhone = buildFullPhone(payload.countryCode, payload.phone);
-
-  const authDoc = await AuthRepository.findOne({ phone: fullPhone });
-  if (!authDoc) {
-    throw new AppError(StatusCodes.NOT_FOUND, "Account not found");
-  }
-
-  const otpType = authDoc.isPhoneVerified ? "login" : "account_verification";
-
-  await OTPService.verifyOTP(authDoc._id as Types.ObjectId, otpType, payload.otp);
-
-  const updateData: any = { lastLogin: new Date() };
-  if (!authDoc.isPhoneVerified) {
-    updateData.isPhoneVerified = true;
-  }
-
-  const updatedAuth = await AuthRepository.updateById(String(authDoc._id), updateData);
-  if (!updatedAuth) {
-    throw new AppError(StatusCodes.INTERNAL_SERVER_ERROR, "Failed to update account status");
-  }
-
-  const userDoc = await UserRepository.findOne({ auth: authDoc._id });
-  if (!userDoc) {
-    throw new AppError(StatusCodes.NOT_FOUND, "User profile not found");
-  }
-
-  const isCompleteProfile = checkProfileComplete(userDoc);
-  const tokens = buildSessionTokens(
-    { ...updatedAuth.toObject(), _id: updatedAuth._id as Types.ObjectId },
-    userDoc._id,
-  );
-
-  return {
-    message: authDoc.isPhoneVerified ? "Login successful" : "Phone verified successfully",
-    data: {
-      ...tokens,
-      user: {
-        ...userDoc.toObject(),
-        role: userDoc.role || authDoc.role,
-      },
-      isCompleteProfile,
-    },
-  };
-};
-
-/**
- * Resend OTP — state-aware OTP resending.
- */
-const resendOtp = async (payload: TResendOtpPayload) => {
-  const fullPhone = buildFullPhone(payload.countryCode, payload.phone);
-
-  const authDoc = await AuthRepository.findOne({ phone: fullPhone });
-  if (!authDoc) {
-    throw new AppError(StatusCodes.NOT_FOUND, "Account not found");
-  }
-
-  const otpType = authDoc.isPhoneVerified ? "login" : "account_verification";
-
-  const userDoc = await UserRepository.findOne({ auth: authDoc._id }).lean();
-  const countryName = userDoc?.countryName || "Unknown";
-
-  await OTPService.createOTP({
-    userId: authDoc._id as Types.ObjectId,
-    type: otpType,
-    provider: "phone",
-    target: fullPhone,
-    countryName,
-  });
-
-  return {
-    message: "OTP resent successfully",
-    data: { phone: fullPhone },
-  };
-};
-
-/**
- * Refresh Access Token — issue a new access token from a valid refresh token.
- */
-const refreshAccessToken = async (payload: TRefreshAccessTokenPayload) => {
-  let decoded: any;
-
-  try {
-    decoded = verifyJwtToken(
-      payload.refreshToken,
-      (config.jwt.jwt_refresh_secret || config.jwt.jwt_secret) as string,
-    );
-  } catch {
-    throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid or expired refresh token");
-  }
-
-  const authDoc = await AuthRepository.findOne({ _id: decoded.authId });
-
-  if (!authDoc) {
-    throw new AppError(StatusCodes.NOT_FOUND, "Account not found");
-  }
-
-  if (authDoc.status !== "active") {
-    throw new AppError(StatusCodes.UNAUTHORIZED, "Your account is not active");
-  }
-
-  const userDoc = await UserRepository.findOne({ auth: authDoc._id });
-
-  if (!userDoc) {
-    throw new AppError(StatusCodes.NOT_FOUND, "User profile not found");
-  }
-
-  const tokenPayload = buildTokenPayload(
-    { ...authDoc.toObject(), _id: authDoc._id as Types.ObjectId },
-    userDoc._id,
-  );
-
-  const newAccessToken = createJwtToken(
-    tokenPayload,
+  const accessToken = createJwtToken(
+    accessPayload,
     config.jwt.jwt_secret as string,
-    config.jwt.jwt_expire_in || "7d",
+    config.jwt.jwt_expire_in as string,
   );
 
-  return { data: { accessToken: newAccessToken } };
+  const refreshToken = createJwtToken(
+    refreshPayload,
+    config.jwt.jwt_refresh_secret as string,
+    config.jwt.jwt_refresh_expire_in as string,
+  );
+
+  return { accessToken, refreshToken };
 };
 
-export const AuthService = {
-  initiateAuth,
-  verifyOtp,
-  resendOtp,
-  refreshAccessToken,
+const normalizeAuthResponse = (auth: any, user: any, tokens: any) => ({
+  id: auth._id,
+  phone: auth.phone,
+  username: auth.username,
+  role: auth.role,
+  user: user
+    ? {
+        id: user._id,
+        fullName: user.fullName,
+        avatar: user.avatar,
+        phone: user.phone,
+        role: user.role,
+        partnerId: user.partnerId,
+        stationId: user.stationId,
+        countryId: user.countryId,
+        countryName: user.countryName,
+      }
+    : null,
+  ...tokens,
+});
+
+// ─── App Flow: Initiate OTP ──────────────────────────────────────────────────
+
+const initiate = async (data: { phone: string; countryCode: string; countryName: string }) => {
+  const fullPhone = buildFullPhone(data.phone, data.countryCode);
+
+  let auth = await AuthRepository.findByPhone(fullPhone);
+
+  if (!auth) {
+    auth = await AuthRepository.create({
+      phone: fullPhone,
+      countryCode: data.countryCode,
+      loginProvider: LoginProvider.PHONE,
+      role: UserRole.USER,
+      isPhoneVerified: false,
+      status: "active",
+    });
+  }
+   //! stop for development time
+  // const otp = generateOTP({ length: 4 });
+  const otp= "1234";
+  await OtpRepository.create({
+    userId: auth._id,
+    otp,
+    type: "account_verification",
+    provider: "phone",
+    target: fullPhone,
+    expiresAt: new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000),
+    attempts: 0,
+    maxAttempts: OTP_MAX_ATTEMPTS,
+    isUsed: false,
+  });
+  //! stop for develop time
+  // if (isAfricasTalkingCountry(data.countryName)) {
+  //   await sendAtOtp(fullPhone, otp);
+  // } else {
+  //   await sendTwilioOtp(fullPhone, otp);
+  // }
+
+  return { message: "OTP sent", phone: fullPhone };
 };
 
+// ─── App Flow: Verify OTP ────────────────────────────────────────────────────
 
+const verifyOtp = async (data: { phone: string; countryCode: string; otp: string; countryName?: string }) => {
+  const fullPhone = buildFullPhone(data.phone, data.countryCode);
+
+  const auth = await AuthRepository.findByPhone(fullPhone);
+  if (!auth) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Account not found. Please initiate first.");
+  }
+
+  const otpRecord = await OtpRepository.findLatestUnused(auth._id.toString(), "account_verification" as OTPType);
+  if (!otpRecord) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "No active OTP found. Please request a new one.");
+  }
+
+  if (otpRecord.isUsed) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "OTP already used. Request a new one.");
+  }
+
+  if (new Date() > otpRecord.expiresAt) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "OTP expired. Request a new one.");
+  }
+
+  if (otpRecord.attempts >= otpRecord.maxAttempts) {
+    throw new AppError(StatusCodes.TOO_MANY_REQUESTS, "Too many attempts. Request a new OTP.");
+  }
+
+  if (otpRecord.otp !== data.otp) {
+    await OtpRepository.incrementAttempts(otpRecord._id.toString());
+    throw new AppError(StatusCodes.BAD_REQUEST, "Invalid OTP.");
+  }
+
+  await OtpRepository.markUsed(otpRecord._id.toString());
+
+  await AuthRepository.updateById(auth._id.toString(), {
+    isPhoneVerified: true,
+    lastLogin: new Date(),
+  });
+
+  // Look up country by name if provided
+  let countryId: any = undefined;
+  let countryName: string | undefined = undefined;
+  if (data.countryName) {
+    const country = await CountryRepository.findByName(data.countryName);
+    if (country) {
+      countryId = country._id;
+      countryName = country.name;
+    }
+  }
+
+  let user = await UserRepository.findByAuthId(auth._id.toString());
+  if (!user) {
+    user = await UserRepository.create({
+      auth: auth._id,
+      phone: fullPhone,
+      phoneCountryCode: data.countryCode,
+      countryName,
+      countryId,
+      role: UserRole.USER,
+      profileCompleted: false,
+      isBlocked: false,
+      isDeleted: false,
+      preferences: { theme: "default", language: "english" },
+    });
+  } else if (countryId && !user.countryId) {
+    // Update countryId if not already set (for existing users)
+    user = await UserRepository.updateById(user._id.toString(), { countryId, countryName });
+  }
+
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User profile not found");
+  }
+
+  const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role);
+
+  return normalizeAuthResponse(auth, user, tokens);
+};
+
+// ─── Dashboard Flow: Username + Password Login ───────────────────────────────
+
+const login = async (data: { username: string; password: string }) => {
+  const auth = await AuthRepository.findByUsername(data.username);
+  if (!auth) {
+    throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid credentials.");
+  }
+
+  if (auth.loginProvider !== LoginProvider.USERNAME) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "This account uses phone login.");
+  }
+
+  if (!auth.password) {
+    throw new AppError(StatusCodes.INTERNAL_SERVER_ERROR, "Account misconfigured.");
+  }
+
+  const isPasswordValid = await bcrypt.compare(data.password, auth.password);
+  if (!isPasswordValid) {
+    throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid credentials.");
+  }
+
+  if (auth.status !== "active") {
+    throw new AppError(StatusCodes.FORBIDDEN, `Account is ${auth.status}.`);
+  }
+
+  await AuthRepository.updateById(auth._id.toString(), { lastLogin: new Date() });
+
+  const user = await UserRepository.findByAuthId(auth._id.toString());
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User profile not found.");
+  }
+
+  const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role);
+
+  return normalizeAuthResponse(auth, user, tokens);
+};
+
+// ─── Refresh Token ───────────────────────────────────────────────────────────
+
+const refresh = async (refreshToken: string) => {
+  let payload: any;
+  try {
+    const jwt = await import("jsonwebtoken");
+    payload = jwt.verify(refreshToken, config.jwt.jwt_refresh_secret as string);
+  } catch {
+    throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid or expired refresh token.");
+  }
+
+  if (payload.type !== "refresh") {
+    throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid token type.");
+  }
+
+  const auth = await AuthRepository.findById(payload.authId);
+  if (!auth) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Account not found.");
+  }
+
+  if (auth.status !== "active") {
+    throw new AppError(StatusCodes.FORBIDDEN, `Account is ${auth.status}.`);
+  }
+
+  const user = await UserRepository.findByAuthId(auth._id.toString());
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User profile not found.");
+  }
+
+  const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role);
+
+  return { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken };
+};
+
+export const AuthService = { initiate, verifyOtp, login, refresh };

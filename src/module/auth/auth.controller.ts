@@ -1,56 +1,51 @@
-import { StatusCodes } from "http-status-codes";
-import catchAsync from "@shared/catchAsync";
-import sendResponse from "@shared/sendResponse";
+import { Request, Response } from "express";
+import catchAsync from "../../shared/catchAsync";
+import sendResponse from "../../shared/sendResponse";
 import { AuthService } from "./auth.service";
+import { StatusCodes } from "http-status-codes";
 
-const initiateAuth = catchAsync(async (req, res) => {
-  const result = await AuthService.initiateAuth(req.body);
+const initiate = catchAsync(async (req: Request, res: Response) => {
+  const result = await AuthService.initiate(req.body);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
-    message: result.message,
-    data: result.data,
+    message: "OTP sent successfully",
+    data: result,
   });
 });
 
-const verifyOtp = catchAsync(async (req, res) => {
+const verifyOtp = catchAsync(async (req: Request, res: Response) => {
   const result = await AuthService.verifyOtp(req.body);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
-    message: result.message,
-    data: result.data,
+    message: "OTP verified successfully",
+    data: result,
   });
 });
 
-const resendOtp = catchAsync(async (req, res) => {
-  const result = await AuthService.resendOtp(req.body);
+const login = catchAsync(async (req: Request, res: Response) => {
+  const result = await AuthService.login(req.body);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
-    message: result.message,
-    data: result.data,
+    message: "Login successful",
+    data: result,
   });
 });
 
-const refreshAccessToken = catchAsync(async (req, res) => {
-  const result = await AuthService.refreshAccessToken(req.body);
+const refresh = catchAsync(async (req: Request, res: Response) => {
+  const result = await AuthService.refresh(req.body.refreshToken);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
-    message: "Access token refreshed successfully",
-    data: result.data,
+    message: "Token refreshed successfully",
+    data: result,
   });
 });
 
-export const AuthController = {
-  initiateAuth,
-  verifyOtp,
-  resendOtp,
-  refreshAccessToken,
-};
-
+export const AuthController = { initiate, verifyOtp, login, refresh };

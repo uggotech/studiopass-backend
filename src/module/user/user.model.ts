@@ -1,27 +1,5 @@
-import { Schema, model } from "mongoose";
-
-import { TUser, IUserPreferences } from "./user.interface";
-import { UserRole } from "module/auth/auth.interface";
-
-// ─── Sub-schemas ─────────────────────────────────────────────────────────────
-
-const preferencesSchema = new Schema<IUserPreferences>(
-  {
-    theme: {
-      type: String,
-      enum: ["default", "dark", "light"],
-      default: "default",
-    },
-    language: {
-      type: String,
-      enum: ["english", "swahili"],
-      default: "english",
-    },
-  },
-  { _id: false },
-);
-
-// ─── Schema ──────────────────────────────────────────────────────────────────
+import { model, Schema } from "mongoose";
+import { TUser } from "./user.interface";
 
 const userSchema = new Schema<TUser>(
   {
@@ -31,39 +9,56 @@ const userSchema = new Schema<TUser>(
       required: true,
       unique: true,
     },
-
     fullName: { type: String, trim: true },
     avatar: { type: String },
-
-    // Denormalized from Auth for fast reads
     email: { type: String, lowercase: true, trim: true },
     phone: { type: String, trim: true },
-    phoneCountryCode: { type: String, trim: true }, // e.g. "+1", "+234"
-    countryName: { type: String },                  // used for SMS provider routing
-
-    // Access control
-    role: { type: String, enum: Object.values(UserRole), default: UserRole.USER },
-
-    // Profile completion flag
+    phoneCountryCode: { type: String, trim: true },
+    countryName: { type: String },
+    countryId: { type: Schema.Types.ObjectId, ref: "Country" },
+    role: {
+      type: String,
+      enum: [
+        "super_admin",
+        "partner_admin",
+        "station_admin",
+        "media_station",
+        "presenter",
+        "customer_care",
+        "user",
+      ],
+      required: true,
+    },
+    partnerId: { type: Schema.Types.ObjectId, ref: "Partner" },
+    stationId: { type: Schema.Types.ObjectId, ref: "Station" },
     profileCompleted: { type: Boolean, default: false },
-
-    // Account flags
     isBlocked: { type: Boolean, default: false },
     isDeleted: { type: Boolean, default: false },
-
-    // Preferences
-    preferences: { type: preferencesSchema, default: () => ({}) },
+    preferences: {
+      type: {
+        theme: {
+          type: String,
+          enum: ["default", "dark", "light"],
+          default: "default",
+        },
+        language: {
+          type: String,
+          enum: ["english", "swahili"],
+          default: "english",
+        },
+      },
+      default: () => ({}),
+    },
   },
   { timestamps: true },
 );
 
-// ─── Indexes ─────────────────────────────────────────────────────────────────
-
 userSchema.index({ email: 1 });
 userSchema.index({ phone: 1, phoneCountryCode: 1 });
-
-// ─── Model ───────────────────────────────────────────────────────────────────
+userSchema.index({ role: 1 });
+userSchema.index({ partnerId: 1 });
+userSchema.index({ stationId: 1 });
+userSchema.index({ countryName: 1 });
+userSchema.index({ countryId: 1 });
 
 export const User = model<TUser>("User", userSchema);
-
-export const syncUserIndexes = () => User.syncIndexes();

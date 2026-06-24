@@ -1,63 +1,65 @@
-import { Schema, model } from "mongoose";
-
-import { LoginProvider, TAuth, UserRole } from "./auth.interface";
-import generateHashPassword from "util/generateHashPassword";
-
-// ─── Schema ──────────────────────────────────────────────────────────────────
+import { model, Schema } from "mongoose";
+import { TAuth } from "./auth.interface";
 
 const authSchema = new Schema<TAuth>(
   {
-    // Credentials
+    // Dashboard fields
+    username: { type: String, trim: true, sparse: true },
+    password: { type: String },
+
+    // App fields
     phone: { type: String, trim: true },
     countryCode: { type: String, trim: true },
-    password: { type: String, select: false },
-
-    // Login provider
-    loginProvider: {
-      type: String,
-      enum: Object.values(LoginProvider),
-      required: true,
-      default: LoginProvider.PHONE,
-    },
-
-    // Verification flags
     isPhoneVerified: { type: Boolean, default: false },
 
-    // Role & access
-    role: { type: String, enum: Object.values(UserRole), default: UserRole.USER },
-
-    // Account lifecycle
-    status: { type: String, enum: ["active", "inactive", "suspended"], default: "active" },
+    // Common
+    loginProvider: {
+      type: String,
+      enum: ["phone", "username"],
+      required: true,
+    },
+    role: {
+      type: String,
+      enum: [
+        "super_admin",
+        "partner_admin",
+        "station_admin",
+        "media_station",
+        "presenter",
+        "customer_care",
+        "user",
+      ],
+      required: true,
+    },
+    status: {
+      type: String,
+      enum: ["active", "inactive", "suspended"],
+      default: "active",
+    },
     lastLogin: { type: Date },
   },
   { timestamps: true },
 );
 
-// ─── Indexes ─────────────────────────────────────────────────────────────────
+// Unique username for dashboard users
+authSchema.index(
+  { username: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { username: { $exists: true, $type: "string" } },
+  },
+);
 
-// Unique phone once verified (allows duplicate unverified values)
+// Unique verified phone for app users
 authSchema.index(
   { phone: 1, isPhoneVerified: 1 },
   {
     unique: true,
-    partialFilterExpression: { phone: { $exists: true, $type: "string" }, isPhoneVerified: true },
+    partialFilterExpression: {
+      phone: { $exists: true, $type: "string" },
+      isPhoneVerified: true,
+    },
   },
 );
-
-// Non-unique lookup index for phone
-authSchema.index(
-  { phone: 1 },
-  { partialFilterExpression: { phone: { $exists: true, $type: "string" } } },
-);
-
-// ─── Hooks ───────────────────────────────────────────────────────────────────
-
-authSchema.pre("save", async function (_next) {
-  if (this.isModified("password") && this.password) {
-    this.password = generateHashPassword(this.password);
-  }
-});
-
-// ─── Model ───────────────────────────────────────────────────────────────────
 
 export const Auth = model<TAuth>("Auth", authSchema);

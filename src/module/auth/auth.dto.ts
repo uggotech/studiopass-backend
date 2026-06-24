@@ -1,65 +1,33 @@
-import z from "zod";
+import { z } from "zod";
 
-// ─── Initiate Auth ───────────────────────────────────────────────────────────
-// One entry point for sign-up and login. The service decides whether to create
-// an account or send a login OTP based on the stored auth state.
-
-const initiateAuthDto = z.object({
-  body: z
-    .object({
-      phone: z.string().min(4, "Phone number is required").trim(),
-      countryCode: z
-        .string()
-        .regex(/^\+[1-9]\d{0,3}$/, "Country code must be in format +1, +234 etc.")
-        .trim(),
-      countryName: z.string().min(1, "Country name is required").trim(),
-    })
-    .strict(),
+const initiate = z.object({
+  body: z.object({
+    phone: z.string().min(1, "Phone is required"),
+    countryCode: z.string().min(1, "Country code is required"),
+    countryName: z.string().min(1, "Country name is required"),
+  }),
 });
 
-// ─── Verify OTP ──────────────────────────────────────────────────────────────
-// Verifies either the account-verification OTP or the login OTP.
-
-const verifyOtpDto = z.object({
-  body: z
-    .object({
-      phone: z.string().min(4, "Phone number is required").trim(),
-      countryCode: z
-        .string()
-        .regex(/^\+[1-9]\d{0,3}$/, "Country code must be in format +1, +234 etc.")
-        .trim(),
-      otp: z.string().length(4, "OTP must be exactly 4 digits"),
-    })
-    .strict(),
+const verifyOtp = z.object({
+  body: z.object({
+    phone: z.string().min(1, "Phone is required"),
+    countryCode: z.string().min(1, "Country code is required"),
+    otp: z.string().length(4, "OTP must be 4 digits"),
+    countryName: z.string().optional(),
+  }),
 });
 
-// ─── Resend OTP ───────────────────────────────────────────────────────────────
-
-const resendOtpDto = z.object({
-  body: z
-    .object({
-      phone: z.string().min(4, "Phone number is required").trim(),
-      countryCode: z
-        .string()
-        .regex(/^\+[1-9]\d{0,3}$/, "Country code must be in format +1, +234 etc.")
-        .trim(),
-    })
-    .strict(),
+const login = z.object({
+  body: z.object({
+    username: z.string().min(1, "Username is required"),
+    password: z.string().min(1, "Password is required"),
+  }),
 });
 
-// ─── Refresh Access Token ─────────────────────────────────────────────────────
-
-const refreshAccessTokenDto = z.object({
-  body: z
-    .object({
-      refreshToken: z.string().min(1, "Refresh token is required"),
-    })
-    .strict(),
+const refresh = z.object({
+  body: z.object({
+    refreshToken: z.string().min(1, "Refresh token is required"),
+  }),
 });
 
-export const AuthDto = {
-  initiateAuth: initiateAuthDto,
-  verifyOtp: verifyOtpDto,
-  resendOtp: resendOtpDto,
-  refreshAccessToken: refreshAccessTokenDto,
-};
+export const AuthDto = { initiate, verifyOtp, login, refresh };

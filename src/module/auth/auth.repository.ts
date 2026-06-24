@@ -1,72 +1,30 @@
-import { TAuth } from "./auth.interface";
 import { Auth } from "./auth.model";
+import { TAuth } from "./auth.interface";
 
-type QueryOptions = {
-  select?: Record<string, 0 | 1> | string;
-  sort?: Record<string, 1 | -1> | string;
-  limit?: number;
-  skip?: number;
-  populate?: string | string[];
+const findByPhone = (phone: string): Promise<TAuth | null> => {
+  return Auth.findOne({ phone }).select("-password").lean();
 };
 
-type FindOneOptions = Pick<QueryOptions, "select" | "populate">;
+const findByUsername = (username: string) => {
+  return Auth.findOne({ username });
+};
+
+const findById = (id: string): Promise<TAuth | null> => {
+  return Auth.findById(id).select("-password").lean();
+};
+
+const create = (data: Partial<TAuth>): Promise<TAuth> => {
+  return Auth.create(data);
+};
+
+const updateById = (id: string, data: Partial<TAuth>): Promise<TAuth | null> => {
+  return Auth.findByIdAndUpdate(id, data, { new: true }).lean();
+};
 
 export const AuthRepository = {
-  create(payload: Partial<TAuth>) {
-    return Auth.create(payload);
-  },
-
-  findById(id: string, options: FindOneOptions = {}) {
-    let query = Auth.findById(id);
-
-    if (options.select) {
-      query = query.select(options.select);
-    }
-
-    return query;
-  },
-
-  findOne(filter: object, options: FindOneOptions = {}) {
-    let query = Auth.findOne(filter);
-
-    if (options.select) {
-      query = query.select(options.select);
-    }
-
-    if (options.populate) {
-      if (Array.isArray(options.populate)) {
-        options.populate.forEach((path) => {
-          query = query.populate(path);
-        });
-      } else {
-        query = query.populate(options.populate);
-      }
-    }
-
-    return query;
-  },
-
-  updateById(id: string, payload: object) {
-    return Auth.findByIdAndUpdate(id, payload, {
-      returnDocument: "after",
-      runValidators: true,
-    });
-  },
-
-  deleteById(id: string) {
-    return Auth.findByIdAndDelete(id);
-  },
-
-  deleteMany(filter: object) {
-    return Auth.deleteMany(filter);
-  },
-
-  async exists(filter: object) {
-    const doc = await Auth.exists(filter);
-    return Boolean(doc);
-  },
-
-  count(filter: object = {}) {
-    return Auth.countDocuments(filter);
-  },
+  findByPhone,
+  findByUsername,
+  findById,
+  create,
+  updateById,
 };

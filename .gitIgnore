@@ -47,3 +47,7 @@ Thumbs.db
 .cache/
 
 .claude
+
+# Local docs (never push)
+AGENTS.md
+backend-update-track.md

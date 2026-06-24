@@ -1,0 +1,14 @@
+node_modules
+dist
+.env
+.git
+.gitignore
+uploads
+logs
+*.log
+Dockerfile
+docker-compose.yml
+.dockerignore
+AGENTS.md
+backend-update-track.md
+serviceAccount.json

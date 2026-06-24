@@ -1,89 +1,28 @@
-import { TOTPCreate } from "./otp.interface";
 import { OTP } from "./otp.model";
+import { TOTP, OTPType } from "./otp.interface";
 
-type QueryOptions = {
-	select?: Record<string, 0 | 1> | string;
-	sort?: Record<string, 1 | -1> | string;
-	limit?: number;
-	skip?: number;
-	populate?: string | string[];
+const create = (data: Partial<TOTP>): Promise<TOTP> => {
+  return OTP.create(data);
 };
 
-export const OTPRepository = {
-	create(payload: TOTPCreate) {
-		return OTP.create(payload);
-	},
+const findLatestUnused = (userId: string, type: OTPType): Promise<TOTP | null> => {
+  return OTP.findOne({ userId, type, isUsed: false })
+    .sort({ createdAt: -1 })
+    .select("+otp")
+    .lean();
+};
 
-	findById(id: string) {
-		return OTP.findById(id);
-	},
+const incrementAttempts = async (id: string): Promise<void> => {
+  await OTP.findByIdAndUpdate(id, { $inc: { attempts: 1 } });
+};
 
-	findOne(filter: object) {
-		return OTP.findOne(filter);
-	},
+const markUsed = async (id: string): Promise<void> => {
+  await OTP.findByIdAndUpdate(id, { isUsed: true });
+};
 
-	findMany(filter: object = {}, options: QueryOptions = {}) {
-		let query = OTP.find(filter);
-
-		if (options.select) {
-			query = query.select(options.select);
-		}
-
-		if (options.sort) {
-			query = query.sort(options.sort);
-		}
-
-		if (typeof options.skip === "number") {
-			query = query.skip(options.skip);
-		}
-
-		if (typeof options.limit === "number") {
-			query = query.limit(options.limit);
-		}
-
-		if (options.populate) {
-			if (Array.isArray(options.populate)) {
-				options.populate.forEach((path) => {
-					query = query.populate(path);
-				});
-			} else {
-				query = query.populate(options.populate);
-			}
-		}
-
-		return query;
-	},
-
-	updateById(id: string, payload: any, options: any = {}) {
-		return OTP.findByIdAndUpdate(id, payload, {
-			returnDocument: "after",
-			runValidators: true,
-			updatePipeline: Array.isArray(payload),
-			...options,
-		});
-	},
-	findOneAndUpdate(filter: object, payload: any, options: any = {}) {
-		return OTP.findOneAndUpdate(filter, payload, {
-			returnDocument: "after",
-			runValidators: true,
-			updatePipeline: Array.isArray(payload),
-			...options,
-		});
-	},
-	deleteById(id: string) {
-		return OTP.findByIdAndDelete(id);
-	},
-
-	deleteMany(filter: object) {
-		return OTP.deleteMany(filter);
-	},
-
-	async exists(filter: object) {
-		const doc = await OTP.exists(filter);
-		return Boolean(doc);
-	},
-
-	count(filter: object = {}) {
-		return OTP.countDocuments(filter);
-	},
+export const OtpRepository = {
+  create,
+  findLatestUnused,
+  incrementAttempts,
+  markUsed,
 };

@@ -1,42 +1,31 @@
+import { UserRole } from "shared/roles";
 import { Types } from "mongoose";
-
-// ─── Enums ───────────────────────────────────────────────
 
 export enum LoginProvider {
   PHONE = "phone",
+  USERNAME = "username",
 }
 
-export enum UserRole {
-  USER = "user",
-  ADMIN = "admin",
-}
-
-// ─── Auth Interface ──────────────────────────────────────
 
 export interface TAuth {
   _id: Types.ObjectId;
 
-  // Credentials
-  phone?: string;
-  countryCode?: string;
-  password?: string;
+  // Dashboard login (username + password)
+  username?: string; // unique for dashboard users
+  password?: string; // hashed with bcrypt, required when loginProvider = "username"
 
-  // Login provider & OAuth IDs
-  loginProvider: LoginProvider;
+  // App login (phone + OTP)
+  phone?: string; // E.164 format for app users
+  countryCode?: string; // e.g. "+256"
+  isPhoneVerified: boolean; // true after OTP verified
 
-  // Verification flags
-  isPhoneVerified: boolean;
-
-  // Role & access
-  role: UserRole;
-
-  // Account lifecycle
+  // Common
+  loginProvider: LoginProvider; // "username" (dashboard) | "phone" (app)
+  role: UserRole; // stored on Auth for JWT payload
   status: "active" | "inactive" | "suspended";
   lastLogin?: Date | null;
-
-  // Timestamps (managed by Mongoose)
   createdAt: Date;
   updatedAt: Date;
 }
 
-export type TPartialAuth = Partial<TAuth>;
+

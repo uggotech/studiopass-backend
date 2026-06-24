@@ -6,7 +6,7 @@ const otpSchema = new Schema<TOTP>(
   {
     userId: {
       type: Schema.Types.ObjectId,
-      ref: "User",
+      ref: "Auth",
       required: true,
       index: true,
     },

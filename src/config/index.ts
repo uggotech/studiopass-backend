@@ -208,8 +208,20 @@ export default {
   // ============================================================================
   upload: {
     dir: process.env.UPLOAD_DIR || "./uploads",
-    max_file_size_mb: process.env.MAX_FILE_SIZE_MB || "50",
-    allowed_file_types: (process.env.ALLOWED_FILE_TYPES || "jpg,jpeg,png,pdf,doc,docx").split(","),
+    max_file_size_mb: process.env.MAX_FILE_SIZE_MB || "8",
+    allowed_file_types: (process.env.ALLOWED_FILE_TYPES || "jpg,jpeg,png,webp,svg").split(","),
+  },
+
+  // ============================================================================
+  // MINIO (Object Storage)
+  // ============================================================================
+  minio: {
+    endpoint: process.env.MINIO_ENDPOINT || "localhost",
+    port: Number(process.env.MINIO_PORT) || 9000,
+    useSSL: process.env.MINIO_USE_SSL === "true",
+    accessKey: process.env.MINIO_ROOT_USER || "minioadmin",
+    secretKey: process.env.MINIO_ROOT_PASSWORD || "minioadmin",
+    bucket: process.env.MINIO_BUCKET || "studiopass",
   },
 
   // ============================================================================
