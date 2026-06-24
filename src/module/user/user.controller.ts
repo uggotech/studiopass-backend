@@ -4,6 +4,46 @@ import sendResponse from "../../shared/sendResponse";
 import { UserService } from "./user.service";
 import { StatusCodes } from "http-status-codes";
 
+const getMyProfile = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const result = await UserService.getMyProfile(user._id.toString());
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Profile fetched successfully",
+    data: result,
+  });
+});
+
+const updateMyProfile = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const avatar = req.file ? `/uploads/images/${req.file.filename}` : undefined;
+  const result = await UserService.updateMyProfile(user._id.toString(), {
+    ...req.body,
+    ...(avatar && { avatar }),
+  });
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Profile updated successfully",
+    data: result,
+  });
+});
+
+const updateMyPreferences = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const result = await UserService.updateMyPreferences(user._id.toString(), req.body);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Preferences updated successfully",
+    data: result,
+  });
+});
+
 const getAllStationAdmins = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
   const scope = user?.partnerId ? { partnerId: user.partnerId.toString() } : undefined;
@@ -80,6 +120,9 @@ const reactivateUser = catchAsync(async (req: Request, res: Response) => {
 });
 
 export const UserController = {
+  getMyProfile,
+  updateMyProfile,
+  updateMyPreferences,
   getAllStationAdmins,
   getAllMediaStationUsers,
   createMediaStation,

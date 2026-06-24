@@ -61,6 +61,8 @@ const normalizeAuthResponse = (auth: any, user: any, tokens: any) => ({
         stationId: user.stationId,
         countryId: user.countryId,
         countryName: user.countryName,
+        profileCompleted: user.profileCompleted,
+        preferences: user.preferences,
       }
     : null,
   ...tokens,

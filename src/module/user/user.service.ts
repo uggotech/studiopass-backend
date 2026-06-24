@@ -211,6 +211,86 @@ const getAllMediaStationUsers = async (query: Record<string, unknown>, scope?: {
   };
 };
 
+const getMyProfile = async (userId: string) => {
+  const user = await UserRepository.findById(userId);
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User not found");
+  }
+  return {
+    id: user._id,
+    fullName: user.fullName ?? "",
+    avatar: user.avatar ?? null,
+    email: user.email ?? null,
+    phone: user.phone ?? null,
+    phoneCountryCode: user.phoneCountryCode ?? null,
+    countryName: user.countryName ?? null,
+    countryId: user.countryId?.toString() ?? null,
+    role: user.role,
+    profileCompleted: user.profileCompleted,
+    preferences: user.preferences,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+  };
+};
+
+const updateMyProfile = async (
+  userId: string,
+  data: { fullName?: string; countryId?: string; avatar?: string },
+) => {
+  const user = await UserRepository.findById(userId);
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User not found");
+  }
+
+  const updateData: Record<string, unknown> = {};
+  if (data.fullName !== undefined) updateData.fullName = data.fullName;
+  if (data.countryId !== undefined) updateData.countryId = data.countryId;
+  if (data.avatar !== undefined) updateData.avatar = data.avatar;
+
+  // Auto-complete profile if both name and avatar are provided
+  if (data.fullName && data.avatar) {
+    updateData.profileCompleted = true;
+  }
+
+  const updated = await UserRepository.updateById(userId, updateData as any);
+  return {
+    id: updated!._id,
+    fullName: updated!.fullName ?? "",
+    avatar: updated!.avatar ?? null,
+    phone: updated!.phone ?? null,
+    phoneCountryCode: updated!.phoneCountryCode ?? null,
+    countryName: updated!.countryName ?? null,
+    countryId: updated!.countryId?.toString() ?? null,
+    role: updated!.role,
+    profileCompleted: updated!.profileCompleted,
+    preferences: updated!.preferences,
+  };
+};
+
+const updateMyPreferences = async (
+  userId: string,
+  data: { theme?: string; language?: string },
+) => {
+  const user = await UserRepository.findById(userId);
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User not found");
+  }
+
+  const currentPrefs = user.preferences || { theme: "default", language: "english" };
+  const updateData: Record<string, unknown> = {
+    preferences: {
+      theme: data.theme ?? currentPrefs.theme,
+      language: data.language ?? currentPrefs.language,
+    },
+  };
+
+  const updated = await UserRepository.updateById(userId, updateData as any);
+  return {
+    id: updated!._id,
+    preferences: updated!.preferences,
+  };
+};
+
 export const UserService = {
   getAllStationAdmins,
   getUserById,
@@ -218,4 +298,7 @@ export const UserService = {
   reactivateUser,
   createMediaStation,
   getAllMediaStationUsers,
+  getMyProfile,
+  updateMyProfile,
+  updateMyPreferences,
 };

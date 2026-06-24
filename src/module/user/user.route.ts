@@ -2,8 +2,30 @@ import { Router } from "express";
 import { UserController } from "./user.controller";
 import { UserRole } from "shared/roles";
 import auth from "../../middlewares/auth";
+import validateRequest from "../../middlewares/validateRequest";
+import { UserDto } from "./user.dto";
+import processAndUpload from "../../middlewares/processAndUpload";
 
 const router = Router();
+
+// App users: get my profile
+router.get("/profile", auth(UserRole.USER), UserController.getMyProfile);
+
+// App users: update my profile (with optional avatar upload)
+router.patch(
+  "/profile",
+  auth(UserRole.USER),
+  processAndUpload,
+  UserController.updateMyProfile,
+);
+
+// App users: update preferences
+router.patch(
+  "/profile/preferences",
+  auth(UserRole.USER),
+  validateRequest(UserDto.updatePreferences),
+  UserController.updateMyPreferences,
+);
 
 // Super admin + partner admin: list station admins
 router.get(
