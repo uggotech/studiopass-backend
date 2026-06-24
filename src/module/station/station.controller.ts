@@ -20,7 +20,20 @@ const getAllStations = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getStationById = catchAsync(async (req: Request, res: Response) => {
-  const result = await StationService.getStationById(String(req.params.id));
+  const user = req.user as any;
+  const stationId = String(req.params.id);
+
+  // Scope check: station_admin can only view their own station
+  if (user.role === "station_admin") {
+    if (!user.stationId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "No station assigned to this user");
+    }
+    if (user.stationId.toString() !== stationId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only view your own station");
+    }
+  }
+
+  const result = await StationService.getStationById(stationId);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,

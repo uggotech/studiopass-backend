@@ -14,8 +14,8 @@ router.get("/public", auth(UserRole.USER), StationController.getPublicStations);
 // Super admin + partner admin: list stations
 router.get("/", auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN), StationController.getAllStations);
 
-// Super admin + partner admin: get single station
-router.get("/:id", auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN), StationController.getStationById);
+// Super admin + partner admin + station admin: get single station
+router.get("/:id", auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN), StationController.getStationById);
 
 // Super admin + partner admin: create station + station admin
 router.post(
@@ -33,18 +33,18 @@ router.patch(
   StationController.updateStation,
 );
 
-// Super admin + partner admin: upload station logo
+// Super admin + partner admin + station admin: upload station logo
 router.patch(
   "/:id/logo",
-  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
   processAndUpload,
   StationController.updateStation,
 );
 
-// Super admin + partner admin: upload station cover image
+// Super admin + partner admin + station admin: upload station cover image
 router.patch(
   "/:id/cover-image",
-  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
   processAndUpload,
   StationController.updateStation,
 );
