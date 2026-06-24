@@ -3,6 +3,7 @@ import catchAsync from "../../shared/catchAsync";
 import sendResponse from "../../shared/sendResponse";
 import { StationService } from "./station.service";
 import { StatusCodes } from "http-status-codes";
+import AppError from "../../errors/AppError";
 
 const getAllStations = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
@@ -51,7 +52,20 @@ const createStationWithAdmin = catchAsync(async (req: Request, res: Response) =>
 });
 
 const updateStation = catchAsync(async (req: Request, res: Response) => {
-  const result = await StationService.updateStation(String(req.params.id), req.body);
+  const user = req.user as any;
+  const stationId = String(req.params.id);
+
+  // Scope check: station_admin can only update their own station
+  if (user.role === "station_admin") {
+    if (!user.stationId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "No station assigned to this user");
+    }
+    if (user.stationId.toString() !== stationId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only update your own station");
+    }
+  }
+
+  const result = await StationService.updateStation(stationId, req.body);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,

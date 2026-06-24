@@ -120,6 +120,34 @@ const reactivateUser = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const createPresenter = catchAsync(async (req: Request, res: Response) => {
+  const result = await UserService.createPresenter(req.body);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.CREATED,
+    success: true,
+    message: "Presenter created successfully",
+    data: result,
+  });
+});
+
+const getAllPresenters = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const scope: { partnerId?: string; stationId?: string } = {};
+  if (user?.stationId) scope.stationId = user.stationId.toString();
+  else if (user?.partnerId) scope.partnerId = user.partnerId.toString();
+
+  const result = await UserService.getAllPresenters(req.query, scope);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Presenters fetched successfully",
+    data: result.users,
+    meta: result.meta,
+  });
+});
+
 export const UserController = {
   getMyProfile,
   updateMyProfile,
@@ -127,6 +155,8 @@ export const UserController = {
   getAllStationAdmins,
   getAllMediaStationUsers,
   createMediaStation,
+  createPresenter,
+  getAllPresenters,
   getUserById,
   deactivateUser,
   reactivateUser,

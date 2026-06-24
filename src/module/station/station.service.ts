@@ -262,6 +262,7 @@ const getPublicStations = async (query: Record<string, unknown>, userId?: string
     name: s.name,
     stationCode: s.stationCode,
     category: s.category,
+    description: s.description,
     logo: s.logo,
     coverImage: s.coverImage,
     country: s.country,

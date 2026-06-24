@@ -48,6 +48,20 @@ router.post(
   UserController.createMediaStation,
 );
 
+// Super admin + partner admin + station admin: list presenters
+router.get(
+  "/presenters",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  UserController.getAllPresenters,
+);
+
+// Super admin + partner admin + station admin: create presenter
+router.post(
+  "/create-presenter",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  UserController.createPresenter,
+);
+
 // Super admin + partner admin: get single user
 router.get(
   "/:id",

@@ -25,10 +25,10 @@ router.post(
   StationController.createStationWithAdmin,
 );
 
-// Super admin + partner admin: update station
+// Super admin + partner admin + station admin: update station
 router.patch(
   "/:id",
-  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
   validateRequest(StationDto.updateStation),
   StationController.updateStation,
 );

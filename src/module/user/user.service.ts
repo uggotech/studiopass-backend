@@ -3,6 +3,7 @@ import AppError from "../../errors/AppError";
 import { UserRepository } from "./user.repository";
 import { AuthRepository } from "../auth/auth.repository";
 import { StationRepository } from "../station/station.repository";
+import { ShowRepository } from "../show/show.repository";
 import { LoginProvider } from "../auth/auth.interface";
 import { UserRole } from "shared/roles";
 import bcrypt from "bcryptjs";
@@ -293,6 +294,137 @@ const updateMyPreferences = async (
   };
 };
 
+// ─── Presenters ──────────────────────────────────────────────────────────────
+
+const normalizePresenter = (u: any) => ({
+  id: u._id,
+  fullName: u.fullName,
+  avatar: u.avatar,
+  email: u.email,
+  phone: u.phone,
+  role: u.role,
+  station: u.stationId
+    ? {
+        id: u.stationId._id,
+        name: u.stationId.name,
+        stationCode: u.stationId.stationCode,
+        category: u.stationId.category,
+      }
+    : null,
+  partnerId: u.partnerId,
+  isBlocked: u.isBlocked,
+  createdAt: u.createdAt,
+  updatedAt: u.updatedAt,
+});
+
+const createPresenter = async (data: {
+  fullName: string;
+  email?: string;
+  phone?: string;
+  stationId: string;
+  showId?: string;
+  username: string;
+  password: string;
+}) => {
+  // Validate station exists
+  const station = await StationRepository.findById(data.stationId);
+  if (!station) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Station not found");
+  }
+
+  // Check username uniqueness
+  const existingAuth = await AuthRepository.findByUsername(data.username);
+  if (existingAuth) {
+    throw new AppError(StatusCodes.CONFLICT, "Username already taken");
+  }
+
+  // Create auth for presenter
+  const hashedPassword = await bcrypt.hash(data.password, 10);
+  const authDoc = await AuthRepository.create({
+    username: data.username,
+    password: hashedPassword,
+    loginProvider: LoginProvider.USERNAME,
+    role: UserRole.PRESENTER,
+    status: "active",
+  });
+
+  // Create user profile
+  const user = await UserRepository.create({
+    auth: authDoc._id,
+    fullName: data.fullName,
+    email: data.email,
+    phone: data.phone,
+    role: UserRole.PRESENTER,
+    stationId: station._id,
+    profileCompleted: false,
+  });
+
+  // Assign show if provided
+  let assignedShow: { id: string; name: string } | null = null;
+  if (data.showId) {
+    const show = await ShowRepository.findById(data.showId);
+    if (show) {
+      await ShowRepository.updatePresenter(data.showId, user._id.toString());
+      assignedShow = { id: show._id.toString(), name: show.name };
+    }
+  }
+
+  return {
+    id: user._id,
+    fullName: user.fullName,
+    email: user.email,
+    role: user.role,
+    station: {
+      id: station._id,
+      name: station.name,
+      stationCode: station.stationCode,
+    },
+    assignedShow,
+  };
+};
+
+const getAllPresenters = async (query: Record<string, unknown>, scope?: { partnerId?: string; stationId?: string }) => {
+  const filter: Record<string, unknown> = { role: "presenter" };
+
+  if (scope?.stationId) {
+    filter.stationId = scope.stationId;
+  } else if (scope?.partnerId) {
+    // For partner admin, we need to filter by stations of that partner
+    // The User model doesn't have partnerId for presenters, so we filter via station
+  }
+
+  if (query.isActive !== undefined) {
+    filter.isBlocked = query.isActive === "false";
+  }
+
+  if (query.station) {
+    filter.stationId = query.station;
+  }
+
+  if (query.search) {
+    const searchRegex = new RegExp(query.search as string, "i");
+    filter.$or = [
+      { fullName: searchRegex },
+      { email: searchRegex },
+      { phone: searchRegex },
+    ];
+  }
+
+  const page = Math.max(1, Number(query.page) || 1);
+  const limit = Math.max(1, Math.min(100, Number(query.limit) || 20));
+  const skip = (page - 1) * limit;
+
+  const [users, total] = await Promise.all([
+    UserRepository.findAllByRole(filter, { skip, limit }),
+    UserRepository.countByRole(filter),
+  ]);
+
+  return {
+    users: users.map(normalizePresenter),
+    meta: { page, limit, total, totalPage: Math.ceil(total / limit) },
+  };
+};
+
 export const UserService = {
   getAllStationAdmins,
   getUserById,
@@ -300,6 +432,8 @@ export const UserService = {
   reactivateUser,
   createMediaStation,
   getAllMediaStationUsers,
+  createPresenter,
+  getAllPresenters,
   getMyProfile,
   updateMyProfile,
   updateMyPreferences,
