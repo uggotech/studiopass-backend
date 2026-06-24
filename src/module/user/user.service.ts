@@ -247,8 +247,10 @@ const updateMyProfile = async (
   if (data.countryId !== undefined) updateData.countryId = data.countryId;
   if (data.avatar !== undefined) updateData.avatar = data.avatar;
 
-  // Auto-complete profile if both name and avatar are provided
-  if (data.fullName && data.avatar) {
+  // Auto-complete profile if user has both name and avatar (from update OR already on user)
+  const hasName = data.fullName || user.fullName;
+  const hasAvatar = data.avatar || user.avatar;
+  if (hasName && hasAvatar) {
     updateData.profileCompleted = true;
   }
 
