@@ -1,60 +1,89 @@
-import { StatusCodes } from "http-status-codes";
-import AppError from "errors/AppError";
-import catchAsync from "@shared/catchAsync";
-import sendResponse from "@shared/sendResponse";
+import { Request, Response } from "express";
+import catchAsync from "../../shared/catchAsync";
+import sendResponse from "../../shared/sendResponse";
 import { UserService } from "./user.service";
+import { StatusCodes } from "http-status-codes";
 
-const getMe = catchAsync(async (req, res) => {
-  const userId = req.user?._id;
-  if (!userId) throw new AppError(StatusCodes.UNAUTHORIZED, "Unauthorized");
+const getAllStationAdmins = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const scope = user?.partnerId ? { partnerId: user.partnerId.toString() } : undefined;
+  const result = await UserService.getAllStationAdmins(req.query, scope);
 
-  const user = await UserService.getMe(userId, req.query);
-
-  sendResponse(res, { statusCode: StatusCodes.OK, success: true, message: "Profile fetched successfully", data: user });
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Station admins fetched successfully",
+    data: result.users,
+    meta: result.meta,
+  });
 });
 
-const getById = catchAsync(async (req, res) => {
-  const user = await UserService.getById(req.params.id as string, req.query);
+const getAllMediaStationUsers = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const scope: { partnerId?: string; stationId?: string } = {};
+  if (user?.stationId) scope.stationId = user.stationId.toString();
+  else if (user?.partnerId) scope.partnerId = user.partnerId.toString();
 
-  sendResponse(res, { statusCode: StatusCodes.OK, success: true, message: "User fetched successfully", data: user });
+  const result = await UserService.getAllMediaStationUsers(req.query, scope);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Media station users fetched successfully",
+    data: result.users,
+    meta: result.meta,
+  });
 });
 
-const updateProfile = catchAsync(async (req, res) => {
-  const userId = req.user?._id;
-  if (!userId) throw new AppError(StatusCodes.UNAUTHORIZED, "Unauthorized");
+const createMediaStation = catchAsync(async (req: Request, res: Response) => {
+  const result = await UserService.createMediaStation(req.body);
 
-  const result = await UserService.updateProfile(userId, req.body);
-
-  sendResponse(res, { statusCode: StatusCodes.OK, success: true, message: "Profile updated successfully", data: result });
+  sendResponse(res, {
+    statusCode: StatusCodes.CREATED,
+    success: true,
+    message: "Media station user created successfully",
+    data: result,
+  });
 });
 
-const deleteMe = catchAsync(async (req, res) => {
-  const userId = req.user?._id;
-  if (!userId) throw new AppError(StatusCodes.UNAUTHORIZED, "Unauthorized");
+const getUserById = catchAsync(async (req: Request, res: Response) => {
+  const result = await UserService.getUserById(String(req.params.id));
 
-  const result = await UserService.deleteMe(userId);
-
-  sendResponse(res, { statusCode: StatusCodes.OK, success: true, message: result.message, data: null });
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "User fetched successfully",
+    data: result,
+  });
 });
 
-const updateAvatar = catchAsync(async (req, res) => {
-  const userId = req.user?._id;
-  if (!userId) throw new AppError(StatusCodes.UNAUTHORIZED, "Unauthorized");
+const deactivateUser = catchAsync(async (req: Request, res: Response) => {
+  const result = await UserService.deactivateUser(String(req.params.id));
 
-  const files = req.files as Record<string, Express.Multer.File[]> | undefined;
-  const imageFile = files?.image?.[0];
-  if (!imageFile) throw new AppError(StatusCodes.BAD_REQUEST, "Avatar image is required");
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "User deactivated successfully",
+    data: result,
+  });
+});
 
-  const result = await UserService.updateAvatar(userId, imageFile);
+const reactivateUser = catchAsync(async (req: Request, res: Response) => {
+  const result = await UserService.reactivateUser(String(req.params.id));
 
-  sendResponse(res, { statusCode: StatusCodes.OK, success: true, message: "Avatar updated successfully", data: result });
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "User reactivated successfully",
+    data: result,
+  });
 });
 
 export const UserController = {
-  getMe,
-  getById,
-  updateProfile,
-  deleteMe,
-  updateAvatar,
+  getAllStationAdmins,
+  getAllMediaStationUsers,
+  createMediaStation,
+  getUserById,
+  deactivateUser,
+  reactivateUser,
 };
-

@@ -1,68 +1,50 @@
 import { Router } from "express";
-import auth from "@middlewares/auth";
-import validateRequest from "@middlewares/validateRequest";
-import fileUploadHandler from "@middlewares/fileUploadHandler";
 import { UserController } from "./user.controller";
-import { UserDto } from "./user.dto";
+import { UserRole } from "shared/roles";
+import auth from "../../middlewares/auth";
 
 const router = Router();
 
-/**
- * @route   GET /api/v1/user/me
- * @desc    Get the current authenticated user's profile (supports ?fields=fullName,avatar)
- * @access  Private
- */
+// Super admin + partner admin: list station admins
 router.get(
-  "/me",
-  auth(),
-  UserController.getMe,
+  "/station-admins",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
+  UserController.getAllStationAdmins,
 );
 
-/**
- * @route   PATCH /api/v1/user/me
- * @desc    Update profile — fullName, email, and/or preferences
- * @access  Private
- */
-router.patch(
-  "/me",
-  auth(),
-  validateRequest(UserDto.updateProfile),
-  UserController.updateProfile,
+// Super admin + partner admin + station admin: list media station users
+router.get(
+  "/media-stations",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  UserController.getAllMediaStationUsers,
 );
 
-/**
- * @route   DELETE /api/v1/user/me
- * @desc    Soft-delete the current user's account
- * @access  Private
- */
-router.delete(
-  "/me",
-  auth(),
-  UserController.deleteMe,
+// Super admin + partner admin + station admin: create media station user
+router.post(
+  "/create-media-station",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  UserController.createMediaStation,
 );
 
-/**
- * @route   PATCH /api/v1/user/me/avatar
- * @desc    Upload or replace the user's avatar image
- * @access  Private
- */
-router.patch(
-  "/me/avatar",
-  auth(),
-  fileUploadHandler,
-  UserController.updateAvatar,
-);
-
-/**
- * @route   GET /api/v1/user/:id
- * @desc    Get another user's public profile by ID
- * @access  Private
- */
+// Super admin + partner admin: get single user
 router.get(
   "/:id",
-  auth(),
-  UserController.getById,
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
+  UserController.getUserById,
+);
+
+// Super admin + partner admin: deactivate user
+router.patch(
+  "/:id/deactivate",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
+  UserController.deactivateUser,
+);
+
+// Super admin + partner admin: reactivate user
+router.patch(
+  "/:id/reactivate",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
+  UserController.reactivateUser,
 );
 
 export const UserRoutes = router;
-

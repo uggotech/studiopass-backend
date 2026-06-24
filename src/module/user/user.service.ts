@@ -1,167 +1,221 @@
 import { StatusCodes } from "http-status-codes";
-import { Types } from "mongoose";
-import fs from "fs";
-import path from "path";
-
-import AppError from "errors/AppError";
-import { UserCacheManager, TCachedUserProfile } from "./user.cacheManage";
+import AppError from "../../errors/AppError";
 import { UserRepository } from "./user.repository";
-import { checkProfileComplete, IUserPreferences, TUser } from "./user.interface";
-import { AuthRepository } from "module/auth/auth.repository";
+import { AuthRepository } from "../auth/auth.repository";
+import { StationRepository } from "../station/station.repository";
+import { LoginProvider } from "../auth/auth.interface";
+import { UserRole } from "shared/roles";
+import bcrypt from "bcryptjs";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+const normalizeUser = (u: any) => ({
+  id: u._id,
+  fullName: u.fullName,
+  avatar: u.avatar,
+  email: u.email,
+  phone: u.phone,
+  role: u.role,
+  stationId: u.stationId,
+  partnerId: u.partnerId,
+  profileCompleted: u.profileCompleted,
+  isBlocked: u.isBlocked,
+  isDeleted: u.isDeleted,
+  createdAt: u.createdAt,
+  updatedAt: u.updatedAt,
+});
 
-type TUpdateProfilePayload = {
-  fullName?: string;
-  email?: string;
-  preferences?: Partial<IUserPreferences>;
-};
+const normalizeMediaStation = (u: any) => ({
+  id: u._id,
+  fullName: u.fullName,
+  avatar: u.avatar,
+  email: u.email,
+  phone: u.phone,
+  role: u.role,
+  station: u.stationId
+    ? {
+        id: u.stationId._id,
+        name: u.stationId.name,
+        stationCode: u.stationId.stationCode,
+        category: u.stationId.category,
+        country: u.stationId.country,
+        partner: u.stationId.partner,
+      }
+    : null,
+  partnerId: u.partnerId,
+  profileCompleted: u.profileCompleted,
+  isBlocked: u.isBlocked,
+  isDeleted: u.isDeleted,
+  createdAt: u.createdAt,
+  updatedAt: u.updatedAt,
+});
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
+const getAllStationAdmins = async (query: Record<string, unknown>, scope?: { partnerId?: string }) => {
+  const filter: Record<string, unknown> = { role: "station_admin" };
 
-const getCachedUserProfile = async (
-  userId: Types.ObjectId | string,
-): Promise<TCachedUserProfile> => {
-  const cached = await UserCacheManager.getProfile(String(userId));
-  if (cached) return cached;
+  if (scope?.partnerId) {
+    filter.partnerId = scope.partnerId;
+  }
 
-  const userDoc = await UserRepository.findById(String(userId), { populate: "auth" }).lean<any>();
+  if (query.isActive !== undefined) {
+    filter.isBlocked = query.isActive === "false";
+  }
 
-  if (!userDoc) throw new AppError(StatusCodes.NOT_FOUND, "User not found");
+  if (query.station) {
+    filter.stationId = query.station;
+  }
 
-  // Flatten role from auth and ensure auth is just the ID
-  const user = {
-    ...userDoc,
-    role: userDoc.role || userDoc.auth?.role,
-    auth: userDoc.auth?._id || userDoc.auth,
+  if (query.search) {
+    const searchRegex = new RegExp(query.search as string, "i");
+    filter.$or = [
+      { fullName: searchRegex },
+      { email: searchRegex },
+      { phone: searchRegex },
+    ];
+  }
+
+  const page = Math.max(1, Number(query.page) || 1);
+  const limit = Math.max(1, Math.min(100, Number(query.limit) || 20));
+  const skip = (page - 1) * limit;
+
+  const [users, total] = await Promise.all([
+    UserRepository.findAllByRole(filter, { skip, limit }),
+    UserRepository.countByRole(filter),
+  ]);
+
+  return {
+    users: users.map(normalizeUser),
+    meta: { page, limit, total, totalPage: Math.ceil(total / limit) },
   };
-
-  await UserCacheManager.setProfile(String(userId), user);
-  return user;
 };
 
-const recomputeProfileCompletion = async (
-  userId: Types.ObjectId,
-  user: TUser,
-): Promise<boolean> => {
-  const isComplete = checkProfileComplete(user);
-  if (user.profileCompleted !== isComplete) {
-    await UserRepository.updateById(String(userId), { profileCompleted: isComplete });
-    user.profileCompleted = isComplete;
+const getUserById = async (id: string) => {
+  const user = await UserRepository.findById(id);
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User not found");
   }
-  return isComplete;
+  return normalizeUser(user);
 };
 
-const projectUserFields = (
-  user: TCachedUserProfile,
-  rawFields: unknown,
-): TCachedUserProfile => {
-  if (typeof rawFields !== "string" || !rawFields.trim()) return user;
-
-  const fields = rawFields
-    .split(",")
-    .map((f) => f.trim())
-    .filter(Boolean);
-
-  if (!fields.length) return user;
-
-  if (fields.every((f) => f.startsWith("-"))) {
-    const result = { ...user };
-    fields.forEach((f) => delete result[f.slice(1)]);
-    return result;
+const deactivateUser = async (id: string) => {
+  const user = await UserRepository.findById(id);
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User not found");
   }
 
-  const projected: TCachedUserProfile = {};
-  if (user._id !== undefined) projected._id = user._id;
-  fields
-    .filter((f) => !f.startsWith("-"))
-    .forEach((f) => { if (f in user) projected[f] = user[f]; });
-  return projected;
+  const updated = await UserRepository.updateById(id, { isBlocked: true } as any);
+  return normalizeUser(updated!);
 };
 
-// ─── Service ──────────────────────────────────────────────────────────────────
-
-const getMe = async (userId: Types.ObjectId, query: Record<string, unknown>) => {
-  const user = await getCachedUserProfile(userId);
-  return projectUserFields(user, query.fields);
-};
-
-const getById = async (id: string, query: Record<string, unknown>) => {
-  if (!Types.ObjectId.isValid(id)) {
-    throw new AppError(StatusCodes.BAD_REQUEST, "Invalid user ID");
-  }
-  const user = await getCachedUserProfile(id);
-  return projectUserFields(user, query.fields);
-};
-
-const updateProfile = async (
-  userId: Types.ObjectId,
-  payload: TUpdateProfilePayload,
-) => {
-  const user = await UserRepository.findById(String(userId));
-  if (!user) throw new AppError(StatusCodes.NOT_FOUND, "User not found");
-
-  const updateFields: Partial<TUser> = {};
-  if (payload.fullName !== undefined) updateFields.fullName = payload.fullName;
-  if (payload.email !== undefined) updateFields.email = payload.email;
-  if (payload.preferences !== undefined) {
-    updateFields.preferences = { ...user.preferences, ...payload.preferences };
+const reactivateUser = async (id: string) => {
+  const user = await UserRepository.findById(id);
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User not found");
   }
 
-  const updatedUser = await UserRepository.updateById(String(userId), updateFields);
-  if (!updatedUser) throw new AppError(StatusCodes.NOT_FOUND, "User not found");
-
-  const isCompleteProfile = await recomputeProfileCompletion(userId, updatedUser);
-
-  await UserCacheManager.setProfile(
-    String(userId),
-    updatedUser.toObject() as unknown as TCachedUserProfile,
-  );
-
-  return { user: updatedUser.toObject(), isCompleteProfile };
+  const updated = await UserRepository.updateById(id, { isBlocked: false } as any);
+  return normalizeUser(updated!);
 };
 
-const deleteMe = async (userId: Types.ObjectId) => {
-  const user = await UserRepository.findById(String(userId));
-  if (!user) throw new AppError(StatusCodes.NOT_FOUND, "User not found");
-
-  await UserRepository.updateById(String(userId), { isDeleted: true });
-  await UserCacheManager.invalidateProfile(String(userId));
-
-  return { message: "Account deleted successfully" };
-};
-
-const updateAvatar = async (userId: Types.ObjectId, file: Express.Multer.File) => {
-  const user = await UserRepository.findById(String(userId));
-  if (!user) throw new AppError(StatusCodes.NOT_FOUND, "User not found");
-
-  // Remove old avatar file
-  if (user.avatar) {
-    const oldPath = path.join(process.cwd(), user.avatar);
-    if (fs.existsSync(oldPath)) {
-      await fs.promises.unlink(oldPath).catch(() => {});
-    }
+const createMediaStation = async (data: {
+  fullName: string;
+  email?: string;
+  phone?: string;
+  stationId: string;
+  username: string;
+  password: string;
+}) => {
+  // Validate station exists
+  const station = await StationRepository.findById(data.stationId);
+  if (!station) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Station not found");
   }
 
-  const avatarPath = `uploads/images/${file.filename}`;
-  const updatedUser = await UserRepository.updateById(String(userId), { avatar: avatarPath });
-  if (!updatedUser) throw new AppError(StatusCodes.NOT_FOUND, "User not found");
+  // Check username uniqueness
+  const existingAuth = await AuthRepository.findByUsername(data.username);
+  if (existingAuth) {
+    throw new AppError(StatusCodes.CONFLICT, "Username already taken");
+  }
 
-  const isCompleteProfile = await recomputeProfileCompletion(userId, updatedUser);
+  // Create auth for media station user
+  const hashedPassword = await bcrypt.hash(data.password, 10);
+  const authDoc = await AuthRepository.create({
+    username: data.username,
+    password: hashedPassword,
+    loginProvider: LoginProvider.USERNAME,
+    role: UserRole.MEDIA_STATION,
+    status: "active",
+  });
 
-  await UserCacheManager.setProfile(
-    String(userId),
-    updatedUser.toObject() as unknown as TCachedUserProfile,
-  );
+  // Create user profile
+  const user = await UserRepository.create({
+    auth: authDoc._id,
+    fullName: data.fullName,
+    email: data.email,
+    phone: data.phone,
+    role: UserRole.MEDIA_STATION,
+    stationId: station._id,
+    profileCompleted: false,
+  });
 
-  return { user: updatedUser.toObject(), isCompleteProfile };
+  return {
+    id: user._id,
+    fullName: user.fullName,
+    email: user.email,
+    role: user.role,
+    station: {
+      id: station._id,
+      name: station.name,
+      stationCode: station.stationCode,
+    },
+  };
+};
+
+const getAllMediaStationUsers = async (query: Record<string, unknown>, scope?: { partnerId?: string; stationId?: string }) => {
+  const filter: Record<string, unknown> = { role: "media_station" };
+
+  if (scope?.stationId) {
+    filter.stationId = scope.stationId;
+  } else if (scope?.partnerId) {
+    // Get all stations for this partner, then filter users by those stations
+    // For now, just filter by partnerId on the user (if populated)
+  }
+
+  if (query.isActive !== undefined) {
+    filter.isBlocked = query.isActive === "false";
+  }
+
+  if (query.station) {
+    filter.stationId = query.station;
+  }
+
+  if (query.search) {
+    const searchRegex = new RegExp(query.search as string, "i");
+    filter.$or = [
+      { fullName: searchRegex },
+      { email: searchRegex },
+      { phone: searchRegex },
+    ];
+  }
+
+  const page = Math.max(1, Number(query.page) || 1);
+  const limit = Math.max(1, Math.min(100, Number(query.limit) || 20));
+  const skip = (page - 1) * limit;
+
+  const [users, total] = await Promise.all([
+    UserRepository.findAllByRole(filter, { skip, limit }),
+    UserRepository.countByRole(filter),
+  ]);
+
+  return {
+    users: users.map(normalizeMediaStation),
+    meta: { page, limit, total, totalPage: Math.ceil(total / limit) },
+  };
 };
 
 export const UserService = {
-  getMe,
-  getById,
-  updateProfile,
-  deleteMe,
-  updateAvatar,
+  getAllStationAdmins,
+  getUserById,
+  deactivateUser,
+  reactivateUser,
+  createMediaStation,
+  getAllMediaStationUsers,
 };
-
