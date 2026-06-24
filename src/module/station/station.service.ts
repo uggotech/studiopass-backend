@@ -6,7 +6,7 @@ import { PartnerRepository } from "../partner/partner.repository";
 import { CountryRepository } from "../country/country.repository";
 import { AuthRepository } from "../auth/auth.repository";
 import { UserRepository } from "../user/user.repository";
-import { Follow } from "../follow/follow.model";
+import { FollowService } from "../follow/follow.service";
 import { TStation } from "./station.interface";
 import { UserRole } from "shared/roles";
 import { LoginProvider } from "../auth/auth.interface";
@@ -252,16 +252,9 @@ const getPublicStations = async (query: Record<string, unknown>, userId?: string
     StationRepository.count(filter),
   ]);
 
-  // Get user's follow status for these stations
-  let followedStationIds = new Set<string>();
-  if (userId && stations.length > 0) {
-    const stationIds = stations.map((s) => s._id);
-    const follows = await Follow.find({
-      user: userId,
-      station: { $in: stationIds },
-    }).select("station").lean();
-    followedStationIds = new Set(follows.map((f) => f.station.toString()));
-  }
+  // Get user's follow status for these stations via FollowService
+  const stationIds = stations.map((s) => s._id);
+  const followedMap = await FollowService.getFollowStatus(userId, stationIds);
 
   // Normalize with limited fields + isFollowing
   const normalizedStations = stations.map((s) => ({
@@ -275,7 +268,7 @@ const getPublicStations = async (query: Record<string, unknown>, userId?: string
     isLive: s.isLive,
     isVerified: s.isVerified,
     followersCount: s.followersCount,
-    isFollowing: followedStationIds.has(s._id.toString()),
+    isFollowing: followedMap.has(s._id.toString()),
   }));
 
   return {

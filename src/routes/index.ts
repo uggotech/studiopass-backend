@@ -5,6 +5,7 @@ import { PartnerRoutes } from "../module/partner/partner.route";
 import { StationRoutes } from "../module/station/station.route";
 import { UserRoutes } from "../module/user/user.route";
 import { LogsRoutes } from "../module/logs/logs.route";
+import { FollowRoutes } from "../module/follow/follow.route";
 
 const router: Router = express.Router();
 
@@ -14,6 +15,7 @@ const apiRoutes = [
   { path: "/partner", route: PartnerRoutes },
   { path: "/station", route: StationRoutes },
   { path: "/user", route: UserRoutes },
+  { path: "/follow", route: FollowRoutes },
   { path: "/logs", route: LogsRoutes },
 ];
 
