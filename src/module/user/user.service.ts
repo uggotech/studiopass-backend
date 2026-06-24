@@ -4,6 +4,8 @@ import { UserRepository } from "./user.repository";
 import { AuthRepository } from "../auth/auth.repository";
 import { StationRepository } from "../station/station.repository";
 import { ShowRepository } from "../show/show.repository";
+import { PartnerRepository } from "../partner/partner.repository";
+import { MessageRepository } from "../message/message.repository";
 import { LoginProvider } from "../auth/auth.interface";
 import { UserRole } from "shared/roles";
 import bcrypt from "bcryptjs";
@@ -270,6 +272,11 @@ const updateMyProfile = async (
   };
 };
 
+const updateFcmToken = async (userId: string, fcmToken: string) => {
+  await UserRepository.updateById(userId, { fcmToken } as any);
+  return { success: true };
+};
+
 const updateMyPreferences = async (
   userId: string,
   data: { theme?: string; language?: string },
@@ -425,6 +432,84 @@ const getAllPresenters = async (query: Record<string, unknown>, scope?: { partne
   };
 };
 
+// ─── Listeners (CRM) ────────────────────────────────────────────────────────
+
+const normalizeListener = (u: any) => ({
+  id: u._id,
+  fullName: u.fullName || "",
+  phone: u.phone || "",
+  email: u.email || "",
+  countryName: u.countryName || "",
+  countryId: u.countryId?.toString() || null,
+  isBlocked: u.isBlocked,
+  createdAt: u.createdAt,
+  updatedAt: u.updatedAt,
+});
+
+const getAllListeners = async (
+  query: Record<string, unknown>,
+  scope?: { partnerId?: string; stationId?: string },
+) => {
+  const filter: Record<string, unknown> = { role: "user" };
+
+  // Partner admin: scope by country
+  if (scope?.partnerId) {
+    const partner = await PartnerRepository.findById(scope.partnerId);
+    if (partner?.country) {
+      filter.countryId = partner.country;
+    }
+  }
+
+  // Station admin: scope by station's messaged users
+  if (scope?.stationId) {
+    const phoneNumbers = await MessageRepository.getListenerPhoneNumbersByStation(scope.stationId);
+    if (phoneNumbers.length === 0) {
+      return { users: [], meta: { page: 1, limit: 20, total: 0, totalPage: 0 } };
+    }
+    filter.phone = { $in: phoneNumbers };
+  }
+
+  if (query.isActive !== undefined) {
+    filter.isBlocked = query.isActive === "false";
+  }
+
+  if (query.country) {
+    filter.countryId = query.country;
+  }
+
+  if (query.search) {
+    const searchRegex = new RegExp(query.search as string, "i");
+    filter.$or = [
+      { fullName: searchRegex },
+      { phone: searchRegex },
+      { email: searchRegex },
+      { countryName: searchRegex },
+    ];
+  }
+
+  const page = Math.max(1, Number(query.page) || 1);
+  const limit = Math.max(1, Math.min(100, Number(query.limit) || 20));
+  const skip = (page - 1) * limit;
+
+  const [users, total] = await Promise.all([
+    UserRepository.findAllByRole(filter, { skip, limit }),
+    UserRepository.countByRole(filter),
+  ]);
+
+  return {
+    users: users.map(normalizeListener),
+    meta: { page, limit, total, totalPage: Math.ceil(total / limit) },
+  };
+};
+
+const getListenerById = async (id: string) => {
+  const user = await UserRepository.findById(id);
+  if (!user || user.role !== "user") {
+    throw new AppError(StatusCodes.NOT_FOUND, "Listener not found");
+  }
+  return normalizeListener(user);
+};
+
 export const UserService = {
   getAllStationAdmins,
   getUserById,
@@ -434,7 +519,10 @@ export const UserService = {
   getAllMediaStationUsers,
   createPresenter,
   getAllPresenters,
+  getAllListeners,
+  getListenerById,
   getMyProfile,
   updateMyProfile,
   updateMyPreferences,
+  updateFcmToken,
 };

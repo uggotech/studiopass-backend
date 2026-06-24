@@ -120,6 +120,18 @@ const reactivateUser = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const updateFcmToken = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const result = await UserService.updateFcmToken(user._id.toString(), req.body.fcmToken);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "FCM token updated successfully",
+    data: result,
+  });
+});
+
 const createPresenter = catchAsync(async (req: Request, res: Response) => {
   const result = await UserService.createPresenter(req.body);
 
@@ -148,6 +160,34 @@ const getAllPresenters = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const getAllListeners = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const scope: { partnerId?: string; stationId?: string } = {};
+  if (user?.stationId) scope.stationId = user.stationId.toString();
+  else if (user?.partnerId) scope.partnerId = user.partnerId.toString();
+
+  const result = await UserService.getAllListeners(req.query, scope);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Listeners fetched successfully",
+    data: result.users,
+    meta: result.meta,
+  });
+});
+
+const getListenerById = catchAsync(async (req: Request, res: Response) => {
+  const result = await UserService.getListenerById(String(req.params.id));
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Listener fetched successfully",
+    data: result,
+  });
+});
+
 export const UserController = {
   getMyProfile,
   updateMyProfile,
@@ -157,7 +197,10 @@ export const UserController = {
   createMediaStation,
   createPresenter,
   getAllPresenters,
+  getAllListeners,
+  getListenerById,
   getUserById,
   deactivateUser,
   reactivateUser,
+  updateFcmToken,
 };

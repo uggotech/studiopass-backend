@@ -18,6 +18,7 @@ export interface TCreditTransaction {
   currency?: string; // "UGX", "KES"
   localAmount?: number; // actual money amount (0 for free grants)
   country?: Types.ObjectId; // → Country
+  grantedBy?: Types.ObjectId; // → User (admin who granted credits)
 
   // Usage metadata
   station?: Types.ObjectId; // → Station (which station this was spent at)

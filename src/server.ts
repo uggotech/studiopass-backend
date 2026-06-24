@@ -8,6 +8,7 @@ import ConnectDB from "./db";
 import seedSuperAdmin from "./db/seedSuperAdmin";
 import seedCountries from "./db/seedCountries";
 import { initMinio } from "./util/minio";
+import { initSocket, getIO } from "./socket";
 
 const server = http.createServer(app);
 
@@ -29,6 +30,8 @@ async function main() {
     }
 
     await initMinio();
+    initSocket(server);
+    logger.info("Socket.io initialized");
 
     const port = Number(config.port) || 5000;
 
@@ -51,6 +54,14 @@ async function gracefulShutdown(signal: string) {
   logger.info(`${signal} received. Starting graceful shutdown...`);
 
   try {
+    try {
+      const io = getIO();
+      io.close();
+      logger.info("Socket.io closed");
+    } catch {
+      // Socket.io not initialized, skip
+    }
+
     await new Promise<void>((resolve) => {
       if (server.closeAllConnections) {
         server.closeAllConnections();

@@ -14,12 +14,14 @@ export interface TMessage {
   templateUsed?: Types.ObjectId; // → MessageTemplate (if station used a template)
 
   // User message fields (only when senderType = "user")
+  user?: Types.ObjectId; // → User (the listener who sent this message)
   msisdn?: string; // listener phone (required for user messages)
   country?: Types.ObjectId; // → Country
   operator?: string; // "Safaricom", "MTN", etc.
 
   // Content
   content: string;
+  imageUrl?: string; // MinIO path for image messages
 
   // TV approval (only for user messages on TV stations)
   status: MessageStatus;

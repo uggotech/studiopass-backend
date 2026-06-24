@@ -27,6 +27,14 @@ router.patch(
   UserController.updateMyPreferences,
 );
 
+// App users: update FCM token
+router.patch(
+  "/profile/fcm-token",
+  auth(UserRole.USER),
+  validateRequest(UserDto.updateFcmToken),
+  UserController.updateFcmToken,
+);
+
 // Super admin + partner admin: list station admins
 router.get(
   "/station-admins",
@@ -60,6 +68,20 @@ router.post(
   "/create-presenter",
   auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
   UserController.createPresenter,
+);
+
+// Super admin + partner admin + station admin: list listeners (CRM)
+router.get(
+  "/listeners",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  UserController.getAllListeners,
+);
+
+// Super admin + partner admin + station admin: get single listener (CRM)
+router.get(
+  "/listeners/:id",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  UserController.getListenerById,
 );
 
 // Super admin + partner admin: get single user

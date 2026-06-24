@@ -39,6 +39,9 @@ export interface IMessage extends Document {
   /** If station used a template to compose the reply */
   templateUsed?: mongoose.Types.ObjectId;
 
+  /** The listener who sent this message */
+  user?: mongoose.Types.ObjectId;
+
   /** Listener's phone number (required for user messages, used for conversation threading) */
   msisdn?: string;
 
@@ -50,6 +53,9 @@ export interface IMessage extends Document {
 
   /** The actual message content (text only, max 1600 chars) */
   content: string;
+
+  /** MinIO path for image messages (optional) */
+  imageUrl?: string;
 
   /** Current status in the moderation/delivery pipeline */
   status: "pending" | "approved" | "sent_to_output" | "rejected" | "delivered";
@@ -110,6 +116,10 @@ const messageSchema = new Schema<IMessage>(
       // Required when senderType = "user" — enforced at service layer
       index: true,
     },
+    user: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
     country: {
       type: Schema.Types.ObjectId,
       ref: "Country",
@@ -123,6 +133,11 @@ const messageSchema = new Schema<IMessage>(
       required: [true, "Message content is required"],
       maxlength: [1600, "Message content cannot exceed 1600 characters"],
       trim: true,
+      default: "",
+    },
+    imageUrl: {
+      type: String,
+      // Optional: only set if message includes an image
     },
     status: {
       type: String,
@@ -167,6 +182,7 @@ messageSchema.index({ station: 1, status: 1, createdAt: -1 }); // Moderation que
 messageSchema.index({ station: 1, msisdn: 1, createdAt: 1 }); // Conversation thread
 messageSchema.index({ station: 1, show: 1, createdAt: -1 }); // Show-specific messages
 messageSchema.index({ status: 1, createdAt: -1 }); // Global pending queue
+messageSchema.index({ user: 1, createdAt: -1 }); // User's message history
 
 const Message: Model<IMessage> =
   mongoose.models.Message || mongoose.model<IMessage>("Message", messageSchema);

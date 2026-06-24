@@ -10,6 +10,10 @@ const updatePreferences = z.object({
   language: z.enum(["english", "swahili"]).optional(),
 });
 
+const updateFcmToken = z.object({
+  fcmToken: z.string().min(1, "FCM token is required"),
+});
+
 const completeProfile = z.object({
   fullName: z.string().min(1, "Name is required").max(100),
 });
@@ -17,5 +21,6 @@ const completeProfile = z.object({
 export const UserDto = {
   updateProfile,
   updatePreferences,
+  updateFcmToken,
   completeProfile,
 };

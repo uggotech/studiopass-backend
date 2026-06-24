@@ -37,6 +37,9 @@ export interface TUser {
     language: "english" | "swahili";
   };
 
+  // Push notification
+  fcmToken?: string;
+
   createdAt: Date;
   updatedAt: Date;
 }

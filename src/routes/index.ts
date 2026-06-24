@@ -7,6 +7,10 @@ import { UserRoutes } from "../module/user/user.route";
 import { LogsRoutes } from "../module/logs/logs.route";
 import { FollowRoutes } from "../module/follow/follow.route";
 import { ShowRoutes } from "../module/show/show.route";
+import { CreditRoutes } from "../module/credit/credit.route";
+import { MessageRoutes } from "../module/message/message.route";
+import { MessageTemplateRoutes } from "../module/messageTemplate/messageTemplate.route";
+import { ListenerStatementRoutes } from "../module/listenerStatement/listenerStatement.route";
 
 const router: Router = express.Router();
 
@@ -18,7 +22,11 @@ const apiRoutes = [
   { path: "/user", route: UserRoutes },
   { path: "/show", route: ShowRoutes },
   { path: "/follow", route: FollowRoutes },
+  { path: "/credit", route: CreditRoutes },
+  { path: "/message", route: MessageRoutes },
   { path: "/logs", route: LogsRoutes },
+  { path: "/message-template", route: MessageTemplateRoutes },
+  { path: "/listener-statement", route: ListenerStatementRoutes },
 ];
 
 apiRoutes.forEach((route) => router.use(route.path, route.route));

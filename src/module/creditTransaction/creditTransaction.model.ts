@@ -13,6 +13,7 @@ const creditTransactionSchema = new Schema<TCreditTransaction>(
     currency: { type: String, trim: true },
     localAmount: { type: Number, min: 0 },
     country: { type: Schema.Types.ObjectId, ref: "Country" },
+    grantedBy: { type: Schema.Types.ObjectId, ref: "User" },
     station: { type: Schema.Types.ObjectId, ref: "Station" },
     resourceType: { type: String, enum: ["message", "call"] },
     resourceId: { type: Schema.Types.ObjectId },

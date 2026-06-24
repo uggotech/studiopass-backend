@@ -49,6 +49,7 @@ const userSchema = new Schema<TUser>(
       },
       default: () => ({}),
     },
+    fcmToken: { type: String, trim: true },
   },
   { timestamps: true },
 );

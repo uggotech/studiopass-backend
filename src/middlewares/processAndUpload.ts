@@ -41,10 +41,12 @@ const upload = multer({
 const processAndUpload = async (req: Request, _res: Response, next: NextFunction) => {
   upload(req, _res, async (err: unknown) => {
     if (err) {
+      console.log("[processAndUpload] multer error:", err);
       return next(err);
     }
 
     const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+    console.log("[processAndUpload] files received:", files ? Object.keys(files) : "none");
     if (!files) return next();
 
     try {
@@ -68,6 +70,7 @@ const processAndUpload = async (req: Request, _res: Response, next: NextFunction
           }
 
           const filePath = await uploadFile(processedBuffer, `${fileName}.webp`, contentType);
+          console.log("[processAndUpload] uploaded:", fieldName, "->", filePath);
 
           // Attach the file path to the request body
           if (!req.body) req.body = {};

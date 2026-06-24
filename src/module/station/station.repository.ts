@@ -3,15 +3,17 @@ import { TStation } from "./station.interface";
 
 const findAll = (
   filter: Record<string, unknown>,
-  options: { skip: number; limit: number },
+  options: { skip?: number; limit?: number } = {},
 ): Promise<TStation[]> => {
-  return Station.find(filter)
+  const query = Station.find(filter)
     .populate("country", "name code phoneCode currency currencySymbol")
     .populate("partner", "name")
-    .sort({ createdAt: -1 })
-    .skip(options.skip)
-    .limit(options.limit)
-    .lean();
+    .sort({ createdAt: -1 });
+
+  if (options.skip) query.skip(options.skip);
+  if (options.limit) query.limit(options.limit);
+
+  return query.lean();
 };
 
 const findById = (id: string): Promise<TStation | null> => {
