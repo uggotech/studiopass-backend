@@ -11,6 +11,11 @@ import { CreditRoutes } from "../module/credit/credit.route";
 import { MessageRoutes } from "../module/message/message.route";
 import { MessageTemplateRoutes } from "../module/messageTemplate/messageTemplate.route";
 import { ListenerStatementRoutes } from "../module/listenerStatement/listenerStatement.route";
+import { PollRoutes } from "../module/poll/poll.route";
+import { NotificationRoutes } from "../module/notification/notification.route";
+import { StationApiKeyRoutes } from "../module/stationApiKey/stationApiKey.route";
+import { DashboardRoutes } from "../module/dashboard/dashboard.route";
+import { CallRoutes } from "../module/call/call.route";
 
 const router: Router = express.Router();
 
@@ -24,9 +29,14 @@ const apiRoutes = [
   { path: "/follow", route: FollowRoutes },
   { path: "/credit", route: CreditRoutes },
   { path: "/message", route: MessageRoutes },
+  { path: "/call", route: CallRoutes },
   { path: "/logs", route: LogsRoutes },
   { path: "/message-template", route: MessageTemplateRoutes },
   { path: "/listener-statement", route: ListenerStatementRoutes },
+  { path: "/poll", route: PollRoutes },
+  { path: "/notification", route: NotificationRoutes },
+  { path: "/station-api", route: StationApiKeyRoutes },
+  { path: "/dashboard", route: DashboardRoutes },
 ];
 
 apiRoutes.forEach((route) => router.use(route.path, route.route));

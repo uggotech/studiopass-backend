@@ -53,6 +53,7 @@ router.get(
 router.post(
   "/create-media-station",
   auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  validateRequest(UserDto.createMediaStation),
   UserController.createMediaStation,
 );
 
@@ -67,6 +68,7 @@ router.get(
 router.post(
   "/create-presenter",
   auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  validateRequest(UserDto.createPresenter),
   UserController.createPresenter,
 );
 

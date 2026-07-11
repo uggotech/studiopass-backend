@@ -23,6 +23,5 @@ const countrySchema = new Schema<TCountry>(
   { timestamps: true },
 );
 
-countrySchema.index({ code: 1 });
 countrySchema.index({ isActive: 1 });
 export const Country = model<TCountry>("Country", countrySchema);

@@ -14,7 +14,6 @@ export interface TStation {
   coverImage?: string; // MinIO path
   website?: string;
   socialLinks?: { facebook?: string; instagram?: string };
-  apiKey?: string; // generated for TV stations — pull approved messages
   isLive: boolean;
   isActive: boolean;
   isVerified: boolean;

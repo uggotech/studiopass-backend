@@ -52,8 +52,25 @@ const deleteTemplate = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const updateTemplate = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const id = req.params.id as string;
+  const stationId = user.stationId.toString();
+  const { text } = req.body;
+
+  const result = await MessageTemplateService.updateTemplate(id, stationId, text);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Template updated successfully",
+    data: result,
+  });
+});
+
 export const MessageTemplateController = {
   getTemplates,
   createTemplate,
   deleteTemplate,
+  updateTemplate,
 };

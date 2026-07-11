@@ -2,12 +2,14 @@ import { Router } from "express";
 import { AuthController } from "./auth.controller";
 import { AuthDto } from "./auth.dto";
 import validateRequest from "../../middlewares/validateRequest";
+import { authLimiter } from "../../middlewares/security";
 
 const router = Router();
 
 // App: send OTP to phone
 router.post(
   "/initiate",
+  authLimiter,
   validateRequest(AuthDto.initiate),
   AuthController.initiate,
 );
@@ -15,6 +17,7 @@ router.post(
 // App: verify OTP and get tokens
 router.post(
   "/verify-otp",
+  authLimiter,
   validateRequest(AuthDto.verifyOtp),
   AuthController.verifyOtp,
 );
@@ -22,6 +25,7 @@ router.post(
 // Dashboard: login with username + password
 router.post(
   "/login",
+  authLimiter,
   validateRequest(AuthDto.login),
   AuthController.login,
 );

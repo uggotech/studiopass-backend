@@ -33,6 +33,14 @@ const getStationById = catchAsync(async (req: Request, res: Response) => {
     }
   }
 
+  // Scope check: partner_admin can only view stations in their partner
+  if (user.role === "partner_admin" && user.partnerId) {
+    const station = await StationService.getStationById(stationId);
+    if ((station.partner as any)?._id?.toString() !== user.partnerId.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only view stations in your partner organization");
+    }
+  }
+
   const result = await StationService.getStationById(stationId);
 
   sendResponse(res, {
@@ -78,6 +86,14 @@ const updateStation = catchAsync(async (req: Request, res: Response) => {
     }
   }
 
+  // Scope check: partner_admin can only update stations in their partner
+  if (user.role === "partner_admin" && user.partnerId) {
+    const station = await StationService.getStationById(stationId);
+    if ((station.partner as any)?._id?.toString() !== user.partnerId.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only update stations in your partner organization");
+    }
+  }
+
   const result = await StationService.updateStation(stationId, req.body);
 
   sendResponse(res, {
@@ -89,7 +105,28 @@ const updateStation = catchAsync(async (req: Request, res: Response) => {
 });
 
 const deactivateStation = catchAsync(async (req: Request, res: Response) => {
-  const result = await StationService.deactivateStation(String(req.params.id));
+  const user = req.user as any;
+  const stationId = String(req.params.id);
+
+  // Scope check: station_admin can only deactivate their own station
+  if (user.role === "station_admin") {
+    if (!user.stationId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "No station assigned to this user");
+    }
+    if (user.stationId.toString() !== stationId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only deactivate your own station");
+    }
+  }
+
+  // Scope check: partner_admin can only deactivate stations in their partner
+  if (user.role === "partner_admin" && user.partnerId) {
+    const station = await StationService.getStationById(stationId);
+    if ((station.partner as any)?._id?.toString() !== user.partnerId.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only deactivate stations in your partner organization");
+    }
+  }
+
+  const result = await StationService.deactivateStation(stationId);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
@@ -100,7 +137,28 @@ const deactivateStation = catchAsync(async (req: Request, res: Response) => {
 });
 
 const reactivateStation = catchAsync(async (req: Request, res: Response) => {
-  const result = await StationService.reactivateStation(String(req.params.id));
+  const user = req.user as any;
+  const stationId = String(req.params.id);
+
+  // Scope check: station_admin can only reactivate their own station
+  if (user.role === "station_admin") {
+    if (!user.stationId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "No station assigned to this user");
+    }
+    if (user.stationId.toString() !== stationId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only reactivate your own station");
+    }
+  }
+
+  // Scope check: partner_admin can only reactivate stations in their partner
+  if (user.role === "partner_admin" && user.partnerId) {
+    const station = await StationService.getStationById(stationId);
+    if ((station.partner as any)?._id?.toString() !== user.partnerId.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only reactivate stations in your partner organization");
+    }
+  }
+
+  const result = await StationService.reactivateStation(stationId);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,

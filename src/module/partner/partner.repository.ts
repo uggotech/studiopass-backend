@@ -6,7 +6,7 @@ const findAll = (
   options: { skip: number; limit: number },
 ): Promise<TPartner[]> => {
   return Partner.find(filter)
-    .populate("country", "name code phoneCode currency currencySymbol")
+    .populate("country", "name code phoneCode currency currencySymbol timezone")
     .sort({ createdAt: -1 })
     .skip(options.skip)
     .limit(options.limit)
@@ -15,12 +15,13 @@ const findAll = (
 
 const findById = (id: string): Promise<TPartner | null> => {
   return Partner.findById(id)
-    .populate("country", "name code phoneCode currency currencySymbol")
+    .populate("country", "name code phoneCode currency currencySymbol timezone")
     .lean();
 };
 
 const findByName = (name: string): Promise<TPartner | null> => {
-  return Partner.findOne({ name: new RegExp(`^${name}$`, "i") }).lean();
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return Partner.findOne({ name: new RegExp(`^${escaped}$`, "i") }).lean();
 };
 
 const count = (filter: Record<string, unknown>): Promise<number> => {
@@ -33,7 +34,7 @@ const create = (data: Partial<TPartner>): Promise<TPartner> => {
 
 const updateById = (id: string, data: Partial<TPartner>): Promise<TPartner | null> => {
   return Partner.findByIdAndUpdate(id, data, { new: true })
-    .populate("country", "name code phoneCode currency currencySymbol")
+    .populate("country", "name code phoneCode currency currencySymbol timezone")
     .lean();
 };
 

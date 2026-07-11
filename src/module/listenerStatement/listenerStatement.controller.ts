@@ -15,6 +15,7 @@ const getAllStatements = catchAsync(async (req: Request, res: Response) => {
 
   const result = await ListenerStatementService.getAllStatements(req.query, scope);
 
+  // msisdnMasker middleware handles masking automatically
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
@@ -25,8 +26,18 @@ const getAllStatements = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getStatementById = catchAsync(async (req: Request, res: Response) => {
-  const result = await ListenerStatementService.getStatementById(String(req.params.id));
+  const user = req.user as any;
+  const result = await ListenerStatementService.getStatementById(
+    String(req.params.id),
+    {
+      partnerId: user?.partnerId?.toString(),
+      stationId: user?.stationId?.toString(),
+      userId: user?._id?.toString(),
+      role: user?.role,
+    },
+  );
 
+  // msisdnMasker middleware handles masking automatically
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
@@ -54,8 +65,37 @@ const getKPIs = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const exportStatements = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const scope = {
+    partnerId: user?.partnerId?.toString(),
+    stationId: user?.stationId?.toString(),
+    userId: user?._id?.toString(),
+    role: user?.role,
+  };
+
+  const format = (req.query.format as string) || "csv";
+  // Pass role so service can mask msisdn in CSV output
+  const result = await ListenerStatementService.exportStatements(req.query, scope, format, user?.role);
+
+  if (result.format === "csv") {
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", "attachment; filename=listener-statements-export.csv");
+    res.send(result.data);
+    return;
+  }
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Statements exported successfully",
+    data: result.data,
+  });
+});
+
 export const ListenerStatementController = {
   getAllStatements,
   getStatementById,
   getKPIs,
+  exportStatements,
 };

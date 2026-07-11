@@ -1,5 +1,5 @@
 import MessageTemplate from "./messageTemplate.model";
-import { IMessageTemplate } from "./messageTemplate.model";
+import { TMessageTemplate } from "./messageTemplate.interface";
 
 const findByStation = (stationId: string) => {
   return MessageTemplate.find({ station: stationId, isActive: true })
@@ -7,7 +7,7 @@ const findByStation = (stationId: string) => {
     .lean();
 };
 
-const create = (data: Partial<IMessageTemplate>) => {
+const create = (data: Partial<TMessageTemplate>) => {
   return MessageTemplate.create(data).then((doc) => doc.toObject());
 };
 
@@ -23,9 +23,18 @@ const findById = (id: string) => {
   return MessageTemplate.findById(id).lean();
 };
 
+const updateById = (id: string, stationId: string, text: string) => {
+  return MessageTemplate.findOneAndUpdate(
+    { _id: id, station: stationId, isActive: true },
+    { text },
+    { new: true },
+  ).lean();
+};
+
 export const MessageTemplateRepository = {
   findByStation,
   create,
   deleteById,
   findById,
+  updateById,
 };

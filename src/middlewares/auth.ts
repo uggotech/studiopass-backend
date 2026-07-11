@@ -7,6 +7,7 @@ import { UserRepository } from "module/user/user.repository";
 import { AuthRepository } from "module/auth/auth.repository";
 import verifyJwtToken from "jwt/verifyJwtToken";
 import { UserRole } from "shared/roles";
+import { UserCache } from "module/user/user.cacheManage";
 
 const auth =
   (...roles: UserRole[]) =>
@@ -25,7 +26,15 @@ const auth =
 
       const verifyUser = verifyJwtToken(token, config.jwt.jwt_secret as Secret);
 
-      const user = await UserRepository.findById(verifyUser.userId);
+      // Try cache first, then fallback to DB
+      let user = await UserCache.getProfile(verifyUser.userId);
+      if (!user) {
+        user = await UserRepository.findById(verifyUser.userId);
+        if (user) {
+          UserCache.setProfile(verifyUser.userId, user);
+        }
+      }
+
       if (!user) {
         throw new AppError(StatusCodes.UNAUTHORIZED, "You are not authorized");
       }

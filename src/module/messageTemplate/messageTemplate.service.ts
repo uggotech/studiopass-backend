@@ -29,8 +29,19 @@ const deleteTemplate = async (id: string, stationId: string) => {
   return MessageTemplateRepository.deleteById(id, stationId);
 };
 
+const updateTemplate = async (id: string, stationId: string, text: string) => {
+  const template = await MessageTemplateRepository.findById(id);
+
+  if (!template || template.station.toString() !== stationId) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Template not found");
+  }
+
+  return MessageTemplateRepository.updateById(id, stationId, text);
+};
+
 export const MessageTemplateService = {
   getTemplates,
   createTemplate,
   deleteTemplate,
+  updateTemplate,
 };

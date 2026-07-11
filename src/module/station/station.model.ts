@@ -19,7 +19,6 @@ const stationSchema = new Schema<TStation>(
       },
       default: undefined,
     },
-    apiKey: { type: String, unique: true, sparse: true }, 
     isLive: { type: Boolean, default: false },
     isActive: { type: Boolean, default: true },
     isVerified: { type: Boolean, default: false },
@@ -32,7 +31,6 @@ const stationSchema = new Schema<TStation>(
 stationSchema.index({ partner: 1 });
 stationSchema.index({ country: 1, category: 1, isActive: 1 });
 stationSchema.index({ stationCode: 1 }, { unique: true });
-stationSchema.index({ apiKey: 1 }, { sparse: true });
 stationSchema.index({ followersCount: -1 });
 
 export const Station = model<TStation>("Station", stationSchema);

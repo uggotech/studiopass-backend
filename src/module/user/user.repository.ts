@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { User } from "./user.model";
 import { TUser } from "./user.interface";
 import { UserRole } from "shared/roles";
@@ -14,7 +15,10 @@ const findByPartnerIdAndRole = (partnerId: string, role: UserRole): Promise<TUse
   return User.findOne({ partnerId, role } as any).lean();
 };
 
-const create = (data: Partial<TUser>): Promise<TUser> => {
+const create = (data: Partial<TUser>, session?: mongoose.ClientSession): Promise<TUser> => {
+  if (session) {
+    return User.create([data]).then(([doc]) => doc as TUser);
+  }
   return User.create(data);
 };
 

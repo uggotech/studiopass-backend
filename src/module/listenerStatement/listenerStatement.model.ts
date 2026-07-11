@@ -92,6 +92,11 @@ const listenerStatementSchema = new Schema<TListenerStatement>(
       unique: true,
       trim: true,
     },
+    isFree: {
+      type: Boolean,
+      required: true,
+      default: false,
+    },
     status: {
       type: String,
       enum: ["Successful", "Failed", "Pending"],
@@ -104,6 +109,7 @@ const listenerStatementSchema = new Schema<TListenerStatement>(
 listenerStatementSchema.index({ user: 1, createdAt: -1 });
 listenerStatementSchema.index({ user: 1, type: 1, createdAt: -1 });
 listenerStatementSchema.index({ station: 1, createdAt: -1 });
+listenerStatementSchema.index({ isFree: 1, createdAt: -1 });
 listenerStatementSchema.index({ status: 1, createdAt: -1 });
 
 const ListenerStatement: Model<TListenerStatement> =

@@ -1,28 +1,10 @@
-
-import mongoose, { Schema, Model } from "mongoose";
+import mongoose, { Schema, Model, Document } from "mongoose";
+import { TMessageTemplate } from "./messageTemplate.interface";
 
 /**
- * IMessageTemplate interface.
+ * IMessageTemplate extends both TMessageTemplate and Mongoose Document.
  */
-export interface IMessageTemplate  {
-  _id?: mongoose.Types.ObjectId;
-  id?: string;
-
-  /** The station this template belongs to */
-  station: mongoose.Types.ObjectId;
-
-  /** The template text content */
-  text: string;
-
-  /** The user (admin) who created this template */
-  createdBy: mongoose.Types.ObjectId;
-
-  /** Whether this template is currently available for use */
-  isActive: boolean;
-
-  createdAt?: Date;
-  updatedAt?: Date;
-}
+export interface IMessageTemplate extends TMessageTemplate, Document {}
 
 const messageTemplateSchema = new Schema<IMessageTemplate>(
   {
@@ -54,7 +36,6 @@ const messageTemplateSchema = new Schema<IMessageTemplate>(
   }
 );
 
-// Compound index: station + isActive for quick filtered lookups
 messageTemplateSchema.index({ station: 1, isActive: 1 });
 
 const MessageTemplate: Model<IMessageTemplate> =

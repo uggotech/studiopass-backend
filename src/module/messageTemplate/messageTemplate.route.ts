@@ -7,15 +7,23 @@ import validateRequest from "../../middlewares/validateRequest";
 
 const router = Router();
 
+const stationRoles = [
+  UserRole.SUPER_ADMIN,
+  UserRole.PARTNER_ADMIN,
+  UserRole.STATION_ADMIN,
+  UserRole.MEDIA_STATION,
+  UserRole.PRESENTER,
+];
+
 router.get(
   "/",
-  auth(UserRole.STATION_ADMIN, UserRole.MEDIA_STATION, UserRole.PRESENTER),
+  auth(...stationRoles),
   MessageTemplateController.getTemplates,
 );
 
 router.post(
   "/",
-  auth(UserRole.STATION_ADMIN),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION),
   validateRequest(
     z.object({
       body: z.object({
@@ -28,8 +36,21 @@ router.post(
 
 router.delete(
   "/:id",
-  auth(UserRole.STATION_ADMIN),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION),
   MessageTemplateController.deleteTemplate,
+);
+
+router.patch(
+  "/:id",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION),
+  validateRequest(
+    z.object({
+      body: z.object({
+        text: z.string().min(1).max(1600),
+      }),
+    }),
+  ),
+  MessageTemplateController.updateTemplate,
 );
 
 export const MessageTemplateRoutes = router;

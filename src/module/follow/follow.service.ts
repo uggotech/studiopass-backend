@@ -19,17 +19,35 @@ const toggleFollow = async (userId: string, stationId: string) => {
   let followersCount: number;
 
   if (existingFollow) {
-    // Unfollow
+    // Unfollow — atomic delete + decrement
     await Follow.deleteOne({ _id: existingFollow._id });
-    await Station.findByIdAndUpdate(stationId, { $inc: { followersCount: -1 } });
-    const updated = await Station.findById(stationId).select("followersCount");
+    const updated = await Station.findByIdAndUpdate(
+      stationId,
+      { $inc: { followersCount: -1 } },
+      { new: true },
+    ).select("followersCount");
     following = false;
     followersCount = updated?.followersCount ?? 0;
   } else {
-    // Follow
-    await Follow.create({ user: userId, station: stationId });
-    await Station.findByIdAndUpdate(stationId, { $inc: { followersCount: 1 } });
-    const updated = await Station.findById(stationId).select("followersCount");
+    // Follow — use try-catch for duplicate key error (race condition safety)
+    try {
+      await Follow.create({ user: userId, station: stationId });
+    } catch (error: any) {
+      // Duplicate key error = already following (concurrent request)
+      if (error?.code === 11000) {
+        const existing = await Follow.findOne({ user: userId, station: stationId });
+        if (existing) {
+          const updated = await Station.findById(stationId).select("followersCount");
+          return { following: true, followersCount: updated?.followersCount ?? 0 };
+        }
+      }
+      throw error;
+    }
+    const updated = await Station.findByIdAndUpdate(
+      stationId,
+      { $inc: { followersCount: 1 } },
+      { new: true },
+    ).select("followersCount");
     following = true;
     followersCount = updated?.followersCount ?? 0;
   }

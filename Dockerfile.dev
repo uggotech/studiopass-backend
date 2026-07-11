@@ -1,0 +1,14 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml* package-lock.json* ./
+
+RUN corepack enable && pnpm install 2>/dev/null || npm install
+
+COPY tsconfig.json ./
+COPY src ./src
+
+EXPOSE 5003
+
+CMD ["npx", "ts-node-dev", "--respawn", "--transpile-only", "-r", "tsconfig-paths/register", "src/server.ts"]

@@ -222,6 +222,7 @@ export default {
     accessKey: process.env.MINIO_ROOT_USER || "minioadmin",
     secretKey: process.env.MINIO_ROOT_PASSWORD || "minioadmin",
     bucket: process.env.MINIO_BUCKET || "studiopass",
+    publicUrl: process.env.MINIO_PUBLIC_URL || "",
   },
 
   // ============================================================================
@@ -248,6 +249,27 @@ export default {
   rate_limit: {
     window_ms: process.env.RATE_LIMIT_WINDOW_MS || "900000",
     max_requests: process.env.RATE_LIMIT_MAX_REQUESTS || "100",
+  },
+
+  // ============================================================================
+  // AGORA (Voice Calling)
+  // ============================================================================
+  agora: {
+    app_id: process.env.AGORA_APP_ID,
+    app_certificate: process.env.AGORA_APP_CERTIFICATE,
+    // MUST be "communication" — not "live_broadcasting"
+    // Free 10K min/month only covers communication profile
+    channel_profile: "communication" as const,
+  },
+
+  // ============================================================================
+  // CALL SETTINGS
+  // ============================================================================
+  calls: {
+    // Timeout (ms) for queued calls nobody accepts — auto-flip to missed
+    queue_timeout_ms: Number(process.env.CALL_QUEUE_TIMEOUT_MS) || 90_000,
+    // Timeout (ms) after accept for user to confirm Agora join — auto-end if no join
+    join_confirmation_timeout_ms: Number(process.env.CALL_JOIN_CONFIRMATION_TIMEOUT_MS) || 15_000,
   },
 
   // ============================================================================

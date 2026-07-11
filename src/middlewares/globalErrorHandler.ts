@@ -97,7 +97,6 @@ const globalErrorHandler: ErrorRequestHandler = (err, req, res, _next): any => {
     message,
     errorSources,
     ...(err instanceof AppError && err.details ? { details: err.details } : {}),
-    err,
     stack: config.node_env === "development" ? err?.stack : null,
   });
 };

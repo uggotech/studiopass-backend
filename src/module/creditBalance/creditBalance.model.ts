@@ -9,6 +9,4 @@ const creditBalanceSchema = new Schema<TCreditBalance>(
   { timestamps: true },
 );
 
-creditBalanceSchema.index({ user: 1 });
-
 export const CreditBalance = model<TCreditBalance>("CreditBalance", creditBalanceSchema);

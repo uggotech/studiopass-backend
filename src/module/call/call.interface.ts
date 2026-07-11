@@ -2,7 +2,7 @@ import { Types } from "mongoose";
 
 // ─── Call Status ─────────────────────────────────────────────────────────────
 
-export type CallStatus = "missed" | "rejected" | "answered";
+export type CallStatus = "queued" | "missed" | "rejected" | "answered" | "cancelled";
 
 // ─── Call Log Interface ──────────────────────────────────────────────────────
 
@@ -20,12 +20,13 @@ export interface TCallLog {
   // Timing
   duration?: number; // seconds (only for answered)
   startedAt: Date;
+  waitStartedAt?: Date; // when call entered queue
   answeredAt?: Date;
   endedAt?: Date;
 
   status: CallStatus;
 
-  // Cost tracking (only answered/rejected cost credits)
+  // Cost tracking — credits cut at request time (when call reaches station)
   creditsUsed: number;
   creditTransaction?: Types.ObjectId; // → CreditTransaction
 

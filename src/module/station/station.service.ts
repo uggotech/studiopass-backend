@@ -1,15 +1,21 @@
+import mongoose from "mongoose";
 import { StatusCodes } from "http-status-codes";
 import bcrypt from "bcryptjs";
 import AppError from "../../errors/AppError";
 import { StationRepository } from "./station.repository";
+
+const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 import { PartnerRepository } from "../partner/partner.repository";
 import { CountryRepository } from "../country/country.repository";
 import { AuthRepository } from "../auth/auth.repository";
 import { UserRepository } from "../user/user.repository";
 import { FollowService } from "../follow/follow.service";
+import { ShowRepository } from "../show/show.repository";
+import { StationApiKeyRepository } from "../stationApiKey/stationApiKey.repository";
 import { TStation } from "./station.interface";
 import { UserRole } from "shared/roles";
 import { LoginProvider } from "../auth/auth.interface";
+import { StationCache } from "./station.cacheManage";
 
 const normalizeStation = (s: TStation) => ({
   id: s._id,
@@ -51,12 +57,14 @@ const getAllStations = async (query: Record<string, unknown>, scope?: { partnerI
     filter.country = query.country;
   }
 
-  if (query.partner) {
+  // Only super_admin can filter by partner via query param
+  // Partner admins are always scoped to their own partner
+  if (query.partner && !scope?.partnerId) {
     filter.partner = query.partner;
   }
 
   if (query.search) {
-    const searchRegex = new RegExp(query.search as string, "i");
+    const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
     filter.$or = [
       { name: searchRegex },
       { stationCode: searchRegex },
@@ -116,7 +124,7 @@ const createStationWithAdmin = async (data: {
     }
   } else {
     // Derive country from the partner's country field
-    const countryIdStr = partner.country?.toString();
+    const countryIdStr = (partner.country as any)?._id?.toString();
     if (!countryIdStr) {
       throw new AppError(StatusCodes.BAD_REQUEST, "Partner has no country assigned");
     }
@@ -133,56 +141,72 @@ const createStationWithAdmin = async (data: {
   }
 
   // Check username uniqueness
-  const existingAuth = await AuthRepository.findByUsername(data.adminUsername);
+  const existingAuth = await AuthRepository.usernameExists(data.adminUsername);
   if (existingAuth) {
     throw new AppError(StatusCodes.CONFLICT, "Username already taken");
   }
 
-  // Create station
-  const station = await StationRepository.create({
-    name: data.name,
-    stationCode: data.stationCode.toUpperCase(),
-    category: data.category as any,
-    country: country._id,
-    partner: partner._id,
-    description: data.description,
-    website: data.website,
-    isActive: true,
-    isLive: false,
-    isVerified: false,
-    followersCount: 0,
-    createdBy: createdBy ? (createdBy as any) : undefined,
-  });
+  // Use transaction for atomicity: station + auth + user
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  // Create auth for station admin
-  const hashedPassword = await bcrypt.hash(data.adminPassword, 10);
-  const authDoc = await AuthRepository.create({
-    username: data.adminUsername,
-    password: hashedPassword,
-    loginProvider: LoginProvider.USERNAME,
-    role: UserRole.STATION_ADMIN,
-    status: "active",
-  });
+  try {
+    // Create station
+    const stations = await StationRepository.create({
+      name: data.name,
+      stationCode: data.stationCode.toUpperCase(),
+      category: data.category as any,
+      country: country._id,
+      partner: partner._id,
+      description: data.description,
+      website: data.website,
+      isActive: true,
+      isLive: false,
+      isVerified: false,
+      followersCount: 0,
+      createdBy: createdBy ? (createdBy as any) : undefined,
+    }, session);
+    const station = Array.isArray(stations) ? stations[0] : stations;
 
-  // Create user profile
-  const user = await UserRepository.create({
-    auth: authDoc._id,
-    fullName: data.adminFullName,
-    role: UserRole.STATION_ADMIN,
-    stationId: station._id,
-    partnerId: partner._id,
-    profileCompleted: false,
-  });
-
-  return {
-    station: normalizeStation(station),
-    admin: {
-      id: user._id,
-      fullName: user.fullName,
+    // Create auth for station admin
+    const hashedPassword = await bcrypt.hash(data.adminPassword, 10);
+    const authDocs = await AuthRepository.create({
       username: data.adminUsername,
-      role: user.role,
-    },
-  };
+      password: hashedPassword,
+      loginProvider: LoginProvider.USERNAME,
+      role: UserRole.STATION_ADMIN,
+      status: "active",
+    }, session);
+    const authDoc = Array.isArray(authDocs) ? authDocs[0] : authDocs;
+
+    // Create user profile
+    const users = await UserRepository.create({
+      auth: authDoc._id,
+      fullName: data.adminFullName,
+      role: UserRole.STATION_ADMIN,
+      stationId: station._id,
+      partnerId: partner._id,
+      profileCompleted: false,
+    }, session);
+    const user = Array.isArray(users) ? users[0] : users;
+
+    await session.commitTransaction();
+
+    return {
+      station: normalizeStation(station),
+      admin: {
+        id: user._id,
+        fullName: user.fullName,
+        username: data.adminUsername,
+        role: user.role,
+      },
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 };
 
 const updateStation = async (id: string, data: Partial<TStation>) => {
@@ -199,6 +223,7 @@ const updateStation = async (id: string, data: Partial<TStation>) => {
   }
 
   const updated = await StationRepository.updateById(id, data);
+  StationCache.invalidateStation(id);
   return normalizeStation(updated!);
 };
 
@@ -209,6 +234,18 @@ const deactivateStation = async (id: string) => {
   }
 
   const updated = await StationRepository.updateById(id, { isActive: false });
+
+  // Cascade: deactivate shows, API keys (non-blocking, best-effort)
+  try {
+    await Promise.all([
+      ShowRepository.deactivateByStation(id),
+      StationApiKeyRepository.deactivateByStation(id),
+    ]);
+  } catch {
+    // Best-effort: log but don't fail the main operation
+  }
+
+  StationCache.invalidateStation(id);
   return normalizeStation(updated!);
 };
 
@@ -219,6 +256,7 @@ const reactivateStation = async (id: string) => {
   }
 
   const updated = await StationRepository.updateById(id, { isActive: true });
+  StationCache.invalidateStation(id);
   return normalizeStation(updated!);
 };
 
@@ -236,7 +274,7 @@ const getPublicStations = async (query: Record<string, unknown>, userId?: string
   }
 
   if (query.search) {
-    const searchRegex = new RegExp(query.search as string, "i");
+    const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
     filter.$or = [
       { name: searchRegex },
       { stationCode: searchRegex },

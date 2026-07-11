@@ -67,7 +67,7 @@ const findActiveShowForStation = async (stationId: string, timezone: string): Pr
   const candidateShows = await Show.find({
     station: stationId,
     isActive: true,
-    days: dayOfWeek,
+    days: dayOfWeek as any,
   }).lean();
 
   // Find the active show, handling midnight-spanning shows (e.g. 19:00 - 00:00)
@@ -100,14 +100,46 @@ const checkOverlap = async (
   startTime: string,
   endTime: string,
 ): Promise<boolean> => {
-  const overlapping = await Show.findOne({
+  // Fetch candidate shows that share at least one day
+  const candidateShows = await Show.find({
     station: stationId,
     isActive: true,
-    days: { $in: days },
-    startTime: { $lt: endTime },
-    endTime: { $gt: startTime },
+    days: { $in: days as any },
   }).lean();
-  return !!overlapping;
+
+  // Check time overlap handling midnight-spanning shows
+  for (const existing of candidateShows) {
+    const existingStart = existing.startTime;
+    const existingEnd = existing.endTime;
+
+    // Both shows normal (start < end)
+    if (startTime < endTime && existingStart < existingEnd) {
+      // Standard overlap: new starts before existing ends AND new ends after existing starts
+      if (startTime < existingEnd && endTime > existingStart) {
+        return true;
+      }
+    }
+    // New show spans midnight (start >= end), existing is normal
+    else if (startTime >= endTime && existingStart < existingEnd) {
+      // New show wraps: active from startTime to 24:00 AND 00:00 to endTime
+      // Overlaps with existing if existing overlaps either half
+      if (startTime < existingEnd || endTime > existingStart) {
+        return true;
+      }
+    }
+    // Existing show spans midnight, new is normal
+    else if (startTime < endTime && existingStart >= existingEnd) {
+      if (existingStart < endTime || existingEnd > startTime) {
+        return true;
+      }
+    }
+    // Both span midnight — they always overlap if they share a day
+    else {
+      return true;
+    }
+  }
+
+  return false;
 };
 
 const findByPresenter = (presenterId: string): Promise<TShow[]> => {
@@ -116,6 +148,63 @@ const findByPresenter = (presenterId: string): Promise<TShow[]> => {
     .populate("presenter", "fullName avatar")
     .sort({ startTime: 1 })
     .lean();
+};
+
+const checkPresenterOverlap = async (
+  presenterId: string,
+  days: string[],
+  startTime: string,
+  endTime: string,
+  excludeShowId?: string,
+): Promise<boolean> => {
+  // Find all active shows assigned to this presenter that share at least one day
+  const filter: Record<string, unknown> = {
+    presenter: presenterId,
+    isActive: true,
+    days: { $in: days as any },
+  };
+  if (excludeShowId) {
+    filter._id = { $ne: excludeShowId };
+  }
+
+  const presenterShows = await Show.find(filter).lean();
+
+  for (const existing of presenterShows) {
+    const existingStart = existing.startTime;
+    const existingEnd = existing.endTime;
+
+    // Both normal
+    if (startTime < endTime && existingStart < existingEnd) {
+      if (startTime < existingEnd && endTime > existingStart) {
+        return true;
+      }
+    }
+    // New spans midnight, existing normal
+    else if (startTime >= endTime && existingStart < existingEnd) {
+      if (startTime < existingEnd || endTime > existingStart) {
+        return true;
+      }
+    }
+    // Existing spans midnight, new normal
+    else if (startTime < endTime && existingStart >= existingEnd) {
+      if (existingStart < endTime || existingEnd > startTime) {
+        return true;
+      }
+    }
+    // Both span midnight
+    else {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const deactivateByStation = (stationId: string): Promise<{ modifiedCount: number }> => {
+  return Show.updateMany(
+    { station: stationId, isActive: true },
+    { $set: { isActive: false } },
+  ).then((result) => ({ modifiedCount: result.modifiedCount }));
 };
 
 export const ShowRepository = {
@@ -129,4 +218,6 @@ export const ShowRepository = {
   findActiveShowForStation,
   create,
   checkOverlap,
+  checkPresenterOverlap,
+  deactivateByStation,
 };

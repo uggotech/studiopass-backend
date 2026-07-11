@@ -33,6 +33,10 @@ const create = (data: Partial<TListenerStatement>): Promise<TListenerStatement> 
   return ListenerStatement.create(data);
 };
 
+const findOne = (filter: Record<string, unknown>): Promise<TListenerStatement | null> => {
+  return ListenerStatement.findOne(filter).lean();
+};
+
 const getAggregation = async (
   filter: Record<string, unknown>,
 ): Promise<{
@@ -53,7 +57,9 @@ const getAggregation = async (
         totalCalls: {
           $sum: { $cond: [{ $eq: ["$type", "Call"] }, 1, 0] },
         },
-        totalRevenue: { $sum: "$amount" },
+        totalRevenue: {
+          $sum: { $cond: ["$isFree", 0, "$amount"] },
+        },
       },
     },
   ]);
@@ -74,6 +80,7 @@ const getAggregation = async (
 export const ListenerStatementRepository = {
   findAll,
   findById,
+  findOne,
   count,
   create,
   getAggregation,

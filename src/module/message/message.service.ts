@@ -1,15 +1,19 @@
+import mongoose from "mongoose";
 import { StatusCodes } from "http-status-codes";
 import AppError from "../../errors/AppError";
 import { MessageRepository } from "./message.repository";
+import Message from "./message.model";
 import { ShowRepository } from "../show/show.repository";
 import { CreditService } from "../credit/credit.service";
 import { StationRepository } from "../station/station.repository";
 import { Country } from "../country/country.model";
 import { User } from "../user/user.model";
 import { Notification } from "../notification/notification.model";
+import MessageTemplate from "../messageTemplate/messageTemplate.model";
 import { sendFirebaseNotification } from "../../util/firebasePushNotification";
-import { emitToStation } from "../../socket";
+import { emitToStation, emitToShow, emitToUser, checkAndEmitShowTransition } from "../../socket";
 import { ListenerStatementService } from "../listenerStatement/listenerStatement.service";
+import { maskMsisdn, shouldMaskMsisdn } from "../../shared/maskMsisdn";
 
 const sendUserMessage = async (
   stationId: string,
@@ -22,9 +26,30 @@ const sendUserMessage = async (
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
   }
 
+  // Check station is active
+  if (!station.isActive) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "This station is currently inactive.");
+  }
+
   // Get the station's country timezone for show detection
-  const country = await Country.findById(station.country).lean();
+  const countryId = (station.country as any)?._id || station.country;
+
+  // Parallel lookups: country (for timezone) + user (independent)
+  const [country, user] = await Promise.all([
+    Country.findById(countryId).lean(),
+    User.findById(userId).lean(),
+  ]);
   const timezone = country?.timezone || "UTC";
+
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User not found");
+  }
+  if (!user.phone) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Phone number required to send messages.",
+    );
+  }
 
   const activeShow = await ShowRepository.findActiveShowForStation(
     stationId,
@@ -60,57 +85,69 @@ const sendUserMessage = async (
     );
   }
 
-  const user = await User.findById(userId).lean();
-  if (!user) {
-    throw new AppError(StatusCodes.NOT_FOUND, "User not found");
-  }
-  if (!user.phone) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "Phone number required to send messages.",
+  // TV stations require approval; radio/channel deliver immediately
+  const messageStatus = station.category === "tv" ? "pending" : "delivered";
+
+  // Use MongoDB transaction for atomicity: message + credit deduction
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    // 1. Create message (within transaction)
+    const message = await MessageRepository.createMessage({
+      station: stationId,
+      show: activeShow._id,
+      senderType: "user",
+      user: userId,
+      msisdn: user.phone,
+      content: content || '',
+      imageUrl: imageUrl || undefined,
+      status: messageStatus,
+      country: user.countryId,
+      creditsUsed: 1,
+    }, session);
+
+    // 2. Deduct credits via CreditService (handles isFree detection + transaction record)
+    const { balance: updatedBalance, isFree } = await CreditService.deductCredits(
+      userId,
+      1,
+      stationId,
+      message._id.toString(),
+      "message",
+      session,
     );
-  }
 
-  const message = await MessageRepository.createMessage({
-    station: stationId,
-    show: activeShow._id,
-    senderType: "user",
-    user: userId,
-    msisdn: user.phone,
-    content: content || '',
-    imageUrl: imageUrl || undefined,
-    status: "delivered",
-    country: user.countryId,
-  });
+    await session.commitTransaction();
 
-  // Deduct credits via CreditService (single code path for credit deduction)
-  const { balance: remainingBalance } = await CreditService.deductCredits(
-    userId,
-    1,
-    stationId,
-    message._id.toString(),
-    "message",
-  );
+    // Post-transaction: create listener statement (non-critical, outside transaction)
+    try {
+      await ListenerStatementService.createStatementFromMessage(message._id.toString(), isFree);
+    } catch (e) {
+      console.error("Listener statement creation failed:", e);
+    }
 
-  // Create listener statement for this interaction
-  try {
-    await ListenerStatementService.createStatementFromMessage(message._id.toString());
-  } catch {
-    // statement creation failure should not block the response
-  }
+    // Emit socket event for station staff to see new user messages (non-critical)
+    // Uses "new-user-message" so clients can distinguish from station replies
+    try {
+      const normalized = normalizeMessage(message, activeShow.name);
+      emitToStation(stationId, "new-user-message", { message: normalized });
 
-  try {
-    emitToStation(stationId, "new-message", {
+      // Check if the active show transitioned (for show-started/show-ended events)
+      checkAndEmitShowTransition(stationId, activeShow._id.toString(), activeShow.name);
+    } catch {
+      // socket failure should not block the response
+    }
+
+    return {
       message: normalizeMessage(message, activeShow.name),
-    });
-  } catch {
-    // socket failure should not block the response
+      remainingBalance: updatedBalance,
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
   }
-
-  return {
-    message: normalizeMessage(message, activeShow.name),
-    remainingBalance,
-  };
 };
 
 const sendStationReply = async (
@@ -125,45 +162,111 @@ const sendStationReply = async (
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
   }
 
-  const message = await MessageRepository.createMessage({
-    station: stationId,
-    senderType: "station",
-    senderUser: senderUserId,
-    content,
-    msisdn,
-    templateUsed: templateUsed || undefined,
-    status: "delivered",
-  });
-
-  const recentUserMsg = await MessageRepository.findThread(
-    stationId,
-    msisdn,
-    0,
-    1,
-  );
-  if (recentUserMsg.length > 0 && recentUserMsg[0]) {
-    const showId = (recentUserMsg[0] as any).show;
-    if (showId) {
-      await MessageRepository.markAsReplied(
-        stationId,
-        msisdn,
-        showId.toString(),
-      );
+  // Presenter template restriction: presenters must use templates
+  const sender = await User.findById(senderUserId).lean();
+  if (sender?.role === "presenter") {
+    if (templateUsed) {
+      // Explicit template reference — validate it
+      const template = await MessageTemplate.findById(templateUsed);
+      if (!template) {
+        throw new AppError(StatusCodes.BAD_REQUEST, "Template not found.");
+      }
+      if (template.station.toString() !== stationId) {
+        throw new AppError(StatusCodes.FORBIDDEN, "Template does not belong to this station.");
+      }
+      if (!template.isActive) {
+        throw new AppError(StatusCodes.BAD_REQUEST, "Template is no longer active.");
+      }
+      content = template.text;
+    } else {
+      // No template ID — check if the content matches any active template for this station
+      const matchingTemplate = await MessageTemplate.findOne({
+        station: stationId,
+        isActive: true,
+        text: content.trim(),
+      });
+      if (matchingTemplate) {
+        templateUsed = matchingTemplate._id.toString();
+        content = matchingTemplate.text;
+      } else {
+        throw new AppError(StatusCodes.BAD_REQUEST, "Presenters must use a template to reply.");
+      }
     }
   }
 
+  // Find the most recent user message to get the show context (sort desc = newest first)
+  const recentUserMsg = await Message.findOne({
+    station: stationId,
+    msisdn,
+    senderType: "user",
+  }).sort({ createdAt: -1 }).lean();
+  const showId = recentUserMsg ? (recentUserMsg as any).show : null;
+
+  // Use transaction for atomicity: message creation + markAsReplied
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  let message;
   try {
-    emitToStation(stationId, "new-message", {
-      message: normalizeMessage(message),
-    });
+    message = await MessageRepository.createMessage({
+      station: stationId,
+      show: showId || undefined,
+      senderType: "station",
+      senderUser: senderUserId,
+      content,
+      msisdn,
+      templateUsed: templateUsed || undefined,
+      status: "delivered",
+    }, session);
+
+    // Mark preceding user messages as replied (scoped to show if available)
+    await MessageRepository.markAsReplied(stationId, msisdn, showId?.toString(), session);
+
+    await session.commitTransaction();
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+
+  // Re-fetch with populated fields for response and socket emission
+  let populatedMessage;
+  try {
+    populatedMessage = await Message.findById(message._id)
+      .populate("senderUser", "fullName")
+      .populate("show", "name")
+      .lean();
+  } catch {
+    // populate failure — fall back to unpopulated message
+  }
+
+  // Consolidate user lookups — single query for both socket + notification
+  let listenerUser: any = null;
+  try {
+    listenerUser = await User.findOne({ phone: msisdn }).select("_id fcmToken").lean();
+  } catch {
+    // user lookup failure should not block the response
+  }
+
+  try {
+    const normalized = normalizeMessage(populatedMessage || message);
+    emitToStation(stationId, "new-message", { message: normalized });
+    if (showId) {
+      emitToShow(showId.toString(), "new-message", { message: normalized });
+    }
+
+    // Also emit to the listener's user room for real-time delivery
+    if (listenerUser) {
+      emitToUser(listenerUser._id.toString(), "new-message", { message: normalized });
+    }
   } catch {
     // socket failure should not block the response
   }
 
   // Send push notification + create notification record
   try {
-    const user = await User.findOne({ phone: msisdn });
-    if (user) {
+    if (listenerUser) {
       const notificationTitle = `New reply from ${station?.name || "Station"}`;
       const notificationBody = content.substring(0, 100);
       const notificationData = {
@@ -174,7 +277,7 @@ const sendStationReply = async (
 
       // Create notification record in DB
       await Notification.create({
-        user: user._id,
+        user: listenerUser._id,
         type: "reply",
         title: notificationTitle,
         body: notificationBody,
@@ -183,8 +286,8 @@ const sendStationReply = async (
       });
 
       // Send FCM push notification
-      if (user.fcmToken) {
-        const result = await sendFirebaseNotification(user.fcmToken, {
+      if (listenerUser.fcmToken) {
+        const result = await sendFirebaseNotification(listenerUser.fcmToken, {
           title: notificationTitle,
           body: notificationBody,
           data: notificationData,
@@ -192,7 +295,7 @@ const sendStationReply = async (
         // Update delivery status based on result
         if (result.successCount > 0) {
           await Notification.findOneAndUpdate(
-            { user: user._id, type: "reply", "data.messageId": message._id.toString() },
+            { user: listenerUser._id, type: "reply", "data.messageId": message._id.toString() },
             { deliveryStatus: "sent" },
           );
         }
@@ -212,14 +315,20 @@ const getUserThread = async (
   limit: number,
 ) => {
   const skip = (page - 1) * limit;
-  const messages = await MessageRepository.findThread(
-    stationId,
-    msisdn,
-    skip,
-    limit,
-  );
+  const [messages, total] = await Promise.all([
+    MessageRepository.findThread(stationId, msisdn, skip, limit),
+    Message.countDocuments({ station: stationId, msisdn }).lean(),
+  ]);
 
-  return messages.map((msg) => normalizeMessage(msg, (msg.show as any)?.name));
+  return {
+    messages: messages.map((msg) => normalizeMessage(msg, (msg.show as any)?.name)),
+    meta: {
+      page,
+      limit,
+      total,
+      totalPage: Math.ceil(total / limit),
+    },
+  };
 };
 
 const getStationThreads = async (
@@ -246,19 +355,289 @@ const getStationThreads = async (
   };
 };
 
+const getPresenterThreads = async (
+  stationId: string,
+  presenterId: string,
+  page: number,
+  limit: number,
+) => {
+  const skip = (page - 1) * limit;
+  const threads = await MessageRepository.findThreadsByPresenter(
+    stationId,
+    presenterId,
+    skip,
+    limit,
+  );
+  const total = await MessageRepository.countThreadsByPresenter(stationId, presenterId);
+
+  return {
+    threads,
+    meta: {
+      page,
+      limit,
+      totalPage: Math.ceil(total / limit),
+      total,
+    },
+  };
+};
+
+const getUserThreads = async (
+  phone: string,
+  userId: string,
+  page: number,
+  limit: number,
+) => {
+  const skip = (page - 1) * limit;
+  const threads = await MessageRepository.findThreadsByUserPhone(
+    phone,
+    userId,
+    skip,
+    limit,
+  );
+  const total = await MessageRepository.countThreadsByUserPhone(phone);
+
+  return {
+    threads,
+    meta: {
+      page,
+      limit,
+      totalPage: Math.ceil(total / limit),
+      total,
+    },
+  };
+};
+
 const normalizeMessage = (msg: any, showName?: string) => {
   return {
     id: msg._id,
     stationId: msg.station,
     showName: showName || msg.show?.name || null,
     senderType: msg.senderType,
-    senderName: msg.senderUser?.fullName || null,
+    senderName: msg.senderType === "station"
+      ? msg.senderUser?.fullName || null
+      : msg.user?.fullName || msg.msisdn || null,
     content: msg.content,
     imageUrl: msg.imageUrl || null,
     msisdn: msg.msisdn || null,
     status: msg.status,
     isReplied: msg.isReplied,
+    isRead: msg.isRead ?? false,
     createdAt: msg.createdAt,
+  };
+};
+
+// ─── TV Approval Flow ───────────────────────────────────────────────────────
+
+const findMessageForAuth = (messageId: string) => {
+  return MessageRepository.findMessageById(messageId);
+};
+
+const approveMessage = async (messageId: string, approvedBy: string) => {
+  const message = await MessageRepository.findMessageById(messageId);
+  if (!message) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
+  }
+  if (message.status !== "pending") {
+    throw new AppError(StatusCodes.BAD_REQUEST, `Cannot approve message with status "${message.status}". Only pending messages can be approved.`);
+  }
+
+  const updated = await MessageRepository.approveMessage(messageId, approvedBy);
+
+  // Emit real-time update to station staff
+  try {
+    const normalized = normalizeMessage(updated);
+    emitToStation((message as any).station?.toString(), "message-approved", { message: normalized });
+  } catch {}
+
+  return normalizeMessage(updated);
+};
+
+const rejectMessage = async (messageId: string, rejectionReason: string) => {
+  const message = await MessageRepository.findMessageById(messageId);
+  if (!message) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
+  }
+  if (message.status !== "pending") {
+    throw new AppError(StatusCodes.BAD_REQUEST, `Cannot reject message with status "${message.status}". Only pending messages can be rejected.`);
+  }
+
+  const updated = await MessageRepository.rejectMessage(messageId, rejectionReason);
+
+  // Emit real-time update to station staff
+  try {
+    const normalized = normalizeMessage(updated);
+    emitToStation((message as any).station?.toString(), "message-rejected", { message: normalized });
+  } catch {}
+
+  return normalizeMessage(updated);
+};
+
+const sendToOutput = async (messageId: string) => {
+  const message = await MessageRepository.findMessageById(messageId);
+  if (!message) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
+  }
+  if (message.status !== "approved") {
+    throw new AppError(StatusCodes.BAD_REQUEST, `Cannot send to output with status "${message.status}". Only approved messages can be sent to output.`);
+  }
+
+  const updated = await MessageRepository.sendToOutput(messageId);
+
+  // Emit real-time update to station staff
+  try {
+    const normalized = normalizeMessage(updated);
+    const stationId = (message as any).station?.toString();
+    emitToStation(stationId, "message-sent-to-output", { message: normalized });
+    if ((message as any).show) {
+      emitToShow((message as any).show.toString(), "message-sent-to-output", { message: normalized });
+    }
+  } catch {}
+
+  return normalizeMessage(updated);
+};
+
+const deleteMessage = async (messageId: string) => {
+  const message = await MessageRepository.findMessageById(messageId);
+  if (!message) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
+  }
+  await MessageRepository.deleteMessage(messageId);
+};
+
+const markAsRead = async (messageId: string) => {
+  const message = await MessageRepository.findMessageById(messageId);
+  if (!message) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
+  }
+  if ((message as any).isRead) return normalizeMessage(message);
+
+  const updated = await MessageRepository.markAsRead(messageId);
+  return normalizeMessage(updated);
+};
+
+const getMessageById = async (messageId: string) => {
+  const message = await MessageRepository.findMessageById(messageId);
+  if (!message) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
+  }
+  return normalizeMessage(message, (message.show as any)?.name);
+};
+
+const getPendingMessages = async (stationId: string, page: number, limit: number) => {
+  const skip = (page - 1) * limit;
+  const messages = await Message.find({
+    station: stationId,
+    senderType: "user",
+    status: { $in: ["pending", "approved"] },
+    isDeleted: { $ne: true },
+  })
+    .populate("show", "name")
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .lean();
+
+  const total = await Message.countDocuments({
+    station: stationId,
+    senderType: "user",
+    status: { $in: ["pending", "approved"] },
+    isDeleted: { $ne: true },
+  });
+
+  return {
+    messages: messages.map((m) => normalizeMessage(m, (m.show as any)?.name)),
+    meta: { page, limit, total, totalPage: Math.ceil(total / limit) },
+  };
+};
+
+const exportMessages = async (
+  stationId: string | undefined,
+  format: string,
+  role?: string,
+) => {
+  const filter: Record<string, unknown> = { senderType: "user", isDeleted: { $ne: true } };
+  if (stationId) filter.station = stationId;
+
+  const messages = await Message.find(filter)
+    .populate("show", "name")
+    .sort({ createdAt: -1 })
+    .limit(10000)
+    .lean();
+
+  const shouldMask = role ? shouldMaskMsisdn(role) : false;
+
+  const rows = messages.map((m) => ({
+    id: m._id,
+    msisdn: shouldMask ? maskMsisdn(m.msisdn || "") : m.msisdn,
+    content: m.content,
+    station: (m.station as any)?.toString(),
+    show: (m.show as any)?.name || "",
+    status: m.status,
+    createdAt: m.createdAt,
+  }));
+
+  if (format === "csv") {
+    const header = "ID,MSISDN,Content,Station,Show,Created\n";
+    const csv = rows.map((r) =>
+      `"${r.id}","${r.msisdn}","${(r.content || "").replace(/"/g, '""')}","${r.station}","${r.show}","${r.createdAt}"`
+    ).join("\n");
+    return { format: "csv", data: header + csv };
+  }
+
+  return { format: "json", data: rows };
+};
+
+const searchMessages = async (
+  query: string,
+  stationId: string | undefined,
+  page: number,
+  limit: number,
+) => {
+  const skip = (page - 1) * limit;
+  const filter: Record<string, unknown> = {};
+
+  if (stationId) filter.station = stationId;
+
+  // Use regex for content search (works without text index)
+  if (query) {
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    filter.content = new RegExp(escaped, "i");
+  }
+
+  const [messages, total] = await Promise.all([
+    Message.find(filter)
+      .populate("show", "name")
+      .populate("senderUser", "fullName")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Message.countDocuments(filter),
+  ]);
+
+  return {
+    messages: messages.map((m) => normalizeMessage(m, (m.show as any)?.name)),
+    meta: { page, limit, total, totalPage: Math.ceil(total / limit) },
+  };
+};
+
+const getAllMessages = async (
+  stationId: string | undefined,
+  page: number,
+  limit: number,
+) => {
+  const skip = (page - 1) * limit;
+  const filter: Record<string, unknown> = {};
+  if (stationId) filter.station = stationId;
+
+  const [messages, total] = await Promise.all([
+    MessageRepository.findAllMessages(filter, skip, limit),
+    MessageRepository.countAllMessages(filter),
+  ]);
+
+  return {
+    messages: messages.map((m) => normalizeMessage(m, (m.show as any)?.name)),
+    meta: { page, limit, total, totalPage: Math.ceil(total / limit) },
   };
 };
 
@@ -267,4 +646,17 @@ export const MessageService = {
   sendStationReply,
   getUserThread,
   getStationThreads,
+  getPresenterThreads,
+  getUserThreads,
+  findMessageForAuth,
+  getMessageById,
+  approveMessage,
+  rejectMessage,
+  sendToOutput,
+  deleteMessage,
+  markAsRead,
+  getPendingMessages,
+  exportMessages,
+  searchMessages,
+  getAllMessages,
 };

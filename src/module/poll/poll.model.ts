@@ -26,6 +26,7 @@ const pollSchema = new Schema<TPoll>(
     status: { type: String, enum: ["draft", "active", "completed"], default: "draft" },
     totalVotes: { type: Number, default: 0, min: 0 },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    expiresAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

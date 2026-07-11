@@ -2,7 +2,9 @@ import { Request, Response } from "express";
 import catchAsync from "../../shared/catchAsync";
 import sendResponse from "../../shared/sendResponse";
 import { UserService } from "./user.service";
+import { StationRepository } from "../station/station.repository";
 import { StatusCodes } from "http-status-codes";
+import AppError from "../../errors/AppError";
 
 const getMyProfile = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
@@ -77,6 +79,23 @@ const getAllMediaStationUsers = catchAsync(async (req: Request, res: Response) =
 });
 
 const createMediaStation = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const { stationId } = req.body;
+
+  // Scope check: ensure the station belongs to the user's scope
+  if (stationId) {
+    if ((user.role === "partner_admin" || user.role === "customer_care") && user.partnerId) {
+      const station = await StationRepository.findById(stationId);
+      if (!station || (station.partner as any)?._id?.toString() !== user.partnerId.toString()) {
+        throw new AppError(StatusCodes.FORBIDDEN, "You can only create users for stations in your partner organization");
+      }
+    } else if (user.role === "station_admin" && user.stationId) {
+      if (stationId !== user.stationId.toString()) {
+        throw new AppError(StatusCodes.FORBIDDEN, "You can only create users for your own station");
+      }
+    }
+  }
+
   const result = await UserService.createMediaStation(req.body);
 
   sendResponse(res, {
@@ -88,7 +107,18 @@ const createMediaStation = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getUserById = catchAsync(async (req: Request, res: Response) => {
-  const result = await UserService.getUserById(String(req.params.id));
+  const user = req.user as any;
+  const targetUserId = String(req.params.id);
+
+  // Scope check: partner_admin can only view users in their partner
+  if (user.role === "partner_admin" && user.partnerId) {
+    const targetUser = await UserService.getUserById(targetUserId);
+    if (targetUser.partnerId?.toString() !== user.partnerId.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only view users in your partner organization");
+    }
+  }
+
+  const result = await UserService.getUserById(targetUserId);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
@@ -99,7 +129,18 @@ const getUserById = catchAsync(async (req: Request, res: Response) => {
 });
 
 const deactivateUser = catchAsync(async (req: Request, res: Response) => {
-  const result = await UserService.deactivateUser(String(req.params.id));
+  const user = req.user as any;
+  const targetUserId = String(req.params.id);
+
+  // Scope check: partner_admin can only deactivate users in their partner
+  if (user.role === "partner_admin" && user.partnerId) {
+    const targetUser = await UserService.getUserById(targetUserId);
+    if (targetUser.partnerId?.toString() !== user.partnerId.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only deactivate users in your partner organization");
+    }
+  }
+
+  const result = await UserService.deactivateUser(targetUserId);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
@@ -110,7 +151,18 @@ const deactivateUser = catchAsync(async (req: Request, res: Response) => {
 });
 
 const reactivateUser = catchAsync(async (req: Request, res: Response) => {
-  const result = await UserService.reactivateUser(String(req.params.id));
+  const user = req.user as any;
+  const targetUserId = String(req.params.id);
+
+  // Scope check: partner_admin can only reactivate users in their partner
+  if (user.role === "partner_admin" && user.partnerId) {
+    const targetUser = await UserService.getUserById(targetUserId);
+    if (targetUser.partnerId?.toString() !== user.partnerId.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only reactivate users in your partner organization");
+    }
+  }
+
+  const result = await UserService.reactivateUser(targetUserId);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
@@ -133,6 +185,23 @@ const updateFcmToken = catchAsync(async (req: Request, res: Response) => {
 });
 
 const createPresenter = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const { stationId } = req.body;
+
+  // Scope check: ensure the station belongs to the user's scope
+  if (stationId) {
+    if ((user.role === "partner_admin" || user.role === "customer_care") && user.partnerId) {
+      const station = await StationRepository.findById(stationId);
+      if (!station || (station.partner as any)?._id?.toString() !== user.partnerId.toString()) {
+        throw new AppError(StatusCodes.FORBIDDEN, "You can only create presenters for stations in your partner organization");
+      }
+    } else if (user.role === "station_admin" && user.stationId) {
+      if (stationId !== user.stationId.toString()) {
+        throw new AppError(StatusCodes.FORBIDDEN, "You can only create presenters for your own station");
+      }
+    }
+  }
+
   const result = await UserService.createPresenter(req.body);
 
   sendResponse(res, {

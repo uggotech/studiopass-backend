@@ -11,10 +11,8 @@ import { UserRole } from "shared/roles";
 import { LoginProvider } from "./auth.interface";
 import { OTPType } from "../otp/otp.interface";
 
-// TODO: uncomment when SMS providers are configured
-// import generateOTP from "../../util/generateOTP";
-// import { sendAtOtp, isAfricasTalkingCountry } from "../../util/africasTalking";
-// import { sendTwilioOtp } from "../../util/twilioOtp";
+import { sendAtOtp, isAfricasTalkingCountry } from "../../util/africasTalking";
+import { sendTwilioOtp } from "../../util/twilioOtp";
 
 const OTP_EXPIRY_MINUTES = 30;
 const OTP_MAX_ATTEMPTS = 5;
@@ -45,28 +43,41 @@ const generateTokens = (userId: string, authId: string, role: string) => {
   return { accessToken, refreshToken };
 };
 
-const normalizeAuthResponse = (auth: any, user: any, tokens: any) => ({
-  id: auth._id,
-  phone: auth.phone,
-  username: auth.username,
-  role: auth.role,
-  user: user
-    ? {
-        id: user._id,
-        fullName: user.fullName,
-        avatar: user.avatar,
-        phone: user.phone,
-        role: user.role,
-        partnerId: user.partnerId,
-        stationId: user.stationId,
-        countryId: user.countryId,
-        countryName: user.countryName,
-        profileCompleted: user.profileCompleted,
-        preferences: user.preferences,
-      }
-    : null,
-  ...tokens,
-});
+const normalizeAuthResponse = async (auth: any, user: any, tokens: any) => {
+  // Fetch station category for station-level roles
+  let stationCategory = "radio";
+  if (user?.stationId) {
+    try {
+      const { Station } = await import("../station/station.model");
+      const station = await Station.findById(user.stationId).select("category").lean();
+      stationCategory = (station as any)?.category || "radio";
+    } catch {}
+  }
+
+  return {
+    id: auth._id,
+    phone: auth.phone,
+    username: auth.username,
+    role: auth.role,
+    user: user
+      ? {
+          id: user._id,
+          fullName: user.fullName,
+          avatar: user.avatar,
+          phone: user.phone,
+          role: user.role,
+          partnerId: user.partnerId,
+          stationId: user.stationId,
+          stationCategory,
+          countryId: user.countryId,
+          countryName: user.countryName,
+          profileCompleted: user.profileCompleted,
+          preferences: user.preferences,
+        }
+      : null,
+    ...tokens,
+  };
+};
 
 // ─── App Flow: Initiate OTP ──────────────────────────────────────────────────
 
@@ -85,9 +96,8 @@ const initiate = async (data: { phone: string; countryCode: string; countryName:
       status: "active",
     });
   }
-   //! stop for development time
-  // const otp = generateOTP({ length: 4 });
-  const otp= "1234";
+  // TODO: Remove hardcoded OTP before production
+  const otp = "1234";
   await OtpRepository.create({
     userId: auth._id,
     otp,
@@ -99,12 +109,11 @@ const initiate = async (data: { phone: string; countryCode: string; countryName:
     maxAttempts: OTP_MAX_ATTEMPTS,
     isUsed: false,
   });
-  //! stop for develop time
-  // if (isAfricasTalkingCountry(data.countryName)) {
-  //   await sendAtOtp(fullPhone, otp);
-  // } else {
-  //   await sendTwilioOtp(fullPhone, otp);
-  // }
+  if (isAfricasTalkingCountry(data.countryName)) {
+    await sendAtOtp(fullPhone, otp);
+  } else {
+    await sendTwilioOtp(fullPhone, otp);
+  }
 
   return { message: "OTP sent", phone: fullPhone };
 };
@@ -184,7 +193,7 @@ const verifyOtp = async (data: { phone: string; countryCode: string; otp: string
 
   const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role);
 
-  return normalizeAuthResponse(auth, user, tokens);
+  return await normalizeAuthResponse(auth, user, tokens);
 };
 
 // ─── Dashboard Flow: Username + Password Login ───────────────────────────────
@@ -221,7 +230,7 @@ const login = async (data: { username: string; password: string }) => {
 
   const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role);
 
-  return normalizeAuthResponse(auth, user, tokens);
+  return await normalizeAuthResponse(auth, user, tokens);
 };
 
 // ─── Refresh Token ───────────────────────────────────────────────────────────

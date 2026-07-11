@@ -6,7 +6,7 @@ interface OTPOptions {
 }
 
 const generateOTP = (options: OTPOptions = {}): string => {
-  const { length = 6, alphanumeric = false } = options;
+  const { length = 4, alphanumeric = false } = options;
 
   if (alphanumeric) {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";

@@ -3,12 +3,12 @@
  *
  * Mongoose model and interface for the Call entity.
  *
- * Represents phone calls between listeners and station presenters.
- * Integrates with Agora for WebRTC-based calling (planned but not yet implemented).
+ * Represents voice calls between listeners and station operators.
+ * Integrates with Agora for WebRTC-based calling.
  *
  * Business rules:
- * - Only answered/rejected calls cost credits
- * - Missed calls are free (no credits deducted)
+ * - Credits are deducted at request time (when call reaches the station)
+ * - All calls that reach the station cost 1 credit, regardless of outcome
  * - Duration is only tracked for answered calls
  * - Agora channel ID is required for all calls
  * - Credit transaction is linked for billing audit trail
@@ -47,6 +47,9 @@ export interface ICall extends Document {
   /** When the call was initiated */
   startedAt: Date;
 
+  /** When the call entered the queue */
+  waitStartedAt?: Date;
+
   /** When the call was answered (only for answered calls) */
   answeredAt?: Date;
 
@@ -54,7 +57,7 @@ export interface ICall extends Document {
   endedAt?: Date;
 
   /** Final status of the call */
-  status: "missed" | "rejected" | "answered";
+  status: "queued" | "missed" | "rejected" | "answered" | "cancelled";
 
   /** Credits consumed (only for answered/rejected calls) */
   creditsUsed: number;
@@ -114,6 +117,10 @@ const callSchema = new Schema<ICall>(
       required: [true, "startedAt is required"],
       default: Date.now,
     },
+    waitStartedAt: {
+      type: Date,
+      // Set when call enters queue (queued status)
+    },
     answeredAt: {
       type: Date,
     },
@@ -122,7 +129,7 @@ const callSchema = new Schema<ICall>(
     },
     status: {
       type: String,
-      enum: ["missed", "rejected", "answered"],
+      enum: ["queued", "missed", "rejected", "answered", "cancelled"],
       required: [true, "Status is required"],
       index: true,
     },

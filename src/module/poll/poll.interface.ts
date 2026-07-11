@@ -22,6 +22,7 @@ export interface TPoll {
   status: PollStatus;
   totalVotes: number;
   createdBy: Types.ObjectId; // → User
+  expiresAt?: Date; // null = no limit, poll stays active until manually completed
   createdAt: Date;
   updatedAt: Date;
 }

@@ -17,7 +17,8 @@ const findByCode = (code: string): Promise<TCountry | null> => {
 };
 
 const findByName = (name: string): Promise<TCountry | null> => {
-  return Country.findOne({ name: new RegExp(`^${name.trim()}$`, "i") }).lean();
+  const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return Country.findOne({ name: new RegExp(`^${escaped}$`, "i") }).lean();
 };
 
 const count = (filter: Record<string, unknown>): Promise<number> => {

@@ -11,6 +11,7 @@ const stationApiKeyLogSchema = new Schema<TStationApiKeyLog>(
     responseTimeMs: { type: Number, required: true, min: 0 },
     statusCode: { type: Number, required: true },
     ipAddress: { type: String },
+    responseSizeBytes: { type: Number, min: 0 },
   },
   { timestamps: false },
 );

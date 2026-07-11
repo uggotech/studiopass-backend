@@ -61,5 +61,9 @@ userSchema.index({ partnerId: 1 });
 userSchema.index({ stationId: 1 });
 userSchema.index({ countryName: 1 });
 userSchema.index({ countryId: 1 });
+userSchema.index({ isDeleted: 1 });
+userSchema.index({ role: 1, partnerId: 1, isDeleted: 1 });
+userSchema.index({ role: 1, stationId: 1, isDeleted: 1 });
+userSchema.index({ countryId: 1, role: 1, isDeleted: 1 });
 
 export const User = model<TUser>("User", userSchema);

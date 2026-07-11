@@ -2,6 +2,8 @@ import { Router } from "express";
 import { ShowController } from "./show.controller";
 import auth from "../../middlewares/auth";
 import { UserRole } from "shared/roles";
+import validateRequest from "../../middlewares/validateRequest";
+import { ShowDto } from "./show.dto";
 
 const router = Router();
 
@@ -23,7 +25,14 @@ router.get(
 router.post(
   "/",
   auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  validateRequest(ShowDto.createShow),
   ShowController.createShow,
+);
+
+// Public: get active show for a station (listeners need this)
+router.get(
+  "/active/:stationId",
+  ShowController.getActiveShow,
 );
 
 // Dashboard users: get single show by ID

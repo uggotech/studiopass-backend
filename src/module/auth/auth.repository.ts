@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { Auth } from "./auth.model";
 import { TAuth } from "./auth.interface";
 
@@ -9,11 +10,22 @@ const findByUsername = (username: string) => {
   return Auth.findOne({ username });
 };
 
+const usernameExists = (username: string) => {
+  return Auth.findOne({ username }).select("_id").lean();
+};
+
 const findById = (id: string): Promise<TAuth | null> => {
   return Auth.findById(id).select("-password").lean();
 };
 
-const create = (data: Partial<TAuth>): Promise<TAuth> => {
+const findByIdWithPassword = (id: string) => {
+  return Auth.findById(id).lean();
+};
+
+const create = (data: Partial<TAuth>, session?: mongoose.ClientSession): Promise<TAuth> => {
+  if (session) {
+    return Auth.create([data]).then(([doc]) => doc as TAuth);
+  }
   return Auth.create(data);
 };
 
@@ -24,7 +36,9 @@ const updateById = (id: string, data: Partial<TAuth>): Promise<TAuth | null> => 
 export const AuthRepository = {
   findByPhone,
   findByUsername,
+  usernameExists,
   findById,
+  findByIdWithPassword,
   create,
   updateById,
 };

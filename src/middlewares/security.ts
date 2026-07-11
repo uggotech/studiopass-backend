@@ -1,6 +1,5 @@
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import mongoSanitize from "express-mongo-sanitize";
 import compression from "compression";
 import { Request, Response, NextFunction, RequestHandler } from "express";
 import { logger } from "../logger/logger";
@@ -58,13 +57,60 @@ export const strictLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// ============ MONGO SANITIZE ============
-export const sanitizeInput: RequestHandler = mongoSanitize({
-  replaceWith: "_",
-  onSanitize: ({ req, key }: { req: Request; key: string }) => {
-    logger.warn(`MongoDB injection attempt from ${req.ip}: ${key}`);
-  },
-}) as RequestHandler;
+// ============ MONGO SANITIZE (Express 5 compatible) ============
+// express-mongo-sanitize is incompatible with Express 5 (req.query is getter-only).
+// We implement our own by stripping $-prefixed keys during query parsing.
+const sanitizeObject = (obj: any): any => {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(sanitizeObject);
+
+  const sanitized: any = {};
+  for (const key of Object.keys(obj)) {
+    if (key.startsWith("$")) {
+      logger.warn(`MongoDB injection attempt: stripped key "${key}"`);
+      continue;
+    }
+    sanitized[key] = sanitizeObject(obj[key]);
+  }
+  return sanitized;
+};
+
+// Custom query parser that strips $ keys — used by app.set('query parser')
+export const sanitizeQueryParser = (str: string) => {
+  if (!str) return {};
+  // Use URLSearchParams for simple flat query strings
+  const params = new URLSearchParams(str);
+  const result: Record<string, string> = {};
+  for (const [key, value] of params) {
+    if (key.startsWith("$")) {
+      logger.warn(`MongoDB injection attempt in query: stripped key "${key}"`);
+      continue;
+    }
+    result[key] = value;
+  }
+  return result;
+};
+
+// Middleware to sanitize req.body and req.params (req.query handled by parser above)
+export const sanitizeInput: RequestHandler = (req: Request, _res: Response, next: NextFunction) => {
+  // Sanitize req.body (already parsed by express.json)
+  if (req.body && typeof req.body === "object") {
+    req.body = sanitizeObject(req.body);
+  }
+
+  // Sanitize req.params (path parameters)
+  if (req.params && typeof req.params === "object") {
+    for (const key of Object.keys(req.params)) {
+      if (key.startsWith("$")) {
+        logger.warn(`MongoDB injection attempt in params: "${key}"`);
+        delete req.params[key];
+      }
+    }
+  }
+
+  next();
+};
 
 // ============ COMPRESSION ============
 export const compressionConfig: RequestHandler = compression({

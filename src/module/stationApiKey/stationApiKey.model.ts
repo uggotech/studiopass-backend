@@ -18,7 +18,6 @@ const stationApiKeySchema = new Schema<TStationApiKey>(
   { timestamps: true },
 );
 
-stationApiKeySchema.index({ key: 1 });
 stationApiKeySchema.index({ station: 1, type: 1, isActive: 1 });
 stationApiKeySchema.index({ station: 1, isActive: 1 });
 

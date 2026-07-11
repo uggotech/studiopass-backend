@@ -5,6 +5,7 @@ import { MessageRepository } from "../message/message.repository";
 import { StationRepository } from "../station/station.repository";
 import { ShowRepository } from "../show/show.repository";
 import { Country } from "../country/country.model";
+import { maskMsisdn, shouldMaskMsisdn } from "../../shared/maskMsisdn";
 
 const generateStatementId = (): string => {
   const timestamp = Date.now().toString(36);
@@ -17,22 +18,26 @@ const generateTicket = (): string => {
   return `TKT-${random}`.toUpperCase();
 };
 
-const createStatementFromMessage = async (messageId: string) => {
+const createStatementFromMessage = async (messageId: string, isFree: boolean = false) => {
   const message = await MessageRepository.findMessageById(messageId);
   if (!message) return;
   if (message.senderType !== "user") return;
 
-  const station = await StationRepository.findById(message.station.toString());
+  // Idempotency check: skip if statement already exists for this message
+  const existing = await ListenerStatementRepository.findOne({ sourceId: message._id });
+  if (existing) return existing;
+
+  const station = await StationRepository.findById((message as any).station?._id?.toString() || (message as any).station?.toString());
   if (!station) return;
 
   const country = await Country.findById(station.country).lean();
   if (!country) return;
 
   const show = message.show
-    ? await ShowRepository.findById(message.show.toString())
+    ? await ShowRepository.findById((message as any).show?._id?.toString() || (message as any).show?.toString())
     : null;
 
-  const amount = (message.creditsUsed || 1) * country.messageCreditPrice;
+  const amount = isFree ? 0 : (message.creditsUsed || 1) * country.messageCreditPrice;
 
   const statement = await ListenerStatementRepository.create({
     statementId: generateStatementId(),
@@ -53,6 +58,7 @@ const createStatementFromMessage = async (messageId: string) => {
     country: country._id,
     operator: message.operator,
     ticket: generateTicket(),
+    isFree,
     status: "Successful",
   });
 
@@ -66,9 +72,14 @@ const createStatementFromCall = async (_callId: string) => {
   return null;
 };
 
-const buildScopeFilter = (
-  scope?: { partnerId?: string; stationId?: string; userId?: string; role?: string },
-): Record<string, unknown> => {
+// ─── Shared scope resolution helpers ──────────────────────────────────────────
+
+type Scope = { partnerId?: string; stationId?: string; userId?: string; role?: string };
+
+/**
+ * Build base scope filter from role (handles _partnerFilter / _presenterFilter placeholders).
+ */
+const buildScopeFilter = (scope?: Scope): Record<string, unknown> => {
   if (!scope) return {};
 
   if (scope.role === "user" && scope.userId) {
@@ -80,41 +91,106 @@ const buildScopeFilter = (
   }
 
   if (scope.role === "partner_admin" && scope.partnerId) {
-    // Partner admin sees statements from all stations under their partner
-    // This requires a $lookup or pre-filtered station list
-    // For now, return empty (super_admin handles partner scoping via frontend)
-    return {};
+    return { _partnerFilter: scope.partnerId };
+  }
+
+  if (scope.role === "presenter" && scope.userId) {
+    return { _presenterFilter: scope.userId };
+  }
+
+  if (["station_admin", "media_station", "customer_care"].includes(scope.role || "") && scope.stationId) {
+    return { station: scope.stationId };
   }
 
   return {};
 };
 
-const getAllStatements = async (
+/**
+ * Resolve _partnerFilter and _presenterFilter placeholders into real MongoDB filters.
+ * Returns null with early-exit result if no stations/shows found.
+ */
+const resolveScopeFilters = async (
+  filter: Record<string, unknown>,
+): Promise<{ ok: true } | { ok: false; result: any }> => {
+  if (filter._partnerFilter) {
+    const partnerId = filter._partnerFilter as string;
+    delete filter._partnerFilter;
+    const partnerStations = await StationRepository.findAll(
+      { partner: partnerId },
+      { limit: 1000 },
+    );
+    const stationIds = partnerStations.map((s) => s._id);
+    if (stationIds.length === 0) {
+      return { ok: false, result: { statements: [], meta: { page: 1, limit: 20, total: 0, totalPage: 0 } } };
+    }
+    filter.station = { $in: stationIds };
+  }
+
+  if (filter._presenterFilter) {
+    const presenterId = filter._presenterFilter as string;
+    delete filter._presenterFilter;
+    const presenterShows = await ShowRepository.findByPresenter(presenterId);
+    const showIds = presenterShows.map((s) => s._id);
+    if (showIds.length === 0) {
+      return { ok: false, result: { statements: [], meta: { page: 1, limit: 20, total: 0, totalPage: 0 } } };
+    }
+    filter.show = { $in: showIds };
+  }
+
+  return { ok: true };
+};
+
+/**
+ * Validate a station query param against the caller's scope, setting filter.station if allowed.
+ */
+const validateStationFilter = async (
+  filter: Record<string, unknown>,
   query: Record<string, unknown>,
-  scope?: { partnerId?: string; stationId?: string; userId?: string; role?: string },
+  scope?: Scope,
 ) => {
-  const filter: Record<string, unknown> = {};
+  if (!query.station) return;
+  const requestedStation = query.station as string;
+  const role = scope?.role;
 
-  // Apply role-based scope
-  const scopeFilter = buildScopeFilter(scope);
-  Object.assign(filter, scopeFilter);
-
-  // Type filter (Call or Message) — CRITICAL
-  if (query.type) {
-    filter.type = query.type;
+  if (role === "super_admin" || role === "user") {
+    filter.station = requestedStation;
+  } else if (role === "station_admin" || role === "media_station") {
+    if (scope?.stationId && requestedStation === scope.stationId) {
+      filter.station = requestedStation;
+    }
+  } else if (role === "partner_admin" && scope?.partnerId) {
+    const partnerStations = await StationRepository.findAll(
+      { partner: scope.partnerId },
+      { limit: 1000 },
+    );
+    const partnerStationIds = partnerStations.map((s) => s._id.toString());
+    if (partnerStationIds.includes(requestedStation)) {
+      filter.station = requestedStation;
+    }
+  } else if (role === "presenter" && scope?.userId) {
+    const presenterShows = await ShowRepository.findByPresenter(scope.userId);
+    const presenterStationIds = presenterShows.map((s) => (s.station as any)?._id?.toString() || (s.station as any)?.toString());
+    if (presenterStationIds.includes(requestedStation)) {
+      filter.station = requestedStation;
+    }
+  } else if (role === "customer_care" && scope?.stationId) {
+    if (requestedStation === scope.stationId) {
+      filter.station = requestedStation;
+    }
   }
+};
 
-  // Station filter
-  if (query.station) {
-    filter.station = query.station;
-  }
+/**
+ * Apply common query filters (type, isFree, date range, search) to a filter object.
+ */
+const applyQueryFilters = (
+  filter: Record<string, unknown>,
+  query: Record<string, unknown>,
+) => {
+  if (query.type) filter.type = query.type;
+  if (query.isFree !== undefined) filter.isFree = query.isFree === "true";
+  if (query.country) filter.country = query.country;
 
-  // Country filter
-  if (query.country) {
-    filter.country = query.country;
-  }
-
-  // Date range filter
   if (query.startDate || query.endDate) {
     const dateFilter: Record<string, Date> = {};
     if (query.startDate) dateFilter.$gte = new Date(query.startDate as string);
@@ -122,15 +198,37 @@ const getAllStatements = async (
     filter.createdAt = dateFilter;
   }
 
-  // Search by msisdn or stationRef
   if (query.search) {
-    const searchRegex = new RegExp(query.search as string, "i");
+    const escaped = (query.search as string).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const searchRegex = new RegExp(escaped, "i");
     filter.$or = [
       { msisdn: searchRegex },
       { stationRef: searchRegex },
       { mediaStation: searchRegex },
     ];
   }
+};
+
+// ─── Service methods ──────────────────────────────────────────────────────────
+
+const getAllStatements = async (
+  query: Record<string, unknown>,
+  scope?: Scope,
+) => {
+  const filter: Record<string, unknown> = {};
+
+  // Apply role-based scope
+  Object.assign(filter, buildScopeFilter(scope));
+
+  // Resolve placeholder filters
+  const resolved = await resolveScopeFilters(filter);
+  if (!resolved.ok) return resolved.result;
+
+  // Validate station filter
+  await validateStationFilter(filter, query, scope);
+
+  // Apply query filters
+  applyQueryFilters(filter, query);
 
   const page = Math.max(1, Number(query.page) || 1);
   const limit = Math.max(1, Math.min(100, Number(query.limit) || 20));
@@ -147,26 +245,48 @@ const getAllStatements = async (
   };
 };
 
-const getStatementById = async (id: string) => {
+const getStatementById = async (
+  id: string,
+  scope?: { partnerId?: string; stationId?: string; userId?: string; role?: string },
+) => {
   const statement = await ListenerStatementRepository.findById(id);
   if (!statement) {
     throw new AppError(StatusCodes.NOT_FOUND, "Statement not found");
   }
+
+  // Authorization: users can only view their own statements
+  if (scope?.role === "user" && scope.userId) {
+    const statementUserId = (statement as any).user?.toString() || (statement as any).user;
+    if (statementUserId !== scope.userId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only view your own statements.");
+    }
+  }
+
+  // Station admin can only view their station's statements
+  if (scope?.role === "station_admin" && scope.stationId) {
+    const statementStationId = (statement as any).station?._id?.toString() || (statement as any).station?.toString();
+    if (statementStationId !== scope.stationId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only view statements from your station.");
+    }
+  }
+
   return statement;
 };
 
 const getKPIs = async (
   query: Record<string, unknown>,
-  scope?: { partnerId?: string; stationId?: string; userId?: string; role?: string },
+  scope?: Scope,
 ) => {
   const filter: Record<string, unknown> = {};
 
-  const scopeFilter = buildScopeFilter(scope);
-  Object.assign(filter, scopeFilter);
+  Object.assign(filter, buildScopeFilter(scope));
 
-  if (query.station) {
-    filter.station = query.station;
+  const resolved = await resolveScopeFilters(filter);
+  if (!resolved.ok) {
+    return { totalInteractions: 0, totalMessages: 0, totalCalls: 0, totalRevenue: 0 };
   }
+
+  await validateStationFilter(filter, query, scope);
 
   if (query.startDate || query.endDate) {
     const dateFilter: Record<string, Date> = {};
@@ -175,7 +295,40 @@ const getKPIs = async (
     filter.createdAt = dateFilter;
   }
 
+  // isFree handled in aggregation $group stage — not as $match
+  // so counts include all interactions, revenue only counts paid ones
+
   return ListenerStatementRepository.getAggregation(filter);
+};
+
+const exportStatements = async (
+  query: Record<string, unknown>,
+  scope?: Scope,
+  format: string = "csv",
+  callerRole?: string,
+) => {
+  const filter: Record<string, unknown> = {};
+
+  Object.assign(filter, buildScopeFilter(scope));
+
+  const resolved = await resolveScopeFilters(filter);
+  if (!resolved.ok) return { format, data: [] };
+
+  applyQueryFilters(filter, query);
+
+  const statements = await ListenerStatementRepository.findAll(filter, { limit: 10000 });
+
+  const shouldMask = callerRole ? shouldMaskMsisdn(callerRole) : false;
+
+  if (format === "csv") {
+    const header = "Statement ID,Type,MSISDN,Station,Show,Amount,Currency,Credit Source,Ticket,Status,Created\n";
+    const csv = statements.map((s: any) =>
+      `"${s.statementId}","${s.type}","${shouldMask ? maskMsisdn(s.msisdn || "") : s.msisdn}","${s.mediaStation}","${s.showName || ""}","${s.amount}","${s.currency}","${s.isFree ? "Free" : "Paid"}","${s.ticket}","${s.status}","${s.createdAt}"`
+    ).join("\n");
+    return { format: "csv", data: header + csv };
+  }
+
+  return { format: "json", data: statements };
 };
 
 export const ListenerStatementService = {
@@ -184,4 +337,5 @@ export const ListenerStatementService = {
   getAllStatements,
   getStatementById,
   getKPIs,
+  exportStatements,
 };

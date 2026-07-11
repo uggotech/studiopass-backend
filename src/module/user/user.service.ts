@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { StatusCodes } from "http-status-codes";
 import AppError from "../../errors/AppError";
 import { UserRepository } from "./user.repository";
@@ -9,6 +10,9 @@ import { MessageRepository } from "../message/message.repository";
 import { LoginProvider } from "../auth/auth.interface";
 import { UserRole } from "shared/roles";
 import bcrypt from "bcryptjs";
+import { UserCache } from "./user.cacheManage";
+
+const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const normalizeUser = (u: any) => ({
   id: u._id,
@@ -67,7 +71,7 @@ const getAllStationAdmins = async (query: Record<string, unknown>, scope?: { par
   }
 
   if (query.search) {
-    const searchRegex = new RegExp(query.search as string, "i");
+    const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
     filter.$or = [
       { fullName: searchRegex },
       { email: searchRegex },
@@ -105,6 +109,7 @@ const deactivateUser = async (id: string) => {
   }
 
   const updated = await UserRepository.updateById(id, { isBlocked: true } as any);
+  UserCache.invalidateProfile(id);
   return normalizeUser(updated!);
 };
 
@@ -115,6 +120,7 @@ const reactivateUser = async (id: string) => {
   }
 
   const updated = await UserRepository.updateById(id, { isBlocked: false } as any);
+  UserCache.invalidateProfile(id);
   return normalizeUser(updated!);
 };
 
@@ -133,43 +139,58 @@ const createMediaStation = async (data: {
   }
 
   // Check username uniqueness
-  const existingAuth = await AuthRepository.findByUsername(data.username);
+  const existingAuth = await AuthRepository.usernameExists(data.username);
   if (existingAuth) {
     throw new AppError(StatusCodes.CONFLICT, "Username already taken");
   }
 
-  // Create auth for media station user
-  const hashedPassword = await bcrypt.hash(data.password, 10);
-  const authDoc = await AuthRepository.create({
-    username: data.username,
-    password: hashedPassword,
-    loginProvider: LoginProvider.USERNAME,
-    role: UserRole.MEDIA_STATION,
-    status: "active",
-  });
+  // Use transaction for atomicity: auth + user
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  // Create user profile
-  const user = await UserRepository.create({
-    auth: authDoc._id,
-    fullName: data.fullName,
-    email: data.email,
-    phone: data.phone,
-    role: UserRole.MEDIA_STATION,
-    stationId: station._id,
-    profileCompleted: false,
-  });
+  try {
+    // Create auth for media station user
+    const hashedPassword = await bcrypt.hash(data.password, 10);
+    const authDocs = await AuthRepository.create({
+      username: data.username,
+      password: hashedPassword,
+      loginProvider: LoginProvider.USERNAME,
+      role: UserRole.MEDIA_STATION,
+      status: "active",
+    }, session);
+    const authDoc = Array.isArray(authDocs) ? authDocs[0] : authDocs;
 
-  return {
-    id: user._id,
-    fullName: user.fullName,
-    email: user.email,
-    role: user.role,
-    station: {
-      id: station._id,
-      name: station.name,
-      stationCode: station.stationCode,
-    },
-  };
+    // Create user profile
+    const users = await UserRepository.create({
+      auth: authDoc._id,
+      fullName: data.fullName,
+      email: data.email,
+      phone: data.phone,
+      role: UserRole.MEDIA_STATION,
+      stationId: station._id,
+      profileCompleted: false,
+    }, session);
+    const user = Array.isArray(users) ? users[0] : users;
+
+    await session.commitTransaction();
+
+    return {
+      id: user._id,
+      fullName: user.fullName,
+      email: user.email,
+      role: user.role,
+      station: {
+        id: station._id,
+        name: station.name,
+        stationCode: station.stationCode,
+      },
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 };
 
 const getAllMediaStationUsers = async (query: Record<string, unknown>, scope?: { partnerId?: string; stationId?: string }) => {
@@ -191,7 +212,7 @@ const getAllMediaStationUsers = async (query: Record<string, unknown>, scope?: {
   }
 
   if (query.search) {
-    const searchRegex = new RegExp(query.search as string, "i");
+    const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
     filter.$or = [
       { fullName: searchRegex },
       { email: searchRegex },
@@ -258,6 +279,10 @@ const updateMyProfile = async (
   }
 
   const updated = await UserRepository.updateById(userId, updateData as any);
+
+  // Invalidate cache
+  UserCache.invalidateProfile(userId);
+
   return {
     id: updated!._id,
     fullName: updated!.fullName ?? "",
@@ -295,6 +320,7 @@ const updateMyPreferences = async (
   };
 
   const updated = await UserRepository.updateById(userId, updateData as any);
+  UserCache.invalidateProfile(userId);
   return {
     id: updated!._id,
     preferences: updated!.preferences,
@@ -340,54 +366,69 @@ const createPresenter = async (data: {
   }
 
   // Check username uniqueness
-  const existingAuth = await AuthRepository.findByUsername(data.username);
+  const existingAuth = await AuthRepository.usernameExists(data.username);
   if (existingAuth) {
     throw new AppError(StatusCodes.CONFLICT, "Username already taken");
   }
 
-  // Create auth for presenter
-  const hashedPassword = await bcrypt.hash(data.password, 10);
-  const authDoc = await AuthRepository.create({
-    username: data.username,
-    password: hashedPassword,
-    loginProvider: LoginProvider.USERNAME,
-    role: UserRole.PRESENTER,
-    status: "active",
-  });
+  // Use transaction for atomicity: auth + user (+ optional show update)
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  // Create user profile
-  const user = await UserRepository.create({
-    auth: authDoc._id,
-    fullName: data.fullName,
-    email: data.email,
-    phone: data.phone,
-    role: UserRole.PRESENTER,
-    stationId: station._id,
-    profileCompleted: false,
-  });
+  try {
+    // Create auth for presenter
+    const hashedPassword = await bcrypt.hash(data.password, 10);
+    const authDocs = await AuthRepository.create({
+      username: data.username,
+      password: hashedPassword,
+      loginProvider: LoginProvider.USERNAME,
+      role: UserRole.PRESENTER,
+      status: "active",
+    }, session);
+    const authDoc = Array.isArray(authDocs) ? authDocs[0] : authDocs;
 
-  // Assign show if provided
-  let assignedShow: { id: string; name: string } | null = null;
-  if (data.showId) {
-    const show = await ShowRepository.findById(data.showId);
-    if (show) {
-      await ShowRepository.updatePresenter(data.showId, user._id.toString());
-      assignedShow = { id: show._id.toString(), name: show.name };
+    // Create user profile
+    const users = await UserRepository.create({
+      auth: authDoc._id,
+      fullName: data.fullName,
+      email: data.email,
+      phone: data.phone,
+      role: UserRole.PRESENTER,
+      stationId: station._id,
+      profileCompleted: false,
+    }, session);
+    const user = Array.isArray(users) ? users[0] : users;
+
+    // Assign show if provided
+    let assignedShow: { id: string; name: string } | null = null;
+    if (data.showId) {
+      const show = await ShowRepository.findById(data.showId);
+      if (show) {
+        await ShowRepository.updatePresenter(data.showId, user._id.toString());
+        assignedShow = { id: show._id.toString(), name: show.name };
+      }
     }
-  }
 
-  return {
-    id: user._id,
-    fullName: user.fullName,
-    email: user.email,
-    role: user.role,
-    station: {
-      id: station._id,
-      name: station.name,
-      stationCode: station.stationCode,
-    },
-    assignedShow,
-  };
+    await session.commitTransaction();
+
+    return {
+      id: user._id,
+      fullName: user.fullName,
+      email: user.email,
+      role: user.role,
+      station: {
+        id: station._id,
+        name: station.name,
+        stationCode: station.stationCode,
+      },
+      assignedShow,
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 };
 
 const getAllPresenters = async (query: Record<string, unknown>, scope?: { partnerId?: string; stationId?: string }) => {
@@ -409,7 +450,7 @@ const getAllPresenters = async (query: Record<string, unknown>, scope?: { partne
   }
 
   if (query.search) {
-    const searchRegex = new RegExp(query.search as string, "i");
+    const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
     filter.$or = [
       { fullName: searchRegex },
       { email: searchRegex },
@@ -456,7 +497,7 @@ const getAllListeners = async (
   if (scope?.partnerId) {
     const partner = await PartnerRepository.findById(scope.partnerId);
     if (partner?.country) {
-      filter.countryId = partner.country;
+      filter.countryId = (partner.country as any)?._id || partner.country;
     }
   }
 
@@ -478,7 +519,7 @@ const getAllListeners = async (
   }
 
   if (query.search) {
-    const searchRegex = new RegExp(query.search as string, "i");
+    const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
     filter.$or = [
       { fullName: searchRegex },
       { phone: searchRegex },

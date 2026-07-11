@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import { ZodObject } from "zod";
+import AppError from "../errors/AppError";
 
 const validateRequest =
   (schema: ZodObject) =>
@@ -9,7 +10,7 @@ const validateRequest =
       try {
         req.body.data = JSON.parse(req.body.data);
       } catch {
-        return next(new Error("Invalid JSON in data field"));
+        return next(new AppError(400, "Invalid JSON in data field"));
       }
     }
 

@@ -3,11 +3,14 @@ import express, { Request, Response } from "express";
 import { StatusCodes } from "http-status-codes";
 import router from "./routes";
 import cookieParser from "cookie-parser";
+import crypto from "crypto";
 import {
   helmetConfig,
   generalLimiter,
   compressionConfig,
   additionalSanitization,
+  sanitizeInput,
+  sanitizeQueryParser,
 } from "./middlewares/security";
 import {
   performanceMonitor,
@@ -23,6 +26,9 @@ const app: express.Application = express();
 // ============ 1. TRUST PROXY ============
 app.set("trust proxy", 1);
 
+// ============ 1b. CUSTOM QUERY PARSER (Express 5 compatible Mongo sanitize) ============
+app.set("query parser", sanitizeQueryParser);
+
 // ============ 2. SECURITY  ============
 app.use(helmetConfig);
 
@@ -33,7 +39,9 @@ const allowedOrigins =
     : [
         "http://localhost:3000",
         "http://localhost:3001",
+        "http://localhost:3002",
         "http://10.10.12.125:3000",
+        "http://10.10.12.125:3002",
       ];
 
 app.use(
@@ -66,7 +74,10 @@ app.use(
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 app.use(cookieParser());
 
-// ============ 7. SANITIZATION ============
+// ============ 7. MONGO INJECTION SANITIZATION (after body parsing) ============
+app.use(sanitizeInput);
+
+// ============ 8. XSS SANITIZATION ============
 app.use(additionalSanitization);
 
 // ============ 8. PERFORMANCE MONITORING ============
@@ -102,8 +113,19 @@ app.use(Morgan.errorHandler);
 app.get(
   "/api/v1/performance",
   (req: Request, res: Response, next) => {
-    const adminKey = req.headers["x-admin-key"];
-    if (adminKey !== config.admin_secret_key) {
+    const adminKey = req.headers["x-admin-key"] as string;
+    const expectedKey = config.admin_secret_key || "";
+    if (!adminKey || adminKey.length !== expectedKey.length) {
+      return res.status(StatusCodes.UNAUTHORIZED).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+    const isValid = crypto.timingSafeEqual(
+      Buffer.from(adminKey),
+      Buffer.from(expectedKey),
+    );
+    if (!isValid) {
       return res.status(StatusCodes.UNAUTHORIZED).json({
         success: false,
         message: "Unauthorized",

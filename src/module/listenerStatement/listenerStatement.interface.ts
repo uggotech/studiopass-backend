@@ -30,6 +30,8 @@ export interface TListenerStatement {
 
   ticket: string; // "TKT-{random}"
 
+  isFree: boolean; // true = spent using admin-granted free credits (amount=0)
+
   status: StatementStatus;
 
   createdAt: Date;

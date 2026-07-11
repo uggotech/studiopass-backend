@@ -2,6 +2,7 @@
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",
     "africastalking": "^0.8.0",
+    "agora-token": "^2.0.5",
     "bcryptjs": "^3.0.3",
     "colors": "^1.4.0",
     "compression": "^1.8.1",

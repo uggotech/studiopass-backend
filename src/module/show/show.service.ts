@@ -81,7 +81,7 @@ const getAllShows = async (
   if (query.presenterName) {
     const presenters = await User.find({
       fullName: { $regex: query.presenterName as string, $options: "i" },
-      role: "presenter",
+      role: "presenter" as any,
     }).select("_id").lean();
     const presenterIds = presenters.map((p) => p._id);
     if (presenterIds.length === 0) {
@@ -117,7 +117,8 @@ const getAllShows = async (
     stationIds.map(async (sid) => {
       const station = await StationRepository.findById(sid);
       if (station?.country) {
-        const country = await Country.findById(station.country).lean();
+        const countryId = (station.country as any)?._id || station.country;
+        const country = await Country.findById(countryId).lean();
         stationTimezones.set(sid, country?.timezone || "UTC");
       } else {
         stationTimezones.set(sid, "UTC");
@@ -206,12 +207,14 @@ const getActiveShow = async (stationId: string, timezone: string = "UTC") => {
   if (!show) {
     return null;
   }
+  const timeRemainingMinutes = computeTimeRemaining(show.endTime, timezone);
   return {
     id: show._id,
     name: show.name,
     days: show.days,
     startTime: show.startTime,
     endTime: show.endTime,
+    timeRemainingMinutes,
   };
 };
 
@@ -302,7 +305,8 @@ const getMyShows = async (userId: string) => {
     stationIds.map(async (sid) => {
       const station = await StationRepository.findById(sid);
       if (station?.country) {
-        const country = await Country.findById(station.country).lean();
+        const countryId = (station.country as any)?._id || station.country;
+        const country = await Country.findById(countryId).lean();
         stationTimezones.set(sid, country?.timezone || "UTC");
       } else {
         stationTimezones.set(sid, "UTC");
@@ -384,6 +388,17 @@ const createShow = async (data: {
     const presenter = await User.findById(data.presenterId);
     if (!presenter || presenter.role !== "presenter") {
       throw new AppError(StatusCodes.BAD_REQUEST, "Presenter not found");
+    }
+
+    // Check presenter doesn't already have an overlapping show
+    const hasPresenterOverlap = await ShowRepository.checkPresenterOverlap(
+      data.presenterId,
+      data.days,
+      data.startTime,
+      data.endTime,
+    );
+    if (hasPresenterOverlap) {
+      throw new AppError(StatusCodes.CONFLICT, "This presenter already has a show that overlaps with the specified time.");
     }
   }
 

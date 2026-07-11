@@ -9,6 +9,7 @@ import seedSuperAdmin from "./db/seedSuperAdmin";
 import seedCountries from "./db/seedCountries";
 import { initMinio } from "./util/minio";
 import { initSocket, getIO } from "./socket";
+import { startShowScheduler, stopShowScheduler } from "./module/show/showScheduler";
 
 const server = http.createServer(app);
 
@@ -33,6 +34,9 @@ async function main() {
     initSocket(server);
     logger.info("Socket.io initialized");
 
+    startShowScheduler(60000);
+    logger.info("Show scheduler started");
+
     const port = Number(config.port) || 5000;
 
     server.listen(port, "0.0.0.0", () => {
@@ -54,6 +58,8 @@ async function gracefulShutdown(signal: string) {
   logger.info(`${signal} received. Starting graceful shutdown...`);
 
   try {
+    stopShowScheduler();
+
     try {
       const io = getIO();
       io.close();

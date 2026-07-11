@@ -3,6 +3,8 @@ import bcrypt from "bcryptjs";
 import AppError from "../../errors/AppError";
 import { PartnerRepository } from "./partner.repository";
 import { AuthRepository } from "../auth/auth.repository";
+
+const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 import { UserRepository } from "../user/user.repository";
 import { CountryRepository } from "../country/country.repository";
 import { TPartner } from "./partner.interface";
@@ -33,7 +35,7 @@ const getAllPartners = async (query: Record<string, unknown>) => {
   }
 
   if (query.search) {
-    const searchRegex = new RegExp(query.search as string, "i");
+    const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
     filter.$or = [
       { name: searchRegex },
       { contactEmail: searchRegex },
@@ -85,7 +87,7 @@ const createPartnerWithAdmin = async (data: {
   }
 
   // Check username uniqueness
-  const existingAuth = await AuthRepository.findByUsername(data.adminUsername);
+  const existingAuth = await AuthRepository.usernameExists(data.adminUsername);
   if (existingAuth) {
     throw new AppError(StatusCodes.CONFLICT, "Username already taken");
   }

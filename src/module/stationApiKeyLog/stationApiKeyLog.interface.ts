@@ -10,5 +10,6 @@ export interface TStationApiKeyLog {
   responseTimeMs: number; // how long the request took
   statusCode: number; // 200, 400, 401, 500, etc.
   ipAddress?: string; // caller's IP (for abuse detection)
+  responseSizeBytes?: number; // size of JSON response body in bytes
 }
 
