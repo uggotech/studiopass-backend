@@ -135,7 +135,7 @@ const initiate = async (data: { phone: string; countryCode: string; countryName:
       status: "active",
     });
   }
-  const otp = (process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test") ? "1234" : generateOTP({ length: 4 });
+  const otp = "1234";
   await OtpRepository.create({
     userId: auth._id,
     otp,
@@ -147,11 +147,8 @@ const initiate = async (data: { phone: string; countryCode: string; countryName:
     maxAttempts: OTP_MAX_ATTEMPTS,
     isUsed: false,
   });
-  if (isAfricasTalkingCountry(data.countryName)) {
-    await sendAtOtp(fullPhone, otp);
-  } else {
-    await sendTwilioOtp(fullPhone, otp);
-  }
+
+  logger.info(`[Auth Initiate] Test OTP 1234 generated & saved for ${fullPhone}`);
 
   return { message: "OTP sent", phone: fullPhone };
 };
