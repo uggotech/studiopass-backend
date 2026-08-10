@@ -194,10 +194,10 @@ const createMediaStation = async (data: {
 
   // MVP: One media station account per station
   const existingMediaStation = await User.findOne({
-    stationId: data.stationId,
-    role: "media_station",
+    stationId: data.stationId as any,
+    role: UserRole.MEDIA_STATION,
     isDeleted: false,
-  });
+  } as any);
   if (existingMediaStation) {
     throw new AppError(
       StatusCodes.BAD_REQUEST,

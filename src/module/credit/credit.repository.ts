@@ -119,7 +119,7 @@ const countAllTransactions = async (filter: Record<string, unknown>) => {
 };
 
 const getTransactionByResource = async (resourceId: string, type: string) => {
-  return CreditTransaction.findOne({ resourceId, type })
+  return CreditTransaction.findOne({ resourceId, type } as any)
     .select("isFree")
     .lean();
 };

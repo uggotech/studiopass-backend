@@ -17,7 +17,7 @@ serviceAccount-runtime.json
 *.pem
 
 # Application logs
-logs/
+/logs/
 *.log
 
 # User uploads
