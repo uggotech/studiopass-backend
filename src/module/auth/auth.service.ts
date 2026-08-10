@@ -136,7 +136,6 @@ const initiate = async (data: { phone: string; countryCode: string; countryName:
     });
   }
   const otp = "1234";
-  // const otp = (process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test") ? "1234" : generateOTP({ length: 4 });
 
   await OtpRepository.create({
     userId: auth._id,
@@ -150,12 +149,16 @@ const initiate = async (data: { phone: string; countryCode: string; countryName:
     isUsed: false,
   });
 
-  // SMS Gateway Sending (Commented out for testing - default OTP is 1234):
-  // if (isAfricasTalkingCountry(data.countryName)) {
-  //   await sendAtOtp(fullPhone, otp);
-  // } else {
-  //   await sendTwilioOtp(fullPhone, otp);
-  // }
+  // SMS Gateway Sending (Disabled for testing — default OTP is 1234):
+  const sendRealSms = false;
+  if (sendRealSms) {
+    const realOtp = generateOTP({ length: 4 });
+    if (isAfricasTalkingCountry(data.countryName)) {
+      await sendAtOtp(fullPhone, realOtp);
+    } else {
+      await sendTwilioOtp(fullPhone, realOtp);
+    }
+  }
 
   logger.info(`[Auth Initiate] Test OTP 1234 generated & saved for ${fullPhone}`);
 
