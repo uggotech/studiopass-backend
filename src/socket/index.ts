@@ -22,19 +22,13 @@ const userConnectionCount: Map<string, number> = new Map();
 const MAX_CONNECTIONS_PER_USER = 5;
 
 export function initSocket(server: http.Server): Server {
-  const allowedOrigins = config.socket.cors_origin.split(",").map((o: string) => o.trim());
-
   io = new Server(server, {
+    transports: ["websocket", "polling"],
+    allowUpgrades: true,
     cors: {
-      origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes("*") || allowedOrigins.includes(origin) || allowedOrigins.some((o: string) => origin.startsWith(o))) {
-          callback(null, true);
-        } else {
-          // Fallback allow origin in production/VPS to prevent websocket connect errors
-          callback(null, true);
-        }
-      },
+      origin: "*",
       methods: ["GET", "POST"],
+      credentials: true,
     },
   });
 
