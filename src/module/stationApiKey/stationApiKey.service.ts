@@ -41,11 +41,12 @@ const createKey = async (
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
   }
 
-  const key = generateApiKey();
+  const rawKey = generateApiKey();
+  const keyHash = crypto.createHash("sha256").update(rawKey).digest("hex");
 
   const created = await StationApiKeyRepository.create({
     station: new mongoose.Types.ObjectId(stationId),
-    key,
+    key: keyHash,
     name,
     type,
     isActive: true,
@@ -53,8 +54,8 @@ const createKey = async (
     avgResponseTimeMs: 0,
   });
 
-  // Return the key only on creation (it won't be shown again)
-  return { ...created, key };
+  // Return the raw key only on creation (it won't be shown again)
+  return { ...created, key: rawKey };
 };
 
 const regenerateKey = async (
@@ -79,10 +80,11 @@ const regenerateKey = async (
   await StationApiKeyRepository.deactivate(keyId, stationId);
 
   // Create new key linked to old one
-  const newKey = generateApiKey();
+  const rawKey = generateApiKey();
+  const keyHash = crypto.createHash("sha256").update(rawKey).digest("hex");
   const created = await StationApiKeyRepository.create({
     station: new mongoose.Types.ObjectId(stationId),
-    key: newKey,
+    key: keyHash,
     name: (oldKey as any).name,
     type: (oldKey as any).type,
     isActive: true,
@@ -92,7 +94,7 @@ const regenerateKey = async (
     avgResponseTimeMs: 0,
   });
 
-  return { ...created, key: newKey };
+  return { ...created, key: rawKey };
 };
 
 const deactivateKey = async (
@@ -160,7 +162,7 @@ const getMessagesForOutput = async (
   }
 
   const messages = await Message.find(filter)
-    .select("content msisdn show user sentToOutputAt createdAt")
+    .select("content imageUrl msisdn show user sentToOutputAt createdAt")
     .populate("show", "name")
     .populate("user", "fullName avatar")
     .sort({ createdAt: -1 })
@@ -175,20 +177,28 @@ const getMessagesForOutput = async (
   // Mask msisdn for TV output (TV should not show full phone numbers)
   const minioBaseUrl = config.minio.publicUrl
     || `${config.minio.useSSL ? "https" : "http"}://${config.minio.endpoint}:${config.minio.port}`;
-  const maskedMessages = messages.map((m) => ({
-    id: m._id,
-    content: m.content,
-    msisdn: m.msisdn ? `${m.msisdn.substring(0, 4)}****${m.msisdn.substring(m.msisdn.length - 3)}` : "",
-    show: (m.show as any)?.name || "",
-    user: (m as any).user
-      ? {
-          name: (m as any).user.fullName || null,
-          avatar: (m as any).user.avatar ? `${minioBaseUrl}/${(m as any).user.avatar}` : null,
-        }
-      : null,
-    sentToOutputAt: m.sentToOutputAt,
-    createdAt: m.createdAt,
-  }));
+  const maskedMessages = messages.map((m) => {
+    const rawImageUrl = (m as any).imageUrl;
+    const isImage = !!rawImageUrl;
+    const fullImageUrl = isImage ? `${minioBaseUrl}/${rawImageUrl}` : null;
+
+    return {
+      id: m._id,
+      type: isImage ? "image" : "text",
+      content: isImage ? fullImageUrl : m.content,
+      imageUrl: fullImageUrl,
+      msisdn: m.msisdn ? `${m.msisdn.substring(0, 4)}****${m.msisdn.substring(m.msisdn.length - 3)}` : "",
+      show: (m.show as any)?.name || "",
+      user: (m as any).user
+        ? {
+            name: (m as any).user.fullName || null,
+            avatar: (m as any).user.avatar ? `${minioBaseUrl}/${(m as any).user.avatar}` : null,
+          }
+        : null,
+      sentToOutputAt: m.sentToOutputAt,
+      createdAt: m.createdAt,
+    };
+  });
 
   const responseSizeBytes = JSON.stringify(maskedMessages).length;
 

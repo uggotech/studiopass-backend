@@ -3,28 +3,56 @@ services:
     image: mongo:7
     restart: unless-stopped
     ports:
-      - "27019:27017"
+      - "127.0.0.1:27020:27017"
     volumes:
       - mongo_data:/data/db
     command: mongod --replSet rs0
     environment:
       MONGO_INITDB_DATABASE: studiopass
+    healthcheck:
+      test: mongosh --eval "db.adminCommand('ping')"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+    networks:
+      - studiopass-net
 
   mongo-init:
     image: mongo:7
     depends_on:
-      - mongo
+      mongo:
+        condition: service_healthy
     restart: "no"
     entrypoint: >
       mongosh --host mongo:27017 --eval '
         try { rs.status() } catch (e) { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] }) }
       '
+    networks:
+      - studiopass-net
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redispass}
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: redis-cli -a ${REDIS_PASSWORD:-redispass} ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      - studiopass-net
 
   minio:
     image: minio/minio
@@ -35,9 +63,21 @@ services:
     volumes:
       - minio_data:/data
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin_secure_pass}
     command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      - studiopass-net
 
   backend:
     build:
@@ -52,20 +92,39 @@ services:
       - DATABASE_URL=mongodb://mongo:27017/studiopass?replicaSet=rs0
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redispass}
       - MINIO_ENDPOINT=minio
       - MINIO_PORT=9000
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin_secure_pass}
       - MINIO_BUCKET=studiopass
       - MINIO_USE_SSL=false
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_INTERVAL=1000
+    command: npx ts-node-dev --respawn --poll --transpile-only -r tsconfig-paths/register src/server.ts
     volumes:
       - ./src:/app/src
     depends_on:
-      - mongo
-      - redis
-      - minio
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+    networks:
+      - studiopass-net
 
 volumes:
   mongo_data:
   redis_data:
   minio_data:
+
+networks:
+  studiopass-net:
+    driver: bridge

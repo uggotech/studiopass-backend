@@ -4,25 +4,30 @@ import { ShowRepository } from "./show.repository";
 import { StationRepository } from "../station/station.repository";
 import { Country } from "../country/country.model";
 import { User } from "../user/user.model";
+import { UserRepository } from "../user/user.repository";
 import { TShow } from "./show.interface";
+import { UserRole } from "../../shared/roles";
 
 function computeShowStatus(show: TShow, timezone: string): "Active" | "Scheduled" | "Inactive" {
   if (!show.isActive) return "Inactive";
 
   const now = new Date();
-  const localDateStr = now.toLocaleDateString("en-US", {
+  const dateFormatter = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
     weekday: "long",
   });
-  const localTimeStr = now.toLocaleTimeString("en-US", {
+  const dayOfWeek = dateFormatter.format(now).toLowerCase();
+
+  const timeFormatter = new Intl.DateTimeFormat("en-GB", {
     timeZone: timezone,
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   });
-
-  const dayOfWeek = localDateStr.split(",")[0]?.trim().toLowerCase() || "";
-  const currentTime = localTimeStr.slice(0, 5);
+  const timeParts = timeFormatter.formatToParts(now);
+  const hour = timeParts.find((p) => p.type === "hour")?.value ?? "00";
+  const minute = timeParts.find((p) => p.type === "minute")?.value ?? "00";
+  const currentTime = `${hour}:${minute}`;
 
   // Handle shows that span midnight (endTime <= startTime, e.g. "19:00" to "00:00")
   const isWrapsMidnight = show.startTime >= show.endTime;
@@ -59,9 +64,11 @@ const getAllShows = async (
   }
   // super_admin: no filter — sees all
 
+  const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
   // Search
   if (query.search) {
-    filter.name = { $regex: query.search, $options: "i" };
+    filter.name = { $regex: escapeRegex(query.search as string), $options: "i" };
   }
 
   // Filter by station name (for super_admin/partner_admin)
@@ -80,7 +87,7 @@ const getAllShows = async (
   // Filter by presenter name
   if (query.presenterName) {
     const presenters = await User.find({
-      fullName: { $regex: query.presenterName as string, $options: "i" },
+      fullName: { $regex: escapeRegex(query.presenterName as string), $options: "i" },
       role: "presenter" as any,
     }).select("_id").lean();
     const presenterIds = presenters.map((p) => p._id);
@@ -90,14 +97,19 @@ const getAllShows = async (
     filter.presenter = { $in: presenterIds };
   }
 
-  // Filter by status
-  // Note: status is computed, so we can't filter directly in DB.
-  // We'll do post-query filtering for status.
-
   // Pagination
   const page = Math.max(1, Number(query.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
   const skip = (page - 1) * limit;
+
+  if (query.status === "Active") {
+    filter.isActive = true;
+  } else if (query.status === "Inactive") {
+    filter.isActive = false;
+  } else if (query.status === "Scheduled") {
+    filter.isActive = true;
+    filter.startDate = { $gt: new Date() };
+  }
 
   const [shows, total] = await Promise.all([
     ShowRepository.findAll(filter, { skip, limit }),
@@ -105,7 +117,6 @@ const getAllShows = async (
   ]);
 
   // Compute status for each show (needs station timezone)
-  // Batch: group shows by station, look up timezone per station
   const stationTimezones = new Map<string, string>();
   const stationIds = [...new Set(shows.map((s) => {
     const station = s.station as any;
@@ -131,22 +142,20 @@ const getAllShows = async (
     const sid = stationObj?._id?.toString() || stationObj?.toString() || "";
     const timezone = stationTimezones.get(sid) || "UTC";
     const status = computeShowStatus(s, timezone);
-    return { ...s, status };
+    return {
+      ...s,
+      id: s._id.toString(),
+      status,
+    };
   });
 
-  // Post-filter by computed status
-  let filtered = showsWithStatus;
-  if (query.status) {
-    filtered = showsWithStatus.filter((s) => s.status === query.status);
-  }
-
   return {
-    shows: filtered,
+    shows: showsWithStatus,
     meta: {
       page,
       limit,
-      total: query.status ? filtered.length : total,
-      totalPage: Math.ceil((query.status ? filtered.length : total) / limit),
+      total,
+      totalPage: Math.ceil(total / limit),
     },
   };
 };
@@ -157,24 +166,30 @@ const getShowById = async (id: string) => {
     throw new AppError(StatusCodes.NOT_FOUND, "Show not found");
   }
 
-  // Compute status
-  let status: "Active" | "Scheduled" | "Inactive" = "Scheduled";
-  const station = show.station as any;
-  if (station?.country) {
-    const countryDoc = await Country.findById(station.country).lean();
-    const timezone = countryDoc?.timezone || "UTC";
-    status = computeShowStatus(show as TShow, timezone);
+  // Compute status reliably
+  let timezone = "UTC";
+  const stationObj = show.station as any;
+  const stationId = stationObj?._id?.toString() || stationObj?.toString() || "";
+  if (stationId) {
+    const station = await StationRepository.findById(stationId);
+    if (station?.country) {
+      const countryId = (station.country as any)?._id || station.country;
+      const countryDoc = await Country.findById(countryId).lean();
+      if (countryDoc?.timezone) timezone = countryDoc.timezone;
+    }
   }
+
+  const status = computeShowStatus(show as TShow, timezone);
 
   return {
     id: show._id,
     name: show.name,
     description: show.description,
     station: {
-      id: station?._id,
-      name: station?.name,
-      stationCode: station?.stationCode,
-      category: station?.category,
+      id: stationObj?._id || stationObj?.id || stationId,
+      name: stationObj?.name || "",
+      stationCode: stationObj?.stationCode || "",
+      category: stationObj?.category || "",
     },
     presenter: show.presenter
       ? {
@@ -203,11 +218,21 @@ const getShowsByStation = async (stationId: string) => {
 };
 
 const getActiveShow = async (stationId: string, timezone: string = "UTC") => {
+  const station = await StationRepository.findById(stationId);
+  if (station && station.category === "channel") {
+    return {
+      id: "channel_247",
+      name: station.name,
+      isChannel: true,
+      timeRemainingMinutes: 0,
+    };
+  }
+
   const show = await ShowRepository.findActiveShowForStation(stationId, timezone);
   if (!show) {
     return null;
   }
-  const timeRemainingMinutes = computeTimeRemaining(show.endTime, timezone);
+  const timeRemainingMinutes = computeTimeRemaining(show.endTime, timezone, show.startTime);
   return {
     id: show._id,
     name: show.name,
@@ -215,6 +240,7 @@ const getActiveShow = async (stationId: string, timezone: string = "UTC") => {
     startTime: show.startTime,
     endTime: show.endTime,
     timeRemainingMinutes,
+    isChannel: false,
   };
 };
 
@@ -225,17 +251,30 @@ function parseTimeToMinutes(time: string): number {
   return h * 60 + m;
 }
 
-function computeTimeRemaining(endTime: string, timezone: string): number {
+function computeTimeRemaining(endTime: string, timezone: string, startTime?: string): number {
   const now = new Date();
-  const localTimeStr = now.toLocaleTimeString("en-US", {
+  const timeFormatter = new Intl.DateTimeFormat("en-GB", {
     timeZone: timezone,
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   });
-  const currentMinutes = parseTimeToMinutes(localTimeStr.slice(0, 5));
+  const timeParts = timeFormatter.formatToParts(now);
+  const hour = timeParts.find((p) => p.type === "hour")?.value ?? "00";
+  const minute = timeParts.find((p) => p.type === "minute")?.value ?? "00";
+  const currentMinutes = parseTimeToMinutes(`${hour}:${minute}`);
   const endMinutes = parseTimeToMinutes(endTime);
 
+  // Handle midnight-spanning shows (e.g. 22:00 - 02:00)
+  if (startTime) {
+    const startMinutes = parseTimeToMinutes(startTime);
+    if (startMinutes >= endMinutes) {
+      // Midnight-spanning: remaining = time to midnight + endTime
+      return Math.max(0, (24 * 60 - currentMinutes) + endMinutes);
+    }
+  }
+
+  // Normal show: remaining = endTime - currentTime
   // Handle midnight wrap: if end is "00:00" it means 24:00
   const adjustedEnd = endMinutes === 0 ? 24 * 60 : endMinutes;
   const remaining = adjustedEnd - currentMinutes;
@@ -244,19 +283,24 @@ function computeTimeRemaining(endTime: string, timezone: string): number {
 
 function computeNextStartTime(startTime: string, days: string[], timezone: string): { minutesUntil: number; nextDay: string } | null {
   const now = new Date();
-  const localDateStr = now.toLocaleDateString("en-US", {
+  const dateFormatter = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
     weekday: "long",
   });
-  const localTimeStr = now.toLocaleTimeString("en-US", {
+  const localDateStr = dateFormatter.format(now);
+  const timeFormatter = new Intl.DateTimeFormat("en-GB", {
     timeZone: timezone,
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   });
+  const timeParts = timeFormatter.formatToParts(now);
+  const hour = timeParts.find((p) => p.type === "hour")?.value ?? "00";
+  const minute = timeParts.find((p) => p.type === "minute")?.value ?? "00";
+  const currentTimeStr = `${hour}:${minute}`;
 
   const currentDay = localDateStr.split(",")[0]?.trim().toLowerCase() || "";
-  const currentMinutes = parseTimeToMinutes(localTimeStr.slice(0, 5));
+  const currentMinutes = parseTimeToMinutes(currentTimeStr);
   const startMinutes = parseTimeToMinutes(startTime);
 
   const dayOrder = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
@@ -337,7 +381,7 @@ const getMyShows = async (userId: string) => {
     };
 
     if (status === "Active") {
-      const remaining = computeTimeRemaining(s.endTime, timezone);
+      const remaining = computeTimeRemaining(s.endTime, timezone, s.startTime);
       return { ...base, timeRemainingMinutes: remaining };
     }
 
@@ -367,6 +411,19 @@ const getMyShows = async (userId: string) => {
   };
 };
 
+const dayMap: Record<string, string> = {
+  MON: "monday", TUE: "tuesday", WED: "wednesday",
+  THU: "thursday", FRI: "friday", SAT: "saturday", SUN: "sunday",
+};
+
+const normalizeDays = (days: string[]): string[] => {
+  return days.map((d) => dayMap[d] || d.toLowerCase());
+};
+
+const formatDays = (days: string[]): string => {
+  return days.map((d) => d.charAt(0).toUpperCase() + d.slice(1)).join(", ");
+};
+
 const createShow = async (data: {
   name: string;
   stationId: string;
@@ -382,43 +439,47 @@ const createShow = async (data: {
     throw new AppError(StatusCodes.BAD_REQUEST, "Station not found");
   }
 
+  // Normalize day abbreviations to full names BEFORE any overlap checks
+  const fullDays = normalizeDays(data.days) as any[];
+
   // Validate presenter if provided
   if (data.presenterId) {
-    const { User } = await import("../user/user.model");
-    const presenter = await User.findById(data.presenterId);
-    if (!presenter || presenter.role !== "presenter") {
+    const presenter = await UserRepository.findById(data.presenterId);
+    if (!presenter || presenter.role !== UserRole.PRESENTER) {
       throw new AppError(StatusCodes.BAD_REQUEST, "Presenter not found");
+    }
+    if (presenter.stationId && presenter.stationId.toString() !== data.stationId) {
+      throw new AppError(StatusCodes.BAD_REQUEST, "Presenter belongs to a different station");
     }
 
     // Check presenter doesn't already have an overlapping show
-    const hasPresenterOverlap = await ShowRepository.checkPresenterOverlap(
+    const presenterConflict = await ShowRepository.checkPresenterOverlap(
       data.presenterId,
-      data.days,
+      fullDays,
       data.startTime,
       data.endTime,
     );
-    if (hasPresenterOverlap) {
-      throw new AppError(StatusCodes.CONFLICT, "This presenter already has a show that overlaps with the specified time.");
+    if (presenterConflict) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        `Presenter already has a conflicting show "${presenterConflict.showName}" on ${formatDays(presenterConflict.days)} (${presenterConflict.startTime} - ${presenterConflict.endTime})`,
+      );
     }
   }
 
   // Check for overlap: same station, same days, overlapping times
-  const hasOverlap = await ShowRepository.checkOverlap(
+  const stationConflict = await ShowRepository.checkOverlap(
     data.stationId,
-    data.days,
+    fullDays,
     data.startTime,
     data.endTime,
   );
-  if (hasOverlap) {
-    throw new AppError(StatusCodes.CONFLICT, "Show overlaps with an existing show on the same station");
+  if (stationConflict) {
+    throw new AppError(
+      StatusCodes.CONFLICT,
+      `Show overlaps with existing show "${stationConflict.showName}" on ${formatDays(stationConflict.days)} (${stationConflict.startTime} - ${stationConflict.endTime})`,
+    );
   }
-
-  // Map day abbreviations to full names
-  const dayMap: Record<string, string> = {
-    MON: "monday", TUE: "tuesday", WED: "wednesday",
-    THU: "thursday", FRI: "friday", SAT: "saturday", SUN: "sunday",
-  };
-  const fullDays = data.days.map((d) => dayMap[d] || d.toLowerCase()) as any[];
 
   const show = await ShowRepository.create({
     station: station._id,
@@ -441,6 +502,115 @@ const createShow = async (data: {
   };
 };
 
+const updateShow = async (
+  showId: string,
+  data: {
+    name?: string;
+    description?: string;
+    stationId?: string;
+    presenterId?: string | null;
+    days?: string[];
+    startTime?: string;
+    endTime?: string;
+    status?: "Active" | "Scheduled" | "Inactive";
+  },
+  scope?: { partnerId?: string; stationId?: string },
+) => {
+  const show = await ShowRepository.findById(showId);
+  if (!show) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Show not found");
+  }
+
+  // Cross-station security check for station_admin
+  const stationId = (show.station as any)?._id?.toString() || show.station?.toString();
+  if (scope?.stationId && stationId !== scope.stationId) {
+    throw new AppError(StatusCodes.FORBIDDEN, "You are not authorized to update this show");
+  }
+
+  // Determine target schedule fields (fallback to existing show values)
+  const effectiveDays = data.days ? normalizeDays(data.days) : show.days;
+  const effectiveStartTime = data.startTime ?? show.startTime;
+  const effectiveEndTime = data.endTime ?? show.endTime;
+  const effectiveStatus = data.status ?? (show as any).status ?? (show.isActive ? "Active" : "Inactive");
+  const effectiveIsActive = effectiveStatus !== "Inactive";
+
+  // 1. Time Order Validation
+  if (effectiveStartTime === effectiveEndTime) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Start time and end time cannot be the same");
+  }
+
+  // 2. Determine target presenter ID
+  let effectivePresenterId: string | null = null;
+  if (data.presenterId !== undefined) {
+    if (data.presenterId === null || data.presenterId === "" || data.presenterId === "unassign") {
+      effectivePresenterId = null;
+    } else {
+      const presenter = await UserRepository.findById(data.presenterId);
+      if (!presenter || presenter.role !== UserRole.PRESENTER) {
+        throw new AppError(StatusCodes.BAD_REQUEST, "Invalid presenter ID");
+      }
+      if (presenter.stationId && presenter.stationId.toString() !== stationId) {
+        throw new AppError(StatusCodes.BAD_REQUEST, "Presenter belongs to a different station");
+      }
+      effectivePresenterId = presenter._id.toString();
+    }
+  } else {
+    effectivePresenterId = (show.presenter as any)?._id?.toString() || show.presenter?.toString() || null;
+  }
+
+  // 3. Check for Station Show Overlap Conflict (excluding current showId)
+  if (effectiveIsActive) {
+    const stationConflict = await ShowRepository.checkOverlap(
+      stationId,
+      effectiveDays,
+      effectiveStartTime,
+      effectiveEndTime,
+      showId,
+    );
+    if (stationConflict) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        `Show overlaps with existing show "${stationConflict.showName}" on ${formatDays(stationConflict.days)} (${stationConflict.startTime} - ${stationConflict.endTime})`,
+      );
+    }
+  }
+
+  // 4. Check for Presenter Schedule Overlap Conflict (excluding current showId)
+  if (effectivePresenterId && effectiveIsActive) {
+    const presenterConflict = await ShowRepository.checkPresenterOverlap(
+      effectivePresenterId,
+      effectiveDays,
+      effectiveStartTime,
+      effectiveEndTime,
+      showId,
+    );
+    if (presenterConflict) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        `Presenter already has a conflicting show "${presenterConflict.showName}" on ${formatDays(presenterConflict.days)} (${presenterConflict.startTime} - ${presenterConflict.endTime})`,
+      );
+    }
+  }
+
+  // 5. Construct update object
+  const updateData: Record<string, unknown> = {};
+  if (data.name !== undefined) updateData.name = data.name;
+  if (data.description !== undefined) updateData.description = data.description;
+  if (data.days !== undefined) updateData.days = effectiveDays;
+  if (data.startTime !== undefined) updateData.startTime = effectiveStartTime;
+  if (data.endTime !== undefined) updateData.endTime = effectiveEndTime;
+  if (data.status !== undefined) {
+    updateData.status = effectiveStatus;
+    updateData.isActive = effectiveIsActive;
+  }
+  if (data.presenterId !== undefined) {
+    updateData.presenter = effectivePresenterId;
+  }
+
+  const updated = await ShowRepository.updateById(showId, updateData as any);
+  return getShowById(updated!._id.toString());
+};
+
 export const ShowService = {
   getAllShows,
   getShowById,
@@ -448,4 +618,5 @@ export const ShowService = {
   getActiveShow,
   getMyShows,
   createShow,
+  updateShow,
 };

@@ -6,6 +6,7 @@ import { TPoll, TPollOption } from "./poll.interface";
 const pollOptionSchema = new Schema(
   {
     label: { type: String, required: true, trim: true },
+    imageUrl: { type: String, default: null, trim: true },
     votes: { type: Number, default: 0, min: 0 },
   },
   { _id: false },

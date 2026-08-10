@@ -1,4 +1,5 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { NotificationController } from "./notification.controller";
 import { NotificationDto } from "./notification.dto";
 import { UserRole } from "shared/roles";
@@ -6,6 +7,14 @@ import auth from "../../middlewares/auth";
 import validateRequest from "../../middlewares/validateRequest";
 
 const router = Router();
+
+const notificationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: { success: false, message: "Too many notification requests. Please try again later." },
+});
+
+router.use(notificationLimiter);
 
 // All notification routes require authentication — users see only their own
 const allowedRoles = [

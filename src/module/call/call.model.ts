@@ -57,7 +57,7 @@ export interface ICall extends Document {
   endedAt?: Date;
 
   /** Final status of the call */
-  status: "queued" | "missed" | "rejected" | "answered" | "cancelled";
+  status: "queued" | "missed" | "rejected" | "answered" | "cancelled" | "completed";
 
   /** Credits consumed (only for answered/rejected calls) */
   creditsUsed: number;
@@ -129,7 +129,7 @@ const callSchema = new Schema<ICall>(
     },
     status: {
       type: String,
-      enum: ["queued", "missed", "rejected", "answered", "cancelled"],
+      enum: ["queued", "missed", "rejected", "answered", "cancelled", "completed"],
       required: [true, "Status is required"],
       index: true,
     },
@@ -164,6 +164,11 @@ callSchema.index({ station: 1, status: 1, startedAt: -1 }); // Call history by s
 callSchema.index({ station: 1, show: 1, startedAt: -1 }); // Show-specific calls
 callSchema.index({ startedBy: 1, startedAt: -1 }); // User's call history
 callSchema.index({ status: 1, startedAt: -1 }); // Global call queue
+// Prevent duplicate active calls per user (partial unique index)
+callSchema.index(
+  { startedBy: 1 },
+  { unique: true, partialFilterExpression: { status: { $in: ["queued", "answered"] } } },
+);
 
 const Call: Model<ICall> =
   mongoose.models.Call || mongoose.model<ICall>("Call", callSchema);

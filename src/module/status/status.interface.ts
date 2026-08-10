@@ -23,8 +23,8 @@ export interface TStatus {
   content: string; // text content
   media?: string; // image/video (MinIO path)
 
-  // Auto weekly top fans data
-  topFans?: TStatusTopFan[];
+  // Auto weekly top fans data (one status per fan — each post is independent)
+  topFan?: TStatusTopFan;
   weekStart?: Date;
   weekEnd?: Date;
 

@@ -1,6 +1,6 @@
 import { Types } from "mongoose";
 
-export type CreditTxType = "purchase" | "admin_grant" | "message_deduction" | "call_deduction";
+export type CreditTxType = "purchase" | "admin_grant" | "message_deduction" | "call_deduction" | "call_refund" | "challenge_deduction" | "challenge_refund" | "poll_deduction" | "poll_refund" | "challenge_reward";
 export type PaymentMethod = "mobile_money" | "card";
 export type CreditTxStatus = "completed" | "pending" | "failed";
 
@@ -22,8 +22,8 @@ export interface TCreditTransaction {
 
   // Usage metadata
   station?: Types.ObjectId; // → Station (which station this was spent at)
-  resourceType?: "message" | "call";
-  resourceId?: Types.ObjectId; // → Message or CallLog
+  resourceType?: "message" | "call" | "challenge" | "poll";
+  resourceId?: Types.ObjectId; // → Message, CallLog, Challenge, or ChannelPoll
 
   status: CreditTxStatus;
   createdAt: Date;

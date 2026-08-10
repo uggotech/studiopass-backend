@@ -21,3 +21,19 @@ export const getStripeClient = (): InstanceType<typeof Stripe> => {
 
   return stripeClient;
 };
+
+export const verifyStripeWebhookSignature = (
+  payload: string | Buffer,
+  signature: string | string[],
+  webhookSecret: string,
+): any => {
+  const client = getStripeClient();
+  try {
+    return client.webhooks.constructEvent(payload, signature, webhookSecret);
+  } catch (err: any) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      `Webhook Signature Verification Failed: ${err.message}`,
+    );
+  }
+};

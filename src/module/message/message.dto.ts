@@ -70,6 +70,9 @@ const getPendingMessages = z.object({
     stationId: z.string().min(1, "Station ID is required"),
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(50),
+    search: z.string().optional(),
+    type: z.enum(["all", "text", "image"]).optional(),
+    timeRange: z.enum(["all", "today", "7days", "30days"]).optional(),
   }),
 });
 

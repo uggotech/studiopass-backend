@@ -5,7 +5,6 @@ export type StatementStatus = "Successful" | "Failed" | "Pending";
 
 export interface TListenerStatement {
   _id: Types.ObjectId;
-  statementId: string; // "LS-{timestamp}{random}"
   user: Types.ObjectId; // → User (the listener)
   type: StatementType; // "Call" | "Message"
 

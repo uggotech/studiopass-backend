@@ -33,6 +33,10 @@ const updateById = (id: string, data: Partial<TAuth>): Promise<TAuth | null> => 
   return Auth.findByIdAndUpdate(id, data, { new: true }).lean();
 };
 
+const updatePassword = (id: string, passwordHash: string) => {
+  return Auth.findByIdAndUpdate(id, { password: passwordHash }, { new: true }).lean();
+};
+
 export const AuthRepository = {
   findByPhone,
   findByUsername,
@@ -41,4 +45,5 @@ export const AuthRepository = {
   findByIdWithPassword,
   create,
   updateById,
+  updatePassword,
 };

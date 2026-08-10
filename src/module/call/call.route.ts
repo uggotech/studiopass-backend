@@ -30,6 +30,7 @@ router.post(
 router.post(
   "/join",
   auth(UserRole.USER),
+  strictLimiter,
   validateRequest(CallDto.joinCall),
   CallController.joinCall,
 );
@@ -47,8 +48,18 @@ router.post(
 router.post(
   "/cancel",
   auth(UserRole.USER),
+  strictLimiter,
   validateRequest(CallDto.cancelCall),
   CallController.cancelCall,
+);
+
+// Operator: cut/decline an incoming call
+router.post(
+  "/reject",
+  auth(UserRole.MEDIA_STATION, UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
+  strictLimiter,
+  validateRequest(CallDto.rejectCall),
+  CallController.rejectCall,
 );
 
 // User: call history

@@ -7,7 +7,7 @@ import { emitToStation } from "../../socket";
 const createPoll = async (
   stationId: string,
   question: string,
-  options: string[],
+  options: Array<string | { label: string; imageUrl?: string | null }>,
   createdBy: string,
   showId?: string,
   expiresAt?: string,
@@ -17,11 +17,18 @@ const createPoll = async (
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
   }
 
+  const formattedOptions = options.map((opt) => {
+    if (typeof opt === "string") {
+      return { label: opt, imageUrl: null, votes: 0 };
+    }
+    return { label: opt.label, imageUrl: opt.imageUrl || null, votes: 0 };
+  });
+
   const poll = await PollRepository.create({
     station: stationId,
     show: showId || undefined,
     question,
-    options: options.map((label) => ({ label, votes: 0 })),
+    options: formattedOptions,
     status: "active",
     createdBy,
     expiresAt: expiresAt ? new Date(expiresAt) : null,
@@ -59,14 +66,15 @@ const getStationPolls = async (stationId: string, page: number, limit: number, s
 const getAllPolls = async (query: Record<string, unknown>, scope?: { partnerId?: string; stationId?: string; role?: string }) => {
   const filter: Record<string, unknown> = {};
 
-  if (scope?.role === "station_admin" && scope.stationId) {
+  if (query.station) {
+    filter.station = query.station;
+  } else if (scope?.role === "station_admin" && scope.stationId) {
     filter.station = scope.stationId;
   } else if (scope?.role === "partner_admin" && scope.partnerId) {
     const partnerStations = await StationRepository.findAll({ partner: scope.partnerId }, { limit: 1000 });
     filter.station = { $in: partnerStations.map((s: any) => s._id) };
   }
 
-  if (query.station) filter.station = query.station;
   if (query.status) filter.status = query.status;
 
   if (query.search) {

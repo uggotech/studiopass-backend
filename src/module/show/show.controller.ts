@@ -84,10 +84,28 @@ const getActiveShow = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const updateShow = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const { id } = req.params as { id: string };
+  const scope: { partnerId?: string; stationId?: string } = {};
+  if (user?.stationId) scope.stationId = user.stationId.toString();
+  else if (user?.partnerId) scope.partnerId = user.partnerId.toString();
+
+  const result = await ShowService.updateShow(id, req.body, scope);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Show updated successfully",
+    data: result,
+  });
+});
+
 export const ShowController = {
   getAllShows,
   getShowById,
   createShow,
   getMyShows,
   getActiveShow,
+  updateShow,
 };

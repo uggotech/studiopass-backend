@@ -7,6 +7,7 @@ import { StationRepository } from "../station/station.repository";
 import { ShowRepository } from "../show/show.repository";
 import { CreditService } from "../credit/credit.service";
 import { CreditRepository } from "../credit/credit.repository";
+import { CreditTransaction } from "../creditTransaction/creditTransaction.model";
 import { Country } from "../country/country.model";
 import { User } from "../user/user.model";
 import redisClient from "../../redis/redisClient";
@@ -17,6 +18,83 @@ import {
   emitToUser,
   getIO,
 } from "../../socket";
+import { ListenerStatementService } from "../listenerStatement/listenerStatement.service";
+
+// ─── Shared Call Helpers ────────────────────────────────────────────────────
+// Single source of truth for refund, statement, and notification logic.
+// Every code path that ends a call MUST use these helpers.
+
+/**
+ * Refund credits if the call was still queued (not answered).
+ * Safe to call multiple times — checks call status before refunding.
+ */
+const refundIfQueued = async (
+  callId: string,
+  startedBy: string,
+  creditsUsed: number,
+  station: string,
+): Promise<void> => {
+  if (creditsUsed <= 0) return;
+  try {
+    // Atomic update: only reset creditsUsed to 0 if it is currently > 0 and status is refundable
+    const updatedCall = await Call.findOneAndUpdate(
+      {
+        _id: callId,
+        status: { $in: ["queued", "missed", "cancelled", "rejected"] },
+        creditsUsed: { $gt: 0 },
+      },
+      { $set: { creditsUsed: 0 } },
+      { new: false },
+    );
+
+    if (!updatedCall) {
+      logger.info(`[Call] Skipping refund for ${callId} — already refunded or status not refundable`);
+      return;
+    }
+
+    const actualCreditsToRefund = updatedCall.creditsUsed || creditsUsed;
+    await CreditService.refundCredits(startedBy, actualCreditsToRefund, station, callId, "call");
+    logger.info(`[Call] Refunded ${actualCreditsToRefund} credit(s) for call: ${callId}`);
+  } catch (err) {
+    logger.error(`[Call] Refund failed for ${callId}:`, err);
+  }
+};
+
+/**
+ * Create a listener statement for answered calls (non-critical).
+ * Looks up isFree from the CreditTransaction. Safe to call multiple times (idempotent).
+ */
+const createStatementIfNeeded = async (callId: string): Promise<void> => {
+  try {
+    const creditTx = await CreditTransaction.findOne({ resourceId: callId, type: "call_deduction" })
+      .select("isFree")
+      .lean();
+    const isFree = creditTx?.isFree ?? false;
+    await ListenerStatementService.createStatementFromCall(callId, isFree);
+  } catch (err) {
+    logger.error(`[Call] Listener statement creation failed for ${callId}:`, err);
+  }
+};
+
+/**
+ * Emit call-ended to all relevant parties (user, operator, station).
+ */
+const emitCallEnded = (
+  callId: string,
+  stationId: string,
+  startedBy: string,
+  handledBy?: string,
+  reason: string = "ended",
+  message: string = "Call ended.",
+  duration: number = 0,
+  creditsUsed: number = 0,
+): void => {
+  emitToUser(startedBy, "call-ended", { callId, reason, message, duration, creditsUsed });
+  if (handledBy) {
+    emitToUser(handledBy, "call-ended", { callId, reason, message, duration, creditsUsed });
+  }
+  emitToStation(stationId, "call-ended", { callId, reason, message, duration, creditsUsed });
+};
 
 // ─── Timeout Maps ────────────────────────────────────────────────────────────
 const callQueueTimeouts = new Map<string, NodeJS.Timeout>();
@@ -25,31 +103,64 @@ const callJoinTimeouts = new Map<string, NodeJS.Timeout>();
 // ─── Operator Status Helpers ─────────────────────────────────────────────────
 
 const setOperatorOnline = async (userId: string): Promise<void> => {
-  await redisClient.set(`operator:${userId}:online`, "1", 60);
+  try {
+    await redisClient.set(`operator:${userId}:online`, "1", 60);
+  } catch (err) {
+    logger.warn(`[Call] Redis unavailable for setOperatorOnline: ${err}`);
+  }
 };
 
 const refreshOperatorOnline = async (userId: string): Promise<void> => {
-  if (await redisClient.get(`operator:${userId}:online`)) {
-    await redisClient.set(`operator:${userId}:online`, "1", 60);
+  try {
+    if (await redisClient.get(`operator:${userId}:online`)) {
+      await redisClient.set(`operator:${userId}:online`, "1", 60);
+    }
+  } catch (err) {
+    logger.warn(`[Call] Redis unavailable for refreshOperatorOnline: ${err}`);
   }
 };
 
 const removeOperatorOnline = async (userId: string): Promise<void> => {
-  await redisClient.delete(`operator:${userId}:online`);
+  try {
+    await redisClient.delete(`operator:${userId}:online`);
+  } catch (err) {
+    logger.warn(`[Call] Redis unavailable for removeOperatorOnline: ${err}`);
+  }
 };
 
 const setOperatorOnCall = async (userId: string, callId: string): Promise<void> => {
-  // TTL of 2 hours as safety net — prevents stale keys after server crash
-  await redisClient.set(`operator:${userId}:on_call`, callId, 7200);
+  try {
+    // TTL of 2 hours as safety net — prevents stale keys after server crash
+    await redisClient.set(`operator:${userId}:on_call`, callId, 7200);
+  } catch (err) {
+    logger.warn(`[Call] Redis unavailable for setOperatorOnCall: ${err}`);
+  }
 };
 
 const removeOperatorOnCall = async (userId: string): Promise<void> => {
-  await redisClient.delete(`operator:${userId}:on_call`);
+  try {
+    await redisClient.delete(`operator:${userId}:on_call`);
+  } catch (err) {
+    logger.warn(`[Call] Redis unavailable for removeOperatorOnCall: ${err}`);
+  }
 };
 
 const isOperatorOnCall = async (userId: string): Promise<boolean> => {
-  const callId = await redisClient.get(`operator:${userId}:on_call`);
-  return !!callId;
+  try {
+    const callId = await redisClient.get(`operator:${userId}:on_call`);
+    return !!callId;
+  } catch (err) {
+    // Redis down — assume not on call (fail-open for availability)
+    return false;
+  }
+};
+
+const getOperatorOnCallId = async (userId: string): Promise<string | null> => {
+  try {
+    return await redisClient.get(`operator:${userId}:on_call`);
+  } catch (err) {
+    return null;
+  }
 };
 
 /**
@@ -62,15 +173,16 @@ const getAvailableOperatorCount = async (stationId: string): Promise<number> => 
   const sockets = io.sockets.adapter.rooms.get(room);
   if (!sockets || sockets.size === 0) return 0;
 
-  // Collect all user IDs first, then check Redis in parallel
-  const userIds: string[] = [];
+  // Collect all user IDs first, deduplicate (one operator may have multiple socket connections)
+  const userIdSet = new Set<string>();
   for (const socketId of sockets) {
     const socket = io.sockets.sockets.get(socketId);
     if (!socket) continue;
     const userId = (socket as any).userId;
     if (!userId) continue;
-    userIds.push(userId);
+    userIdSet.add(userId);
   }
+  const userIds = [...userIdSet];
 
   if (userIds.length === 0) return 0;
 
@@ -84,7 +196,11 @@ const getAvailableOperatorCount = async (stationId: string): Promise<number> => 
 
 // ─── Token Generation ────────────────────────────────────────────────────────
 
-const generateAgoraToken = (channelName: string, uid: number): string => {
+const generateAgoraToken = (
+  channelName: string,
+  uid: number,
+  isPublisher: boolean = false,
+): string => {
   const appId = config.agora.app_id;
   const appCertificate = config.agora.app_certificate;
 
@@ -95,14 +211,16 @@ const generateAgoraToken = (channelName: string, uid: number): string => {
     );
   }
 
+  const role = isPublisher ? RtcRole.PUBLISHER : RtcRole.SUBSCRIBER;
+
   return RtcTokenBuilder.buildTokenWithUid(
     appId,
     appCertificate,
     channelName,
     uid,
-    RtcRole.PUBLISHER,
+    role,
     3600, // token expires in 1 hour (relative duration, not absolute timestamp)
-    0,    // privilege expires immediately (no extended privilege)
+    3600, // privilege expires in 1 hour (must match token expiry)
   );
 };
 
@@ -120,13 +238,12 @@ const startQueueTimeout = (callId: string, userId: string, stationId: string): v
       );
 
       if (result) {
-        // Notify caller
+        await refundIfQueued(callId, userId, result.creditsUsed, stationId);
         emitToUser(userId, "call-ended", {
           callId,
           reason: "timeout",
           message: "No operator available. Please try again later.",
         });
-        // Notify station — remove ghost incoming-call
         emitToStation(stationId, "call-cancelled", { callId });
         logger.info(`[Call] Queue timeout: call ${callId} auto-missed after ${timeoutMs}ms`);
       }
@@ -167,17 +284,9 @@ const startJoinTimeout = (
       );
 
       if (result) {
+        await refundIfQueued(callId, userId, result.creditsUsed, stationId);
         await removeOperatorOnCall(operatorId);
-
-        emitToUser(userId, "call-ended", {
-          callId,
-          reason: "join_timeout",
-          message: "Call ended — connection not established.",
-        });
-        emitToStation(stationId, "call-ended", {
-          callId,
-          reason: "join_timeout",
-        });
+        emitCallEnded(callId, stationId, userId, undefined, "join_timeout", "Call ended — connection not established.");
         logger.info(`[Call] Join timeout: call ${callId} auto-ended after ${timeoutMs}ms`);
       }
     } catch (err) {
@@ -254,7 +363,7 @@ const requestCall = async (userId: string, stationId: string) => {
   }
 
   // 6. Deduct credit (call reached the station → credit cut)
-  const agoraChannelId = `call_${stationId}_${userId}_${Date.now()}`;
+  const agoraChannelId = `c_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -334,6 +443,12 @@ const acceptCall = async (callId: string, operatorId: string) => {
     }
   }
 
+  // Check operator is not already on another call
+  const alreadyOnCall = await isOperatorOnCall(operatorId);
+  if (alreadyOnCall) {
+    throw new AppError(StatusCodes.CONFLICT, "You are already on a call. End it before accepting another.");
+  }
+
   // Atomic: only accept if still queued (prevents race condition with two operators)
   const result = await Call.findOneAndUpdate(
     { _id: callId, status: "queued" },
@@ -364,20 +479,17 @@ const acceptCall = async (callId: string, operatorId: string) => {
   // Mark operator as on a call
   await setOperatorOnCall(operatorId, callId);
 
-  // Generate Agora token for operator (UID = operator's numeric hash, never 0)
-  const operatorUid = Math.abs(
-    operatorId.split("").reduce((acc, char) => ((acc << 5) - acc + char.charCodeAt(0)) | 0, 0),
-  ) || 1;
+  // Generate Agora token for operator (UID in range 1000000–1999999, disjoint from user range)
+  const operatorUid = (((operatorId.split("").reduce((acc, char) => ((acc << 5) - acc + char.charCodeAt(0)) | 0, 0) >>> 0) % 1000000) + 1000000);
   const token = generateAgoraToken(result.agoraChannelId, operatorUid);
 
   // Start join-confirmation timeout
   startJoinTimeout(callId, result.startedBy.toString(), result.station.toString(), operatorId);
 
-  // Notify caller that call was accepted
+  // Notify caller that call was accepted (no token — user gets their own via joinCall)
   emitToUser(result.startedBy.toString(), "call-accepted", {
     callId,
     channelName: result.agoraChannelId,
-    token,
     operatorName: operator.fullName || "Operator",
   });
 
@@ -390,6 +502,7 @@ const acceptCall = async (callId: string, operatorId: string) => {
     callId,
     channelName: result.agoraChannelId,
     token,
+    operatorUid,
     status: "answered",
   };
 };
@@ -413,10 +526,8 @@ const joinCall = async (callId: string, userId: string) => {
   // Clear join-confirmation timeout
   clearJoinTimeout(callId);
 
-  // Generate token for user (UID never 0)
-  const userUid = Math.abs(
-    userId.split("").reduce((acc, char) => ((acc << 5) - acc + char.charCodeAt(0)) | 0, 0),
-  ) || 1;
+  // Generate token for user (UID in range 1–999999, disjoint from operator range 1000000–1999999)
+  const userUid = (((userId.split("").reduce((acc, char) => ((acc << 5) - acc + char.charCodeAt(0)) | 0, 0) >>> 0) % 999999) + 1) || 1;
   const token = generateAgoraToken(call.agoraChannelId, userUid);
 
   logger.info(`[Call] User joined call: ${callId}`);
@@ -425,79 +536,114 @@ const joinCall = async (callId: string, userId: string) => {
     callId,
     channelName: call.agoraChannelId,
     token,
+    userUid,
   };
 };
 
 // ─── End Call (Either party hangs up) ────────────────────────────────────────
 
-const endCall = async (callId: string, userId: string) => {
-  const call = await Call.findById(callId);
-  if (!call) {
-    throw new AppError(StatusCodes.NOT_FOUND, "Call not found");
-  }
+const endCall = async (callId: string, userId: string, webrtcDuration?: number) => {
+  // Atomic: only end if not already ended AND user is caller/handler (prevents unauthorized end)
+  const endedAt = new Date();
+  const durationExpression =
+    typeof webrtcDuration === "number" && webrtcDuration >= 0
+      ? webrtcDuration
+      : {
+          $cond: [
+            { $ne: ["$answeredAt", null] },
+            {
+              $divide: [
+                { $subtract: [endedAt, "$answeredAt"] },
+                1000,
+              ],
+            },
+            0,
+          ],
+        };
 
-  // Only caller or handler can end the call
-  const isCaller = call.startedBy.toString() === userId;
-  const isHandler = call.handledBy?.toString() === userId;
-  if (!isCaller && !isHandler) {
-    throw new AppError(StatusCodes.FORBIDDEN, "You can only end your own call.");
-  }
+  const result = await Call.findOneAndUpdate(
+    {
+      _id: callId,
+      status: { $nin: ["missed", "rejected", "cancelled", "completed"] },
+      $or: [{ startedBy: userId }, { handledBy: userId }],
+    },
+    [
+      {
+        $set: {
+          status: {
+            $cond: [{ $eq: ["$status", "answered"] }, "completed", "missed"],
+          },
+          endedAt,
+          duration: durationExpression,
+        },
+      },
+    ],
+    { new: true, updatePipeline: true },
+  );
 
-  // Can't end if already ended
-  if (["missed", "rejected", "cancelled"].includes(call.status)) {
+  if (!result) {
+    // Call was already ended, not found, or user is not authorized
+    const existing = await Call.findById(callId);
+    if (!existing) {
+      throw new AppError(StatusCodes.NOT_FOUND, "Call not found");
+    }
+    const isCaller = existing.startedBy.toString() === userId;
+    const isHandler = existing.handledBy?.toString() === userId;
+    if (!isCaller && !isHandler) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only end your own call.");
+    }
+    // Already ended — return success instead of error
+    if (["completed", "missed", "cancelled", "rejected"].includes(existing.status)) {
+      return {
+        callId,
+        status: existing.status,
+        duration: existing.duration || 0,
+        creditsUsed: existing.creditsUsed || 0,
+      };
+    }
     throw new AppError(StatusCodes.BAD_REQUEST, "Call already ended.");
   }
 
-  const endedAt = new Date();
-  const duration = call.answeredAt
-    ? Math.floor((endedAt.getTime() - call.answeredAt.getTime()) / 1000)
-    : 0;
+  const duration = result.duration || 0;
 
-  // Preserve status: answered stays answered, queued becomes missed
-  const finalStatus = call.status === "answered" ? "answered" : "missed";
-
-  const result = await Call.findByIdAndUpdate(
-    callId,
-    {
-      $set: {
-        status: finalStatus,
-        endedAt,
-        duration,
-      },
-    },
-    { new: true },
-  );
+  // Refund credits if call was queued (user ended before it was answered)
+  if (result.status === "missed") {
+    await refundIfQueued(callId, result.startedBy.toString(), result.creditsUsed, result.station.toString());
+  }
 
   // If call was answered and operator was on it, clean up
-  if (call.handledBy) {
-    await removeOperatorOnCall(call.handledBy.toString());
+  if (result.handledBy) {
+    await removeOperatorOnCall(result.handledBy.toString());
   }
 
   // Clear any pending timeouts
   clearJoinTimeout(callId);
   clearQueueTimeout(callId);
 
-  // Notify both parties
-  emitToUser(call.startedBy.toString(), "call-ended", {
+  // Notify all parties
+  emitCallEnded(
     callId,
+    result.station.toString(),
+    result.startedBy.toString(),
+    result.handledBy?.toString(),
+    "ended",
+    "Call ended.",
     duration,
-    creditsUsed: call.creditsUsed,
-  });
-  if (call.handledBy) {
-    emitToUser(call.handledBy.toString(), "call-ended", {
-      callId,
-      duration,
-      creditsUsed: call.creditsUsed,
-    });
-  }
+    result.creditsUsed,
+  );
 
   logger.info(`[Call] Call ended: ${callId}, duration: ${duration}s`);
 
+  // Create listener statement for answered calls (non-critical)
+  if (result.status === "completed") {
+    await createStatementIfNeeded(callId);
+  }
+
   return {
     callId,
-    status: result?.status || call.status,
+    status: result.status,
     duration,
-    creditsUsed: call.creditsUsed,
+    creditsUsed: result.creditsUsed,
   };
 };
 
@@ -512,10 +658,10 @@ const cancelCall = async (callId: string, userId: string) => {
 
   if (!result) {
     const call = await Call.findById(callId);
-    if (call?.status === "answered") {
+    if (call?.status === "answered" || call?.status === "completed") {
       throw new AppError(
         StatusCodes.BAD_REQUEST,
-        "Call was just answered. You are now connected.",
+        "Call was already active or completed.",
       );
     }
     throw new AppError(StatusCodes.NOT_FOUND, "Call not found or already ended.");
@@ -524,12 +670,70 @@ const cancelCall = async (callId: string, userId: string) => {
   // Clear queue timeout
   clearQueueTimeout(callId);
 
+  // Refund credit if it was reserved but not charged
+  await refundIfQueued(callId, userId, result.creditsUsed, result.station.toString());
+
   // Notify station
   emitToStation(result.station.toString(), "call-cancelled", { callId });
 
   logger.info(`[Call] Call cancelled: ${callId} by user ${userId}`);
 
   return { callId, status: "cancelled" };
+};
+
+// ─── Reject Call (Station Operator cuts/declines an incoming call) ────────────────
+
+const rejectCall = async (callId: string, operatorId: string, reason?: string) => {
+  // 1. Atomically update call status to 'rejected'
+  const result = await Call.findOneAndUpdate(
+    { _id: callId, status: "queued" },
+    {
+      $set: {
+        status: "rejected",
+        handledBy: operatorId,
+        endedAt: new Date(),
+      },
+    },
+    { new: true },
+  );
+
+  if (!result) {
+    const call = await Call.findById(callId);
+    if (call?.status === "answered" || call?.status === "completed") {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "Call was already answered or completed.",
+      );
+    }
+    throw new AppError(StatusCodes.NOT_FOUND, "Call not found or already ended.");
+  }
+
+  // 2. Clear queue timeout
+  clearQueueTimeout(callId);
+
+  // 3. Refund credit to listener
+  await refundIfQueued(
+    callId,
+    result.startedBy.toString(),
+    result.creditsUsed || 1,
+    result.station.toString(),
+  );
+
+  // 4. Notify listener & station via WebSocket
+  emitCallEnded(
+    callId,
+    result.station.toString(),
+    result.startedBy.toString(),
+    operatorId,
+    "rejected",
+    reason || "Call cut by station operator. Credit refunded.",
+    0,
+    0,
+  );
+
+  logger.info(`[Call] Call rejected/cut: ${callId} by operator ${operatorId}`);
+
+  return { callId, status: "rejected" };
 };
 
 // ─── Call History ────────────────────────────────────────────────────────────
@@ -543,7 +747,7 @@ const getCallHistory = async (
 
   const [calls, total] = await Promise.all([
     Call.find({ startedBy: userId })
-      .populate("station", "name stationCode category logo")
+      .populate("station", "name stationCode category logo country")
       .populate("show", "name")
       .populate("handledBy", "fullName")
       .sort({ createdAt: -1 })
@@ -553,8 +757,45 @@ const getCallHistory = async (
     Call.countDocuments({ startedBy: userId }),
   ]);
 
+  // Batch-fetch timezones for unique countries (avoids N+1)
+  let tzMap = new Map<string, string>();
+  try {
+    const uniqueCountryIds = [
+      ...new Set(
+        calls
+          .map((call: any) => {
+            const country = call.station?.country;
+            return country?._id?.toString() || country?.toString() || null;
+          })
+          .filter(Boolean),
+      ),
+    ];
+
+    if (uniqueCountryIds.length > 0) {
+      const { Country } = await import("../country/country.model");
+      const countries = await Country.find({ _id: { $in: uniqueCountryIds } })
+        .select("timezone")
+        .lean();
+      tzMap = new Map(
+        countries.map((c: any) => [c._id.toString(), c.timezone || "UTC"]),
+      );
+    }
+  } catch (err) {
+    logger.warn("[Call] Failed to resolve timezone for call history:", err);
+  }
+
+  const enrichedCalls = calls.map((call: any) => ({
+    ...call,
+    stationTimezone:
+      tzMap.get(
+        call.station?.country?._id?.toString() ||
+          call.station?.country?.toString() ||
+          "",
+      ) || "UTC",
+  }));
+
   return {
-    calls,
+    calls: enrichedCalls,
     meta: {
       page,
       limit,
@@ -574,11 +815,29 @@ const getStationCalls = async (
 ) => {
   const skip = (page - 1) * limit;
   const filter: Record<string, unknown> = { station: stationId };
-  if (status) filter.status = status;
+  if (status) {
+    const statuses = status.split(",").map((s: string) => s.trim()).filter(Boolean);
+    filter.status = statuses.length === 1 ? statuses[0] : { $in: statuses };
+  }
+
+  // Fetch station timezone
+  let stationTimezone = "UTC";
+  try {
+    const { Station } = await import("../station/station.model");
+    const { Country } = await import("../country/country.model");
+    const station = await Station.findById(stationId).select("country").lean();
+    const countryId = (station as any)?.country;
+    if (countryId) {
+      const country = await Country.findById(countryId).select("timezone").lean();
+      stationTimezone = (country as any)?.timezone || "UTC";
+    }
+  } catch (err) {
+    logger.warn(`[Call] Failed to resolve timezone for station ${stationId}:`, err);
+  }
 
   const [calls, total] = await Promise.all([
     Call.find(filter)
-      .populate("startedBy", "fullName phone")
+      .populate("startedBy", "fullName phone avatar")
       .populate("show", "name")
       .populate("handledBy", "fullName")
       .sort({ createdAt: -1 })
@@ -588,8 +847,14 @@ const getStationCalls = async (
     Call.countDocuments(filter),
   ]);
 
+  // Attach timezone to each call
+  const enrichedCalls = calls.map((call: any) => ({
+    ...call,
+    stationTimezone,
+  }));
+
   return {
-    calls,
+    calls: enrichedCalls,
     meta: {
       page,
       limit,
@@ -597,6 +862,216 @@ const getStationCalls = async (
       totalPage: Math.ceil(total / limit),
     },
   };
+};
+
+// ─── Startup Cleanup ────────────────────────────────────────────────────────
+
+/**
+ * Clean up stale calls from previous server run.
+ * Called once on server startup.
+ */
+const cleanupStaleCalls = async (): Promise<void> => {
+  try {
+    const queueTimeoutMs = config.calls.queue_timeout_ms;
+    const now = new Date();
+    let queuedRefunded = 0;
+    let answeredCleaned = 0;
+
+    // Process stale queued calls — per-call atomic refund + status update
+    const staleQueuedCalls = await Call.find({
+      status: "queued",
+      createdAt: { $lt: new Date(now.getTime() - queueTimeoutMs) },
+    }).lean();
+
+    for (const call of staleQueuedCalls) {
+      try {
+        const updated = await Call.findOneAndUpdate(
+          { _id: call._id, status: "queued" },
+          { $set: { status: "missed", endedAt: now } },
+          { new: true },
+        );
+        if (updated && call.creditsUsed > 0) {
+          await refundIfQueued(call._id.toString(), call.startedBy.toString(), call.creditsUsed, call.station.toString());
+          // Notify user that their queued call was cleaned up
+          emitToUser(call.startedBy.toString(), "call-ended", {
+            callId: call._id.toString(),
+            reason: "timeout",
+            message: "Call expired.",
+          });
+          // Notify station room
+          emitToStation(call.station.toString(), "call-ended", {
+            callId: call._id.toString(),
+            reason: "timeout",
+          });
+          queuedRefunded++;
+        }
+      } catch (err) {
+        logger.error(`[Call] Startup cleanup failed for queued call ${call._id}:`, err);
+      }
+    }
+
+    // Process stale answered calls (4+ hours — well above Redis on_call TTL of 2h)
+    const staleAnsweredThresholdMs = 4 * 60 * 60 * 1000;
+    const staleAnsweredCalls = await Call.find({
+      status: "answered",
+      answeredAt: { $lt: new Date(now.getTime() - staleAnsweredThresholdMs) },
+    }).lean();
+
+    for (const call of staleAnsweredCalls) {
+      try {
+        const duration = call.answeredAt
+          ? Math.floor((now.getTime() - call.answeredAt.getTime()) / 1000)
+          : 0;
+        const updated = await Call.findOneAndUpdate(
+          { _id: call._id, status: "answered" },
+          { $set: { status: "completed", endedAt: now, duration } },
+          { new: true },
+        );
+        if (updated) {
+          if (call.handledBy) {
+            await removeOperatorOnCall(call.handledBy.toString());
+          }
+          // Create listener statement for stale answered calls (non-critical)
+          await createStatementIfNeeded(call._id.toString());
+          // Notify user that their answered call was cleaned up
+          emitToUser(call.startedBy.toString(), "call-ended", {
+            callId: call._id.toString(),
+            reason: "timeout",
+            message: "Call expired.",
+            duration,
+          });
+          // Notify station room
+          emitToStation(call.station.toString(), "call-ended", {
+            callId: call._id.toString(),
+            reason: "timeout",
+            duration,
+          });
+          answeredCleaned++;
+        }
+      } catch (err) {
+        logger.error(`[Call] Startup cleanup failed for answered call ${call._id}:`, err);
+      }
+    }
+
+    if (queuedRefunded > 0 || answeredCleaned > 0) {
+      logger.info(
+        `[Call] Startup cleanup: ${queuedRefunded} queued → missed, ${answeredCleaned} answered → completed`,
+      );
+    }
+  } catch (err) {
+    logger.error("[Call] Startup cleanup error:", err);
+  }
+};
+
+/**
+ * Re-register timeouts for active queued calls on server startup.
+ * Called once after cleanupStaleCalls.
+ */
+const reregisterTimeouts = async (): Promise<void> => {
+  try {
+    // 1. Re-register queue timeouts for queued calls
+    const queuedCalls = await Call.find({
+      status: "queued",
+    }).select("_id startedBy station createdAt").lean();
+
+    for (const call of queuedCalls) {
+      const elapsed = Date.now() - (call.createdAt?.getTime() ?? call._id.getTimestamp().getTime());
+      const timeoutMs = config.calls.queue_timeout_ms;
+
+      if (elapsed < timeoutMs) {
+        const remainingMs = timeoutMs - elapsed;
+        logger.info(`[Call] Re-registering queue timeout for ${call._id} (${remainingMs}ms remaining)`);
+        // Manually create timeout with remaining time (skip full startQueueTimeout)
+        const timeoutId = setTimeout(async () => {
+          try {
+            const result = await Call.findOneAndUpdate(
+              { _id: call._id, status: "queued" },
+              { $set: { status: "missed", endedAt: new Date() } },
+              { new: true },
+            );
+            if (result) {
+              if (result.creditsUsed > 0) {
+                try {
+                  await CreditService.refundCredits(
+                    call.startedBy.toString(),
+                    result.creditsUsed,
+                    call.station.toString(),
+                    call._id.toString(),
+                    "call",
+                  );
+                } catch (refundErr) {
+                  logger.error(`[Call] Re-registered queue timeout refund failed for ${call._id}:`, refundErr);
+                }
+              }
+              emitToUser(call.startedBy.toString(), "call-ended", {
+                callId: call._id.toString(),
+                reason: "timeout",
+                message: "No operator available. Please try again later.",
+              });
+              emitToStation(call.station.toString(), "call-cancelled", { callId: call._id.toString() });
+            }
+          } catch (err) {
+            logger.error(`[Call] Re-registered queue timeout error for ${call._id}:`, err);
+          } finally {
+            callQueueTimeouts.delete(call._id.toString());
+          }
+        }, remainingMs);
+        callQueueTimeouts.set(call._id.toString(), timeoutId);
+      }
+    }
+
+    // 2. Re-register join confirmation timeouts for answered calls
+    const answeredCalls = await Call.find({
+      status: "answered",
+      handledBy: { $exists: true, $ne: null },
+    }).select("_id startedBy station handledBy answeredAt").lean();
+
+    for (const call of answeredCalls) {
+      const elapsed = call.answeredAt ? Date.now() - call.answeredAt.getTime() : 0;
+      const timeoutMs = config.calls.join_confirmation_timeout_ms;
+
+      if (elapsed < timeoutMs) {
+        const remainingMs = timeoutMs - elapsed;
+        logger.info(`[Call] Re-registering join timeout for ${call._id} (${remainingMs}ms remaining)`);
+        const timeoutId = setTimeout(async () => {
+          try {
+            const result = await Call.findOneAndUpdate(
+              { _id: call._id, status: "answered" },
+              { $set: { status: "missed", endedAt: new Date() } },
+              { new: true },
+            );
+            if (result) {
+              await refundIfQueued(call._id.toString(), call.startedBy.toString(), result.creditsUsed, call.station.toString());
+              if (call.handledBy) {
+                await removeOperatorOnCall(call.handledBy.toString());
+              }
+              emitToUser(call.startedBy.toString(), "call-ended", {
+                callId: call._id.toString(),
+                reason: "join_timeout",
+                message: "Call ended — connection not established.",
+              });
+              emitToStation(call.station.toString(), "call-ended", {
+                callId: call._id.toString(),
+                reason: "join_timeout",
+              });
+            }
+          } catch (err) {
+            logger.error(`[Call] Re-registered join timeout error for ${call._id}:`, err);
+          } finally {
+            callJoinTimeouts.delete(call._id.toString());
+          }
+        }, remainingMs);
+        callJoinTimeouts.set(call._id.toString(), timeoutId);
+      }
+    }
+
+    const total = queuedCalls.length + answeredCalls.length;
+    if (total > 0) {
+      logger.info(`[Call] Re-registered timeouts: ${queuedCalls.length} queued, ${answeredCalls.length} answered`);
+    }
+  } catch (err) {
+    logger.error("[Call] Re-register timeouts error:", err);
+  }
 };
 
 // ─── Export ──────────────────────────────────────────────────────────────────
@@ -609,6 +1084,7 @@ export const CallService = {
   setOperatorOnCall,
   removeOperatorOnCall,
   isOperatorOnCall,
+  getOperatorOnCallId,
 
   // Call lifecycle
   requestCall,
@@ -616,6 +1092,20 @@ export const CallService = {
   joinCall,
   endCall,
   cancelCall,
+  rejectCall,
+
+  // Timeouts (exposed for socket disconnect cleanup)
+  clearJoinTimeout,
+  clearQueueTimeout,
+
+  // Shared helpers (exposed for socket handlers)
+  refundIfQueued,
+  createStatementIfNeeded,
+  emitCallEnded,
+
+  // Startup
+  cleanupStaleCalls,
+  reregisterTimeouts,
 
   // Queries
   getCallHistory,

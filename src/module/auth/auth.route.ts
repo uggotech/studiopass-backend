@@ -3,6 +3,7 @@ import { AuthController } from "./auth.controller";
 import { AuthDto } from "./auth.dto";
 import validateRequest from "../../middlewares/validateRequest";
 import { authLimiter } from "../../middlewares/security";
+import auth from "../../middlewares/auth";
 
 const router = Router();
 
@@ -33,8 +34,17 @@ router.post(
 // Both: refresh access token
 router.post(
   "/refresh",
+  authLimiter,
   validateRequest(AuthDto.refresh),
   AuthController.refresh,
+);
+
+// All authenticated roles: change password
+router.patch(
+  "/change-password",
+  auth(),
+  validateRequest(AuthDto.changePassword),
+  AuthController.changePassword,
 );
 
 export const AuthRoutes = router;

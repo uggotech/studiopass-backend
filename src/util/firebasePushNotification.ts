@@ -1,5 +1,7 @@
 import admin from "firebase-admin";
 import config from "config";
+import fs from "fs";
+import path from "path";
 
 import { logger } from "logger/logger";
 
@@ -20,8 +22,67 @@ const MAX_FCM_TOKENS_PER_REQUEST = 500;
 
 let firebaseApp: admin.app.App | null = null;
 
-const normalizeFirebasePrivateKey = (value?: string) => {
-  return value ? value.replace(/\\n/g, "\n") : undefined;
+const SERVICE_ACCOUNT_FILE = path.join(process.cwd(), "serviceAccount.json");
+const SERVICE_ACCOUNT_RUNTIME = path.join(process.cwd(), "serviceAccount-runtime.json");
+
+const ensureServiceAccountFile = (): string | null => {
+  // 1. If original serviceAccount.json exists and is a file, use it
+  try {
+    const stat = fs.statSync(SERVICE_ACCOUNT_FILE);
+    console.log("[Firebase Push] serviceAccount.json exists — isFile:", stat.isFile(), "isDir:", stat.isDirectory());
+    if (stat.isFile()) {
+      return SERVICE_ACCOUNT_FILE;
+    }
+  } catch (e: any) {
+    console.log("[Firebase Push] serviceAccount.json not found:", e.code);
+  }
+
+  // 2. If runtime file already generated, use it
+  try {
+    const stat = fs.statSync(SERVICE_ACCOUNT_RUNTIME);
+    if (stat.isFile()) {
+      return SERVICE_ACCOUNT_RUNTIME;
+    }
+  } catch {}
+
+  // 3. Generate from env vars — parse the JSON properly
+  const { project_id, client_email, private_key, private_key_id, client_id, auth_uri, token_uri, auth_provider_cert_url, client_cert_url, universe_domain, type } = config.firebase;
+
+  if (!project_id || !client_email || !private_key) {
+    return null;
+  }
+
+  try {
+    const fixedKey = private_key.replace(/\\n/g, "\n");
+    console.log("[Firebase Push] Private key BEFORE fix (first 80 chars):", private_key.substring(0, 80));
+    console.log("[Firebase Push] Private key AFTER fix (first 80 chars):", fixedKey.substring(0, 80));
+    console.log("[Firebase Push] Has literal backslash-n:", private_key.includes("\\n"));
+    console.log("[Firebase Push] Has real newlines after fix:", fixedKey.includes("\n") && !fixedKey.includes("\\n"));
+
+    const serviceAccount = {
+      type: type || "service_account",
+      project_id,
+      private_key_id,
+      private_key: fixedKey,
+      client_email,
+      client_id,
+      auth_uri,
+      token_uri,
+      auth_provider_x509_cert_url: auth_provider_cert_url,
+      client_x509_cert_url: client_cert_url,
+      universe_domain,
+    };
+
+    const jsonContent = JSON.stringify(serviceAccount, null, 2);
+    console.log("[Firebase Push] JSON private_key field (first 100 chars):", jsonContent.substring(jsonContent.indexOf('"private_key"'), jsonContent.indexOf('"private_key"') + 120));
+
+    fs.writeFileSync(SERVICE_ACCOUNT_RUNTIME, jsonContent, "utf-8");
+    console.log("[Firebase Push] Generated runtime service account file");
+    return SERVICE_ACCOUNT_RUNTIME;
+  } catch (e) {
+    console.error("[Firebase Push] Failed to write service account file:", e);
+    return null;
+  }
 };
 
 const getFirebaseApp = () => {
@@ -34,23 +95,23 @@ const getFirebaseApp = () => {
     return firebaseApp;
   }
 
-  const projectId = config.firebase.project_id;
-  const clientEmail = config.firebase.client_email;
-  const privateKey = normalizeFirebasePrivateKey(config.firebase.private_key);
-
-  if (!projectId || !clientEmail || !privateKey) {
+  const filePath = ensureServiceAccountFile();
+  if (!filePath) {
+    console.warn("[Firebase Push] No service account found — push will be skipped");
     return null;
   }
 
-  firebaseApp = admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId,
-      clientEmail,
-      privateKey,
-    } as admin.ServiceAccount),
-  });
-
-  return firebaseApp;
+  try {
+    console.log("[Firebase Push] Loading service account from:", filePath);
+    firebaseApp = admin.initializeApp({
+      credential: admin.credential.cert(filePath),
+    });
+    console.log("[Firebase Push] Initialized successfully");
+    return firebaseApp;
+  } catch (e: any) {
+    console.error("[Firebase Push] Failed to initialize:", e.message);
+    return null;
+  }
 };
 
 const normalizeData = (data?: Record<string, unknown>) => {
@@ -113,6 +174,7 @@ export const sendFirebaseMulticastNotification = async (
 
   for (const chunk of chunkTokens(normalizedTokens)) {
     try {
+      console.log(`[Firebase Push] Sending to ${chunk.length} token(s)...`);
       const response = await messaging.sendEachForMulticast({
         tokens: chunk,
         notification: {
@@ -123,10 +185,22 @@ export const sendFirebaseMulticastNotification = async (
         data: Object.keys(data).length > 0 ? data : undefined,
       });
 
+      console.log(`[Firebase Push] Response — success: ${response.successCount}, failure: ${response.failureCount}`);
+
+      // Log individual failures for debugging
+      if (response.failureCount > 0) {
+        response.responses.forEach((resp, idx) => {
+          if (!resp.success) {
+            console.error(`[Firebase Push] Token[${idx}] failed:`, resp.error?.message || resp.error);
+          }
+        });
+      }
+
       successCount += response.successCount;
       failureCount += response.failureCount;
     } catch (error) {
       failureCount += chunk.length;
+      console.error("[Firebase Push] Failed to send multicast notification:", error);
       logger.error("[Firebase Push] Failed to send multicast notification", { error });
     }
   }

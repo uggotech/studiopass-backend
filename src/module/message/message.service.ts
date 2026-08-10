@@ -3,17 +3,35 @@ import { StatusCodes } from "http-status-codes";
 import AppError from "../../errors/AppError";
 import { MessageRepository } from "./message.repository";
 import Message from "./message.model";
+import { Show } from "../show/show.model";
 import { ShowRepository } from "../show/show.repository";
 import { CreditService } from "../credit/credit.service";
 import { StationRepository } from "../station/station.repository";
 import { Country } from "../country/country.model";
 import { User } from "../user/user.model";
-import { Notification } from "../notification/notification.model";
+import { NotificationService } from "../notification/notification.service";
 import MessageTemplate from "../messageTemplate/messageTemplate.model";
-import { sendFirebaseNotification } from "../../util/firebasePushNotification";
 import { emitToStation, emitToShow, emitToUser, checkAndEmitShowTransition } from "../../socket";
 import { ListenerStatementService } from "../listenerStatement/listenerStatement.service";
 import { maskMsisdn, shouldMaskMsisdn } from "../../shared/maskMsisdn";
+import { logger } from "../../logger/logger";
+
+// ─── Timezone Helper ───────────────────────────────────────────────────────
+// Fetches the station's country timezone. Returns "UTC" on failure.
+
+const getStationTimezone = async (stationId: string): Promise<string> => {
+  try {
+    const station = await StationRepository.findById(stationId);
+    const countryId = (station?.country as any)?._id || station?.country;
+    if (countryId) {
+      const country = await Country.findById(countryId).select("timezone").lean();
+      return (country as any)?.timezone || "UTC";
+    }
+  } catch (err) {
+    logger.warn(`[Message] Failed to resolve timezone for station ${stationId}:`, err);
+  }
+  return "UTC";
+};
 
 const sendUserMessage = async (
   stationId: string,
@@ -51,38 +69,42 @@ const sendUserMessage = async (
     );
   }
 
-  const activeShow = await ShowRepository.findActiveShowForStation(
-    stationId,
-    timezone,
-  );
-  if (!activeShow) {
-    // Try to find the next upcoming show so the user knows when to come back
-    const shows = await ShowRepository.findByStation(stationId);
-    const now = new Date();
-    const timeFormatter = new Intl.DateTimeFormat("en-GB", {
-      timeZone: timezone,
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-    const timeParts = timeFormatter.formatToParts(now);
-    const currentTime = `${timeParts.find((p) => p.type === "hour")?.value ?? "00"}:${timeParts.find((p) => p.type === "minute")?.value ?? "00"}`;
-    const dateFormatter = new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "long" });
-    const today = dateFormatter.format(now).toLowerCase();
-
-    const upcoming = shows
-      .filter((s) => s.days.includes(today as any) && s.startTime > currentTime)
-      .sort((a, b) => a.startTime.localeCompare(b.startTime));
-
-    const nextShow = upcoming[0];
-    const hint = nextShow
-      ? ` Next show "${nextShow.name}" starts at ${nextShow.startTime}.`
-      : "";
-
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      `No active show right now.${hint} Please try again during show hours.`,
+  // Channels don't have shows — skip show detection
+  let activeShow: any = null;
+  if (station.category !== "channel") {
+    activeShow = await ShowRepository.findActiveShowForStation(
+      stationId,
+      timezone,
     );
+    if (!activeShow) {
+      // Try to find the next upcoming show so the user knows when to come back
+      const shows = await ShowRepository.findByStation(stationId);
+      const now = new Date();
+      const timeFormatter = new Intl.DateTimeFormat("en-GB", {
+        timeZone: timezone,
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+      const timeParts = timeFormatter.formatToParts(now);
+      const currentTime = `${timeParts.find((p) => p.type === "hour")?.value ?? "00"}:${timeParts.find((p) => p.type === "minute")?.value ?? "00"}`;
+      const dateFormatter = new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "long" });
+      const today = dateFormatter.format(now).toLowerCase();
+
+      const upcoming = shows
+        .filter((s) => s.days.includes(today as any) && s.startTime > currentTime)
+        .sort((a, b) => a.startTime.localeCompare(b.startTime));
+
+      const nextShow = upcoming[0];
+      const hint = nextShow
+        ? ` Next show "${nextShow.name}" starts at ${nextShow.startTime}.`
+        : "";
+
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        `No active show right now.${hint} Please try again during show hours.`,
+      );
+    }
   }
 
   // TV stations require approval; radio/channel deliver immediately
@@ -96,7 +118,7 @@ const sendUserMessage = async (
     // 1. Create message (within transaction)
     const message = await MessageRepository.createMessage({
       station: stationId,
-      show: activeShow._id,
+      show: activeShow?._id || undefined,
       senderType: "user",
       user: userId,
       msisdn: user.phone,
@@ -129,17 +151,20 @@ const sendUserMessage = async (
     // Emit socket event for station staff to see new user messages (non-critical)
     // Uses "new-user-message" so clients can distinguish from station replies
     try {
-      const normalized = normalizeMessage(message, activeShow.name);
+      const normalized = normalizeMessage(message, activeShow?.name);
       emitToStation(stationId, "new-user-message", { message: normalized });
+      emitToUser(userId, "new-message", { message: normalized });
 
       // Check if the active show transitioned (for show-started/show-ended events)
-      checkAndEmitShowTransition(stationId, activeShow._id.toString(), activeShow.name);
+      if (activeShow) {
+        checkAndEmitShowTransition(stationId, activeShow._id.toString(), activeShow.name);
+      }
     } catch {
       // socket failure should not block the response
     }
 
     return {
-      message: normalizeMessage(message, activeShow.name),
+      message: normalizeMessage(message, activeShow?.name),
       remainingBalance: updatedBalance,
     };
   } catch (error) {
@@ -195,12 +220,16 @@ const sendStationReply = async (
   }
 
   // Find the most recent user message to get the show context (sort desc = newest first)
-  const recentUserMsg = await Message.findOne({
-    station: stationId,
-    msisdn,
-    senderType: "user",
-  }).sort({ createdAt: -1 }).lean();
-  const showId = recentUserMsg ? (recentUserMsg as any).show : null;
+  // Channels don't have shows — skip show context
+  let showId: any = null;
+  if (station.category !== "channel") {
+    const recentUserMsg = await Message.findOne({
+      station: stationId,
+      msisdn,
+      senderType: "user",
+    }).sort({ createdAt: -1 }).lean();
+    showId = recentUserMsg ? (recentUserMsg as any).show : null;
+  }
 
   // Use transaction for atomicity: message creation + markAsReplied
   const session = await mongoose.startSession();
@@ -264,42 +293,20 @@ const sendStationReply = async (
     // socket failure should not block the response
   }
 
-  // Send push notification + create notification record
+  // Send push notification + create notification record (socket + FCM)
   try {
     if (listenerUser) {
-      const notificationTitle = `New reply from ${station?.name || "Station"}`;
-      const notificationBody = content.substring(0, 100);
-      const notificationData = {
-        stationId,
-        messageId: message._id.toString(),
+      await NotificationService.createNotification({
+        userId: listenerUser._id.toString(),
         type: "reply",
-      };
-
-      // Create notification record in DB
-      await Notification.create({
-        user: listenerUser._id,
-        type: "reply",
-        title: notificationTitle,
-        body: notificationBody,
-        data: notificationData,
-        deliveryStatus: "pending",
+        title: `New reply from ${station?.name || "Station"}`,
+        body: content.substring(0, 100),
+        data: {
+          stationId,
+          messageId: message._id.toString(),
+          showName: (populatedMessage?.show as any)?.name || null,
+        },
       });
-
-      // Send FCM push notification
-      if (listenerUser.fcmToken) {
-        const result = await sendFirebaseNotification(listenerUser.fcmToken, {
-          title: notificationTitle,
-          body: notificationBody,
-          data: notificationData,
-        });
-        // Update delivery status based on result
-        if (result.successCount > 0) {
-          await Notification.findOneAndUpdate(
-            { user: listenerUser._id, type: "reply", "data.messageId": message._id.toString() },
-            { deliveryStatus: "sent" },
-          );
-        }
-      }
     }
   } catch (e) {
     console.error("Failed to send push notification:", e);
@@ -315,13 +322,15 @@ const getUserThread = async (
   limit: number,
 ) => {
   const skip = (page - 1) * limit;
-  const [messages, total] = await Promise.all([
+  const [messages, total, stationTimezone] = await Promise.all([
     MessageRepository.findThread(stationId, msisdn, skip, limit),
     Message.countDocuments({ station: stationId, msisdn }).lean(),
+    getStationTimezone(stationId),
   ]);
 
   return {
     messages: messages.map((msg) => normalizeMessage(msg, (msg.show as any)?.name)),
+    stationTimezone,
     meta: {
       page,
       limit,
@@ -337,15 +346,15 @@ const getStationThreads = async (
   limit: number,
 ) => {
   const skip = (page - 1) * limit;
-  const threads = await MessageRepository.findThreadsByStation(
-    stationId,
-    skip,
-    limit,
-  );
-  const total = await MessageRepository.countThreadsByStation(stationId);
+  const [threads, total, stationTimezone] = await Promise.all([
+    MessageRepository.findThreadsByStation(stationId, skip, limit),
+    MessageRepository.countThreadsByStation(stationId),
+    stationId ? getStationTimezone(stationId) : Promise.resolve("UTC"),
+  ]);
 
   return {
     threads,
+    stationTimezone,
     meta: {
       page,
       limit,
@@ -362,16 +371,15 @@ const getPresenterThreads = async (
   limit: number,
 ) => {
   const skip = (page - 1) * limit;
-  const threads = await MessageRepository.findThreadsByPresenter(
-    stationId,
-    presenterId,
-    skip,
-    limit,
-  );
-  const total = await MessageRepository.countThreadsByPresenter(stationId, presenterId);
+  const [threads, total, stationTimezone] = await Promise.all([
+    MessageRepository.findThreadsByPresenter(stationId, presenterId, skip, limit),
+    MessageRepository.countThreadsByPresenter(stationId, presenterId),
+    getStationTimezone(stationId),
+  ]);
 
   return {
     threads,
+    stationTimezone,
     meta: {
       page,
       limit,
@@ -416,9 +424,12 @@ const normalizeMessage = (msg: any, showName?: string) => {
     senderName: msg.senderType === "station"
       ? msg.senderUser?.fullName || null
       : msg.user?.fullName || msg.msisdn || null,
+    userAvatar: msg.user?.avatar || null,
     content: msg.content,
     imageUrl: msg.imageUrl || null,
     msisdn: msg.msisdn || null,
+    country: msg.country?.name || msg.country || null,
+    operator: msg.operator || null,
     status: msg.status,
     isReplied: msg.isReplied,
     isRead: msg.isRead ?? false,
@@ -523,26 +534,72 @@ const getMessageById = async (messageId: string) => {
   return normalizeMessage(message, (message.show as any)?.name);
 };
 
-const getPendingMessages = async (stationId: string, page: number, limit: number) => {
+const getPendingMessages = async (
+  stationId: string,
+  page: number,
+  limit: number,
+  options?: { search?: string; type?: string; timeRange?: string },
+) => {
   const skip = (page - 1) * limit;
-  const messages = await Message.find({
-    station: stationId,
+  const filter: Record<string, unknown> = {
     senderType: "user",
     status: { $in: ["pending", "approved"] },
     isDeleted: { $ne: true },
-  })
+  };
+
+  if (stationId) {
+    filter.station = stationId;
+  }
+
+  // Type filter
+  if (options?.type === "text") {
+    filter.$or = [
+      { imageUrl: { $exists: false } },
+      { imageUrl: null },
+      { imageUrl: "" },
+    ];
+  } else if (options?.type === "image") {
+    filter.imageUrl = { $exists: true, $ne: null, $nin: ["", null] };
+  }
+
+  // Time Range filter
+  if (options?.timeRange && options.timeRange !== "all") {
+    const now = new Date();
+    if (options.timeRange === "today") {
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      filter.createdAt = { $gte: startOfDay };
+    } else if (options.timeRange === "7days") {
+      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      filter.createdAt = { $gte: sevenDaysAgo };
+    } else if (options.timeRange === "30days") {
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      filter.createdAt = { $gte: thirtyDaysAgo };
+    }
+  }
+
+  // Search filter
+  if (options?.search?.trim()) {
+    const searchRegex = new RegExp(options.search.trim(), "i");
+    const searchCondition = [
+      { content: searchRegex },
+      { msisdn: searchRegex },
+    ];
+    if (filter.$or) {
+      filter.$and = [{ $or: filter.$or }, { $or: searchCondition }];
+      delete filter.$or;
+    } else {
+      filter.$or = searchCondition;
+    }
+  }
+
+  const messages = await Message.find(filter)
     .populate("show", "name")
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit)
     .lean();
 
-  const total = await Message.countDocuments({
-    station: stationId,
-    senderType: "user",
-    status: { $in: ["pending", "approved"] },
-    isDeleted: { $ne: true },
-  });
+  const total = await Message.countDocuments(filter);
 
   return {
     messages: messages.map((m) => normalizeMessage(m, (m.show as any)?.name)),
@@ -625,18 +682,54 @@ const getAllMessages = async (
   stationId: string | undefined,
   page: number,
   limit: number,
+  filters?: {
+    country?: string;
+    show?: string;
+    status?: string;
+    search?: string;
+  },
 ) => {
   const skip = (page - 1) * limit;
   const filter: Record<string, unknown> = {};
   if (stationId) filter.station = stationId;
 
-  const [messages, total] = await Promise.all([
+  if (filters?.country) {
+    if (mongoose.Types.ObjectId.isValid(filters.country)) {
+      filter.country = new mongoose.Types.ObjectId(filters.country);
+    }
+  }
+
+  if (filters?.show) {
+    if (mongoose.Types.ObjectId.isValid(filters.show)) {
+      filter.show = new mongoose.Types.ObjectId(filters.show);
+    } else {
+      const showDoc = await Show.findOne({ name: new RegExp(filters.show, "i") }).select("_id").lean();
+      if (showDoc) filter.show = showDoc._id;
+    }
+  }
+
+  if (filters?.status) {
+    filter.status = filters.status.toLowerCase();
+  }
+
+  if (filters?.search) {
+    const escaped = filters.search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const searchRegex = new RegExp(escaped, "i");
+    filter.$or = [
+      { content: searchRegex },
+      { msisdn: searchRegex },
+    ];
+  }
+
+  const [messages, total, stationTimezone] = await Promise.all([
     MessageRepository.findAllMessages(filter, skip, limit),
     MessageRepository.countAllMessages(filter),
+    stationId ? getStationTimezone(stationId) : Promise.resolve("UTC"),
   ]);
 
   return {
     messages: messages.map((m) => normalizeMessage(m, (m.show as any)?.name)),
+    stationTimezone,
     meta: { page, limit, total, totalPage: Math.ceil(total / limit) },
   };
 };

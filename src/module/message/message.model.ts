@@ -52,7 +52,12 @@ const messageSchema = new Schema<IMessage>(
     },
     content: {
       type: String,
-      required: [true, "Message content is required"],
+      required: [
+        function (this: any) {
+          return !this.imageUrl;
+        },
+        "Message content is required when no image is attached",
+      ],
       maxlength: [1600, "Message content cannot exceed 1600 characters"],
       trim: true,
       default: "",
@@ -116,6 +121,7 @@ const messageSchema = new Schema<IMessage>(
 messageSchema.index({ station: 1, status: 1, createdAt: -1 });
 messageSchema.index({ station: 1, msisdn: 1, createdAt: 1 });
 messageSchema.index({ station: 1, show: 1, createdAt: -1 });
+messageSchema.index({ station: 1, senderType: 1, isDeleted: 1, createdAt: -1 });
 messageSchema.index({ status: 1, createdAt: -1 });
 messageSchema.index({ user: 1, createdAt: -1 });
 

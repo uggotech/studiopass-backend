@@ -7,6 +7,13 @@ const findById = (id: string): Promise<TUser | null> => {
   return User.findById(id).lean();
 };
 
+const findByIdWithStation = (id: string): Promise<TUser | null> => {
+  return User.findById(id)
+    .populate("stationId", "name stationCode category logo coverImage description website")
+    .populate("partnerId", "name")
+    .lean();
+};
+
 const findByAuthId = (authId: string): Promise<TUser | null> => {
   return User.findOne({ auth: authId }).lean();
 };
@@ -31,7 +38,14 @@ const findAllByRole = async (
   options: { skip: number; limit: number },
 ): Promise<TUser[]> => {
   return User.find(filter)
-    .populate("stationId", "name stationCode category")
+    .populate({
+      path: "stationId",
+      select: "name stationCode category logo coverImage description website country partner",
+      populate: [
+        { path: "country", select: "name code" },
+        { path: "partner", select: "name" },
+      ],
+    })
     .populate("partnerId", "name")
     .sort({ createdAt: -1 })
     .skip(options.skip)
@@ -45,6 +59,7 @@ const countByRole = (filter: Record<string, unknown>): Promise<number> => {
 
 export const UserRepository = {
   findById,
+  findByIdWithStation,
   findByAuthId,
   findByPartnerIdAndRole,
   create,

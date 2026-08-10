@@ -32,6 +32,7 @@ const findThread = (
   })
     .populate("show", "name")
     .populate("senderUser", "fullName")
+    .populate("user", "fullName avatar")
     .sort({ createdAt: 1 })
     .skip(skip)
     .limit(limit)
@@ -57,10 +58,17 @@ const findThreadsByStation = (
       $group: {
         _id: "$msisdn",
         lastMessage: { $first: "$content" },
+        lastImageUrl: { $first: "$imageUrl" },
         lastTime: { $first: "$createdAt" },
         count: { $sum: 1 },
         unrepliedCount: {
-          $sum: { $cond: [{ $eq: ["$isReplied", false] }, 1, 0] },
+          $sum: {
+            $cond: [
+              { $and: [{ $eq: ["$isReplied", false] }, { $eq: ["$senderType", "user"] }] },
+              1,
+              0,
+            ],
+          },
         },
         showName: { $first: "$show" },
         stationId: { $first: "$station" },
@@ -80,6 +88,24 @@ const findThreadsByStation = (
         localField: "stationId",
         foreignField: "_id",
         as: "stationDoc",
+      },
+    },
+    // Lookup user by phone number to get listener name and avatar
+    {
+      $lookup: {
+        from: "users",
+        let: { phone: "$_id" },
+        pipeline: [
+          {
+            $match: {
+              $expr: { $eq: ["$phone", "$$phone"] },
+              isDeleted: { $ne: true },
+            },
+          },
+          { $project: { fullName: 1, avatar: 1 } },
+          { $limit: 1 },
+        ],
+        as: "userDoc",
       },
     },
     {
@@ -108,10 +134,22 @@ const findThreadsByStation = (
             in: "$$first.isVerified",
           },
         },
+        listenerName: {
+          $let: {
+            vars: { first: { $arrayElemAt: ["$userDoc", 0] } },
+            in: "$$first.fullName",
+          },
+        },
+        listenerAvatar: {
+          $let: {
+            vars: { first: { $arrayElemAt: ["$userDoc", 0] } },
+            in: "$$first.avatar",
+          },
+        },
         msisdn: "$_id",
       },
     },
-    { $project: { showDoc: 0, stationDoc: 0 } },
+    { $project: { showDoc: 0, stationDoc: 0, userDoc: 0 } },
     { $sort: { lastTime: -1 } },
     { $skip: skip },
     { $limit: limit },
@@ -205,11 +243,42 @@ const findThreadsByPresenter = (
         showName: { $first: "$showDoc.name" },
       },
     },
+    // Lookup user by phone number to get listener name and avatar
+    {
+      $lookup: {
+        from: "users",
+        let: { phone: "$_id" },
+        pipeline: [
+          {
+            $match: {
+              $expr: { $eq: ["$phone", "$$phone"] },
+              isDeleted: { $ne: true },
+            },
+          },
+          { $project: { fullName: 1, avatar: 1 } },
+          { $limit: 1 },
+        ],
+        as: "userDoc",
+      },
+    },
     {
       $addFields: {
+        listenerName: {
+          $let: {
+            vars: { first: { $arrayElemAt: ["$userDoc", 0] } },
+            in: "$$first.fullName",
+          },
+        },
+        listenerAvatar: {
+          $let: {
+            vars: { first: { $arrayElemAt: ["$userDoc", 0] } },
+            in: "$$first.avatar",
+          },
+        },
         msisdn: "$_id",
       },
     },
+    { $project: { showDoc: 0, userDoc: 0 } },
     { $sort: { lastTime: -1 } },
     { $skip: skip },
     { $limit: limit },

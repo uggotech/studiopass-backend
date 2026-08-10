@@ -8,6 +8,7 @@ export type PollStatus = "draft" | "active" | "completed";
 
 export interface TPollOption {
   label: string;
+  imageUrl?: string | null;
   votes: number;
 }
 

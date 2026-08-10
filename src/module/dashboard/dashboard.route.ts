@@ -13,6 +13,13 @@ const adminRoles = [
 
 router.get("/stats", auth(...adminRoles), DashboardController.getStats);
 router.get("/message-activity", auth(...adminRoles), DashboardController.getMessageActivity);
+router.get("/revenue-activity", auth(...adminRoles), DashboardController.getRevenueActivity);
+router.get("/listener-activity", auth(...adminRoles), DashboardController.getListenerActivity);
+router.get("/campaign-activity", auth(...adminRoles), DashboardController.getCampaignActivity);
+router.get("/call-activity", auth(...adminRoles), DashboardController.getCallActivity);
+router.get("/campaign-stats", auth(...adminRoles), DashboardController.getCampaignStats);
+router.get("/call-operations", auth(...adminRoles), DashboardController.getCallOperationsStats);
+router.get("/role-distribution", auth(...adminRoles), DashboardController.getRoleDistribution);
 router.get("/station-overview", auth(...adminRoles), DashboardController.getStationOverview);
 router.get("/recent-activity", auth(...adminRoles), DashboardController.getRecentActivity);
 router.get("/top-stations", auth(...adminRoles), DashboardController.getTopStations);

@@ -4,7 +4,7 @@ import { TCreditTransaction } from "./creditTransaction.interface";
 const creditTransactionSchema = new Schema<TCreditTransaction>(
   {
     user: { type: Schema.Types.ObjectId, ref: "User", required: true },
-    type: { type: String, enum: ["purchase", "admin_grant", "message_deduction", "call_deduction"], required: true },
+    type: { type: String, enum: ["purchase", "admin_grant", "message_deduction", "call_deduction", "call_refund", "challenge_deduction", "challenge_refund", "poll_deduction", "poll_refund", "challenge_reward"], required: true },
     amount: { type: Number, required: true },
     isFree: { type: Boolean, required: true, default: false },
     paymentMethod: { type: String, enum: ["mobile_money", "card"] },
@@ -15,7 +15,7 @@ const creditTransactionSchema = new Schema<TCreditTransaction>(
     country: { type: Schema.Types.ObjectId, ref: "Country" },
     grantedBy: { type: Schema.Types.ObjectId, ref: "User" },
     station: { type: Schema.Types.ObjectId, ref: "Station" },
-    resourceType: { type: String, enum: ["message", "call"] },
+    resourceType: { type: String, enum: ["message", "call", "challenge", "poll"] },
     resourceId: { type: Schema.Types.ObjectId },
     status: { type: String, enum: ["completed", "pending", "failed"], default: "completed" },
   },
@@ -24,6 +24,7 @@ const creditTransactionSchema = new Schema<TCreditTransaction>(
 
 creditTransactionSchema.index({ user: 1, createdAt: -1 });
 creditTransactionSchema.index({ station: 1, type: 1, isFree: 1 });
+creditTransactionSchema.index({ station: 1, createdAt: -1, type: 1, isFree: 1 });
 creditTransactionSchema.index({ type: 1, paymentProvider: 1 });
 creditTransactionSchema.index({ country: 1, type: 1 });
 

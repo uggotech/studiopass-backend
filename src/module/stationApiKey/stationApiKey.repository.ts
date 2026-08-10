@@ -12,7 +12,12 @@ const findById = (id: string) => {
 };
 
 const findByKey = (key: string) => {
-  return StationApiKey.findOne({ key, isActive: true }).lean();
+  const crypto = require("crypto");
+  const keyHash = crypto.createHash("sha256").update(key).digest("hex");
+  return StationApiKey.findOne({
+    $or: [{ key }, { key: keyHash }],
+    isActive: true,
+  }).lean();
 };
 
 const create = (data: Partial<TStationApiKey>) => {

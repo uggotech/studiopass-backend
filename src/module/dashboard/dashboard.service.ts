@@ -1,52 +1,114 @@
 import { DashboardRepository } from "./dashboard.repository";
 
-const getStats = async (scope?: { partnerId?: string; stationId?: string; role?: string }) => {
+export interface DashboardScope {
+  partnerId?: string;
+  stationId?: string;
+  country?: string;
+  role?: string;
+  startDate?: string;
+  endDate?: string;
+  dateRange?: string;
+}
+
+const getStats = async (scope?: DashboardScope) => {
   return DashboardRepository.getStats(scope);
 };
 
 const getMessageActivity = async (
   period: "daily" | "weekly" | "monthly",
-  scope?: { partnerId?: string; stationId?: string },
+  scope?: DashboardScope,
+  timezone?: string,
 ) => {
-  return DashboardRepository.getMessageActivity(period, scope);
+  return DashboardRepository.getMessageActivity(period, scope, timezone);
 };
 
-const getStationOverview = async (scope?: { partnerId?: string; stationId?: string }) => {
+const getRevenueActivity = async (
+  period: "daily" | "weekly" | "monthly",
+  scope?: DashboardScope,
+  timezone?: string,
+) => {
+  return DashboardRepository.getRevenueActivity(period, scope, timezone);
+};
+
+const getListenerActivity = async (
+  period: "daily" | "weekly" | "monthly",
+  scope?: DashboardScope,
+  timezone?: string,
+) => {
+  return DashboardRepository.getListenerActivity(period, scope, timezone);
+};
+
+const getCampaignActivity = async (
+  period: "daily" | "weekly" | "monthly",
+  scope?: DashboardScope,
+  timezone?: string,
+) => {
+  return DashboardRepository.getCampaignActivity(period, scope, timezone);
+};
+
+const getStationOverview = async (scope?: DashboardScope) => {
   return DashboardRepository.getStationOverview(scope);
 };
 
 const getRecentActivity = async (
   limit: number,
-  scope?: { partnerId?: string; stationId?: string },
+  scope?: DashboardScope,
 ) => {
   return DashboardRepository.getRecentActivity(limit, scope);
 };
 
 const getTopStations = async (
   limit: number,
-  scope?: { partnerId?: string; stationId?: string },
+  scope?: DashboardScope,
 ) => {
   return DashboardRepository.getTopStations(limit, scope);
 };
 
 const getRecentUsers = async (
   limit: number,
-  scope?: { partnerId?: string; stationId?: string },
+  scope?: DashboardScope,
 ) => {
   return DashboardRepository.getRecentUsers(limit, scope);
 };
 
-const getCreditStats = async (scope?: { partnerId?: string; stationId?: string }) => {
+const getCreditStats = async (scope?: DashboardScope) => {
   return DashboardRepository.getCreditStats(scope);
 };
 
-const getCountryRevenue = async () => {
-  return DashboardRepository.getCountryRevenue();
+const getCountryRevenue = async (scope?: DashboardScope) => {
+  return DashboardRepository.getCountryRevenue(scope);
+};
+
+const getCallActivity = async (
+  period: "daily" | "weekly" | "monthly",
+  scope?: DashboardScope,
+  timezone?: string,
+) => {
+  return DashboardRepository.getCallActivity(period, scope, timezone);
+};
+
+const getCampaignStats = async (scope?: DashboardScope) => {
+  return DashboardRepository.getCampaignStats(scope);
+};
+
+const getCallOperationsStats = async (scope?: DashboardScope) => {
+  return DashboardRepository.getCallOperationsStats(scope);
+};
+
+const getRoleDistribution = async () => {
+  return DashboardRepository.getRoleDistribution();
 };
 
 export const DashboardService = {
   getStats,
   getMessageActivity,
+  getRevenueActivity,
+  getListenerActivity,
+  getCampaignActivity,
+  getCallActivity,
+  getCampaignStats,
+  getCallOperationsStats,
+  getRoleDistribution,
   getStationOverview,
   getRecentActivity,
   getTopStations,
@@ -54,3 +116,4 @@ export const DashboardService = {
   getCreditStats,
   getCountryRevenue,
 };
+

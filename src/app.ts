@@ -62,7 +62,7 @@ app.use(generalLimiter);
 // ============ 6. BODY PARSERS ============
 app.use(
   express.json({
-    limit: "5mb",
+    limit: "25mb",
     verify: (req: any, _res, buf, encoding) => {
       if (req.originalUrl?.includes("/webhook")) {
         req.rawBody = buf.toString((encoding as BufferEncoding) || "utf8");
@@ -71,7 +71,7 @@ app.use(
   }),
 );
 
-app.use(express.urlencoded({ extended: true, limit: "5mb" }));
+app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 app.use(cookieParser());
 
 // ============ 7. MONGO INJECTION SANITIZATION (after body parsing) ============

@@ -22,4 +22,16 @@ const showSchema = new Schema<TShow>(
 showSchema.index({ station: 1, isActive: 1 });
 showSchema.index({ presenter: 1 });
 
+// Prevent exact time-slot duplicates on same station (race condition defense)
+showSchema.index(
+  { station: 1, startTime: 1, endTime: 1, name: 1 },
+  { unique: true, partialFilterExpression: { isActive: true } },
+);
+
+// Show name must be unique per station (active shows only)
+showSchema.index(
+  { station: 1, name: 1 },
+  { unique: true, partialFilterExpression: { isActive: true } },
+);
+
 export const Show = model<TShow>("Show", showSchema);

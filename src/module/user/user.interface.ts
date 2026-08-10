@@ -21,6 +21,7 @@ export interface TUser {
   role: UserRole;
 
   // Scope (exactly one based on role)
+  scopeType?: "global" | "country";
   partnerId?: Types.ObjectId; // → Partner (for partner_admin, customer_care)
   stationId?: Types.ObjectId; // → Station (for station_admin, media_station, presenter)
 

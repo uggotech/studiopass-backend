@@ -2,7 +2,7 @@ import { Types } from "mongoose";
 
 // ─── Call Status ─────────────────────────────────────────────────────────────
 
-export type CallStatus = "queued" | "missed" | "rejected" | "answered" | "cancelled";
+export type CallStatus = "queued" | "missed" | "rejected" | "answered" | "cancelled" | "completed";
 
 // ─── Call Log Interface ──────────────────────────────────────────────────────
 

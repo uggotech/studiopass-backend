@@ -48,4 +48,17 @@ const refresh = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
-export const AuthController = { initiate, verifyOtp, login, refresh };
+const changePassword = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const authId = user.auth ? user.auth.toString() : user._id.toString();
+  const result = await AuthService.changePassword(authId, req.body);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Password changed successfully",
+    data: result,
+  });
+});
+
+export const AuthController = { initiate, verifyOtp, login, refresh, changePassword };

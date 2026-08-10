@@ -8,13 +8,33 @@ import processAndUpload from "../../middlewares/processAndUpload";
 
 const router = Router();
 
-// App users: get my profile
-router.get("/profile", auth(UserRole.USER), UserController.getMyProfile);
+// Get my profile (all authenticated roles)
+router.get(
+  "/profile",
+  auth(
+    UserRole.USER,
+    UserRole.SUPER_ADMIN,
+    UserRole.PARTNER_ADMIN,
+    UserRole.STATION_ADMIN,
+    UserRole.MEDIA_STATION,
+    UserRole.PRESENTER,
+    UserRole.CUSTOMER_CARE,
+  ),
+  UserController.getMyProfile,
+);
 
-// App users: update my profile (with optional avatar upload)
+// Update my profile (all authenticated roles, with optional avatar upload)
 router.patch(
   "/profile",
-  auth(UserRole.USER),
+  auth(
+    UserRole.USER,
+    UserRole.SUPER_ADMIN,
+    UserRole.PARTNER_ADMIN,
+    UserRole.STATION_ADMIN,
+    UserRole.MEDIA_STATION,
+    UserRole.PRESENTER,
+    UserRole.CUSTOMER_CARE,
+  ),
   processAndUpload,
   UserController.updateMyProfile,
 );
@@ -72,11 +92,33 @@ router.post(
   UserController.createPresenter,
 );
 
+// Super admin: create customer care agent
+router.post(
+  "/create-customer-care",
+  auth(UserRole.SUPER_ADMIN),
+  validateRequest(UserDto.createCustomerCare),
+  UserController.createCustomerCareUser,
+);
+
+// Super admin + partner admin + station admin: list customer care users
+router.get(
+  "/customer-care",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  UserController.getAllCustomerCareUsers,
+);
+
 // Super admin + partner admin + station admin: list listeners (CRM)
 router.get(
   "/listeners",
   auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
   UserController.getAllListeners,
+);
+
+// Super admin + partner admin + station admin + presenter: list top fans
+router.get(
+  "/top-fans",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.PRESENTER),
+  UserController.getTopFans,
 );
 
 // Super admin + partner admin + station admin: get single listener (CRM)
@@ -86,11 +128,25 @@ router.get(
   UserController.getListenerById,
 );
 
+// Super admin + partner admin + station admin: get single listener poll votes
+router.get(
+  "/listeners/:id/votes",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  UserController.getListenerVotes,
+);
+
 // Super admin + partner admin: get single user
 router.get(
   "/:id",
   auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
   UserController.getUserById,
+);
+
+// Super admin + partner admin + station admin: update user
+router.patch(
+  "/:id",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  UserController.updateUserById,
 );
 
 // Super admin + partner admin: deactivate user

@@ -31,34 +31,47 @@ const deductCredits = async (
   amount: number,
   stationId: string,
   resourceId: string,
-  resourceType: "message" | "call",
+  resourceType: "message" | "call" | "challenge" | "poll",
   session?: mongoose.ClientSession,
 ) => {
   // Atomic decrement with $gte condition — if insufficient balance, returns null
-  const updated = await CreditRepository.decrementBalance(userId, amount, session);
+  const result = await CreditRepository.decrementBalance(userId, amount, session);
 
-  if (!updated) {
+  if (!result || !result.updated) {
     throw new AppError(
       StatusCodes.BAD_REQUEST,
       "Insufficient credits. Top up to send messages.",
     );
   }
 
-  // Parallel lookups: last credit source + user country (independent)
-  const [lastSource, user] = await Promise.all([
-    CreditRepository.getLastCreditSource(userId),
-    User.findById(userId).select("countryId").lean(),
-  ]);
-  const isFree = lastSource?.isFree ?? false;
+  const { updated, isFreeDeduction } = result;
 
-  // Country lookup depends on user's countryId
+  // Check if user is operating on free credits (admin grant history or freeBalance)
+  const isFreeFromHistory = await CreditRepository.isUserOnFreeCredits(userId);
+  const isFree = isFreeDeduction || isFreeFromHistory;
+
+  // User country lookup
+  const user = await User.findById(userId).select("countryId").lean();
   const countryDoc = user?.countryId
-    ? await Country.findById(user.countryId).select("code currency").lean()
+    ? await Country.findById(user.countryId).select("code currency callCreditPrice messageCreditPrice").lean()
     : null;
+
+  const creditPrice = resourceType === "call"
+    ? (countryDoc?.callCreditPrice ?? 0)
+    : (countryDoc?.messageCreditPrice ?? 0);
+
+  // Map resourceType to transaction type
+  const txType = resourceType === "message"
+    ? "message_deduction"
+    : resourceType === "call"
+      ? "call_deduction"
+      : resourceType === "challenge"
+        ? "challenge_deduction"
+        : "poll_deduction";
 
   await CreditRepository.createTransaction({
     user: userId,
-    type: resourceType === "message" ? "message_deduction" : "call_deduction",
+    type: txType,
     amount: -amount,
     isFree,
     station: stationId,
@@ -66,10 +79,65 @@ const deductCredits = async (
     resourceId,
     country: user?.countryId || undefined,
     currency: countryDoc?.currency || undefined,
+    localAmount: isFree ? 0 : amount * creditPrice,
     status: "completed",
   }, session);
 
   return { balance: updated.balance, isFree };
+};
+
+/**
+ * Refund credits to a user's balance.
+ *
+ * Used when a call is not answered (cancelled, missed, timed out).
+ * The credit was reserved at request time; this restores it.
+ *
+ * @param userId - The user to refund
+ * @param amount - Number of credits to refund
+ * @param stationId - Station where the call was made
+ * @param resourceId - The call ID being refunded
+ * @param resourceType - "call"
+ * @param session - Optional MongoDB session for transaction support
+ * @returns Updated balance
+ */
+const refundCredits = async (
+  userId: string,
+  amount: number,
+  stationId: string,
+  resourceId: string,
+  resourceType: "call" | "challenge" | "poll",
+  session?: mongoose.ClientSession,
+) => {
+  // Look up original deduction's isFree to preserve it in the refund record
+  const originalTxType = resourceType === "challenge"
+    ? "challenge_deduction"
+    : resourceType === "poll"
+    ? "poll_deduction"
+    : "call_deduction";
+
+  const originalTx = await CreditRepository.getTransactionByResource(resourceId, originalTxType);
+  const isFree = originalTx?.isFree ?? false;
+
+  const updated = await CreditRepository.incrementBalance(userId, amount, isFree, session);
+
+  const refundType = resourceType === "challenge"
+    ? "challenge_refund"
+    : resourceType === "poll"
+    ? "poll_refund"
+    : "call_refund";
+
+  await CreditRepository.createTransaction({
+    user: userId,
+    type: refundType,
+    amount,
+    isFree,
+    station: stationId,
+    resourceType,
+    resourceId,
+    status: "completed",
+  }, session);
+
+  return { balance: updated?.balance ?? 0 };
 };
 
 const addCredits = async (
@@ -78,6 +146,8 @@ const addCredits = async (
   adminId: string,
   isFree: boolean = true,
   session?: mongoose.ClientSession,
+  paymentReference?: string,
+  idempotencyKey?: string,
 ) => {
   // Validate user exists before creating balance
   const user = await User.findById(userId).select("countryId").lean();
@@ -85,7 +155,21 @@ const addCredits = async (
     throw new AppError(StatusCodes.NOT_FOUND, "User not found");
   }
 
-  const updated = await CreditRepository.incrementBalance(userId, amount, session);
+  // Idempotency check: if paymentReference or idempotencyKey provided, return existing balance if already processed
+  const refKey = paymentReference || idempotencyKey;
+  if (refKey) {
+    const { CreditTransaction } = await import("../creditTransaction/creditTransaction.model");
+    const existing = await CreditTransaction.findOne({
+      $or: [{ paymentReference: refKey }, { txRef: refKey }],
+      status: "completed",
+    }).lean();
+    if (existing) {
+      const current = await CreditRepository.getBalance(userId);
+      return { balance: current?.balance ?? 0, duplicate: true };
+    }
+  }
+
+  const updated = await CreditRepository.incrementBalance(userId, amount, isFree, session);
 
   // Look up country currency for transaction record
   const countryDoc = user.countryId
@@ -100,6 +184,41 @@ const addCredits = async (
     country: user.countryId || undefined,
     currency: countryDoc?.currency || undefined,
     grantedBy: adminId,
+    paymentReference: paymentReference || undefined,
+    status: "completed",
+  }, session);
+
+  return { balance: updated?.balance ?? 0 };
+};
+
+const rewardChallengeWinner = async (
+  userId: string,
+  amount: number,
+  stationId: string,
+  challengeId: string,
+  session?: mongoose.ClientSession,
+) => {
+  const user = await User.findById(userId).lean();
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User not found");
+  }
+
+  const updated = await CreditRepository.incrementBalance(userId, amount, true, session);
+
+  const countryDoc = user.countryId
+    ? await Country.findById(user.countryId).select("code currency").lean()
+    : null;
+
+  await CreditRepository.createTransaction({
+    user: userId as any,
+    type: "challenge_reward",
+    amount,
+    isFree: true,
+    country: user.countryId || undefined,
+    currency: countryDoc?.currency || undefined,
+    station: stationId as any,
+    resourceType: "challenge",
+    resourceId: challengeId as any,
     status: "completed",
   }, session);
 
@@ -109,5 +228,8 @@ const addCredits = async (
 export const CreditService = {
   getBalance,
   deductCredits,
+  refundCredits,
   addCredits,
+  rewardChallengeWinner,
 };
+

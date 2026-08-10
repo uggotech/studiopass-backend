@@ -9,6 +9,7 @@ const createStationWithAdmin = z.object({
       .max(20)
       .regex(/^[a-zA-Z0-9-]+$/, "Station code can only contain letters, numbers, and hyphens"),
     category: z.enum(["radio", "tv", "channel"], { message: "Category must be radio, tv, or channel" }),
+    channelType: z.enum(["challenges", "polls", "message_chat"]).optional(),
     countryId: z.string().min(1, "Country is required").optional(),
     partnerId: z.string().min(1, "Partner is required").optional(),
     description: z.string().optional(),
@@ -23,6 +24,14 @@ const createStationWithAdmin = z.object({
       .string()
       .min(6, "Password must be at least 6 characters")
       .max(100),
+  }).superRefine((data, ctx) => {
+    if (data.category === "channel" && !data.channelType) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Channel type is required when category is Channel",
+        path: ["channelType"],
+      });
+    }
   }),
 });
 

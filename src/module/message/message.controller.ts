@@ -325,7 +325,7 @@ const markAsRead = catchAsync(async (req, res) => {
 });
 
 const getPendingMessages = catchAsync(async (req, res) => {
-  const { stationId, page = 1, limit = 50 } = req.query;
+  const { stationId, page = 1, limit = 50, search, type, timeRange } = req.query;
   const userRole = req.user!.role;
 
   // Auto-inject stationId from JWT for station-scoped roles
@@ -338,6 +338,11 @@ const getPendingMessages = catchAsync(async (req, res) => {
     resolvedStationId || "",
     Number(page),
     Number(limit),
+    {
+      search: search ? String(search) : undefined,
+      type: type ? String(type) : undefined,
+      timeRange: timeRange ? String(timeRange) : undefined,
+    },
   );
 
   sendResponse(res, {
@@ -425,7 +430,7 @@ const searchMessages = catchAsync(async (req, res) => {
 });
 
 const getList = catchAsync(async (req, res) => {
-  const { page = 1, limit = 20, stationId: queryStationId } = req.query;
+  const { page = 1, limit = 20, stationId: queryStationId, country, show, status, search, q } = req.query;
   const userRole = req.user!.role;
 
   let resolvedStationId = queryStationId as string | undefined;
@@ -437,6 +442,12 @@ const getList = catchAsync(async (req, res) => {
     resolvedStationId,
     Number(page),
     Number(limit),
+    {
+      country: country as string | undefined,
+      show: show as string | undefined,
+      status: status as string | undefined,
+      search: (search || q) as string | undefined,
+    },
   );
 
   sendResponse(res, {

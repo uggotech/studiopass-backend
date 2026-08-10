@@ -55,8 +55,9 @@ export const resolveMsisdn = async (
  * Recursively walk a value and mask any msisdn string fields.
  */
 const maskNested = (value: any): any => {
-  if (typeof value === "string") return value; // don't mask plain strings
+  if (typeof value === "string") return value;
   if (Array.isArray(value)) return value.map(maskNested);
+  if (value && typeof value === "object" && value.constructor !== Object) return value;
   if (value && typeof value === "object") {
     const out: Record<string, any> = {};
     for (const [k, v] of Object.entries(value)) {
@@ -79,18 +80,13 @@ const maskNested = (value: any): any => {
  *    or: router.get("/", auth(...), msisdnMasker, controller);
  */
 export const msisdnMasker = (req: any, res: any, next: any) => {
-  const role = req.user?.role;
-  if (!role || !shouldMaskMsisdn(role)) {
-    return next();
-  }
-
   const originalJson = res.json.bind(res);
   res.json = (body: any) => {
-    if (body && typeof body === "object" && "data" in body) {
+    const role = req.user?.role;
+    if (role && shouldMaskMsisdn(role) && body && typeof body === "object" && "data" in body) {
       body.data = maskNested(body.data);
     }
     return originalJson(body);
   };
-
   next();
 };

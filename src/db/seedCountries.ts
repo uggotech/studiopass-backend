@@ -7,10 +7,10 @@ const countries = [
     code: "BD",
     phoneCode: "+880",
     currency: "BDT",
-    currencySymbol: "\u09f3",
+    currencySymbol: "৳",
     timezone: "Asia/Dhaka",
-    messageCreditPrice: 2,
-    callCreditPrice: 5,
+    messageCreditPrice: 16.6,
+    callCreditPrice: 16.6,
     smsProviders: ["twilio"],
     isActive: true,
   },
@@ -19,10 +19,10 @@ const countries = [
     code: "IN",
     phoneCode: "+91",
     currency: "INR",
-    currencySymbol: "\u20b9",
+    currencySymbol: "₹",
     timezone: "Asia/Kolkata",
-    messageCreditPrice: 1,
-    callCreditPrice: 3,
+    messageCreditPrice: 12.8,
+    callCreditPrice: 12.8,
     smsProviders: ["twilio"],
     isActive: true,
   },
@@ -33,8 +33,8 @@ const countries = [
     currency: "KES",
     currencySymbol: "KSh",
     timezone: "Africa/Nairobi",
-    messageCreditPrice: 500,
-    callCreditPrice: 500,
+    messageCreditPrice: 17.2,
+    callCreditPrice: 17.2,
     smsProviders: ["africas_talking"],
     isActive: true,
   },
@@ -55,10 +55,10 @@ const countries = [
     code: "NG",
     phoneCode: "+234",
     currency: "NGN",
-    currencySymbol: "\u20a6",
+    currencySymbol: "₦",
     timezone: "Africa/Lagos",
-    messageCreditPrice: 100,
-    callCreditPrice: 100,
+    messageCreditPrice: 183.0,
+    callCreditPrice: 183.0,
     smsProviders: ["africas_talking"],
     isActive: true,
   },
@@ -69,8 +69,8 @@ const countries = [
     currency: "TZS",
     currencySymbol: "TSh",
     timezone: "Africa/Dar_es_Salaam",
-    messageCreditPrice: 500,
-    callCreditPrice: 500,
+    messageCreditPrice: 355.4,
+    callCreditPrice: 355.4,
     smsProviders: ["africas_talking"],
     isActive: true,
   },
@@ -79,10 +79,10 @@ const countries = [
     code: "GH",
     phoneCode: "+233",
     currency: "GHS",
-    currencySymbol: "GH\u20b5",
+    currencySymbol: "GH₵",
     timezone: "Africa/Accra",
-    messageCreditPrice: 5,
-    callCreditPrice: 10,
+    messageCreditPrice: 1.6,
+    callCreditPrice: 1.6,
     smsProviders: ["africas_talking"],
     isActive: true,
   },
@@ -93,8 +93,8 @@ const countries = [
     currency: "PKR",
     currencySymbol: "Rs",
     timezone: "Asia/Karachi",
-    messageCreditPrice: 5,
-    callCreditPrice: 10,
+    messageCreditPrice: 37.3,
+    callCreditPrice: 37.3,
     smsProviders: ["twilio"],
     isActive: true,
   },
@@ -105,8 +105,8 @@ const countries = [
     currency: "ZAR",
     currencySymbol: "R",
     timezone: "Africa/Johannesburg",
-    messageCreditPrice: 10,
-    callCreditPrice: 20,
+    messageCreditPrice: 2.2,
+    callCreditPrice: 2.2,
     smsProviders: ["twilio"],
     isActive: true,
   },
@@ -115,24 +115,20 @@ const countries = [
     code: "EG",
     phoneCode: "+20",
     currency: "EGP",
-    currencySymbol: "E\u00a3",
+    currencySymbol: "E£",
     timezone: "Africa/Cairo",
-    messageCreditPrice: 10,
-    callCreditPrice: 20,
+    messageCreditPrice: 6.7,
+    callCreditPrice: 6.7,
     smsProviders: ["twilio"],
     isActive: true,
   },
 ];
 
 const seedCountries = async () => {
-  const count = await Country.countDocuments();
-  if (count > 0) {
-    logger.info(`[seed] Countries already seeded (${count} found) — skipping`);
-    return;
+  for (const c of countries) {
+    await Country.findOneAndUpdate({ code: c.code }, c, { upsert: true, new: true });
   }
-
-  await Country.insertMany(countries);
-  logger.info(`[seed] Seeded ${countries.length} countries`);
+  logger.info(`[seed] Seeded and updated ${countries.length} countries with 500 UGX equivalent prices`);
 };
 
 export default seedCountries;

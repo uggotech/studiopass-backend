@@ -1,6 +1,81 @@
 import { StatusCodes } from "http-status-codes";
 import AppError from "../../errors/AppError";
 import { NotificationRepository } from "./notification.repository";
+import { Notification } from "./notification.model";
+import { sendFirebaseNotification } from "../../util/firebasePushNotification";
+import { emitToUser } from "../../socket";
+import { User } from "../user/user.model";
+import { logger } from "logger/logger";
+
+type CreateNotificationPayload = {
+  userId: string;
+  type: "announcement" | "reply" | "system";
+  title: string;
+  body: string;
+  data?: Record<string, unknown>;
+};
+
+const createNotification = async (payload: CreateNotificationPayload) => {
+  const { userId, type, title, body, data = {} } = payload;
+
+  // 1. Save to DB
+  const notification = await Notification.create({
+    user: userId,
+    type,
+    title,
+    body,
+    data,
+    deliveryStatus: "pending",
+  });
+
+  // 2. Emit socket event (for in-app toast if user is connected & foreground)
+  try {
+    emitToUser(userId, "new-notification", {
+      notification: {
+        id: notification._id,
+        type,
+        title,
+        body,
+        data,
+        isRead: false,
+        createdAt: notification.createdAt,
+      },
+    });
+  } catch {
+    // socket failure should not block
+  }
+
+  // 3. Send FCM push (for background/closed app delivery)
+  try {
+    const user = await User.findById(userId).select("fcmToken preferences").lean();
+
+    // Verify user notification consent / preference setting
+    const isPushEnabled = (user as any)?.preferences?.notificationsEnabled !== false;
+
+    if (user?.fcmToken && isPushEnabled) {
+      const result = await sendFirebaseNotification(user.fcmToken, {
+        title,
+        body,
+        data,
+      });
+
+      if (result.successCount > 0) {
+        await Notification.findByIdAndUpdate(notification._id, { deliveryStatus: "sent" });
+      } else if (result.failureCount > 0) {
+        await Notification.findByIdAndUpdate(notification._id, {
+          deliveryStatus: "failed",
+          errorMessage: "FCM delivery failed",
+        });
+      }
+    } else {
+      logger.info(`[Notification] FCM skipped — no fcmToken or push disabled for user ${userId}`);
+    }
+  } catch (e) {
+    logger.error("[Notification] FCM push failed", { error: e });
+  }
+
+  return notification;
+};
 
 const getNotifications = async (
   userId: string,
@@ -61,7 +136,28 @@ const deleteNotification = async (id: string, userId: string) => {
   return { success: true };
 };
 
+const sendBulkNotifications = async (
+  userIds: string[],
+  title: string,
+  body: string,
+  type: "system" | "announcement" | "reply" = "system",
+  data: Record<string, unknown> = {},
+) => {
+  const CHUNK_SIZE = 500;
+  for (let i = 0; i < userIds.length; i += CHUNK_SIZE) {
+    const chunk = userIds.slice(i, i + CHUNK_SIZE);
+    await Promise.all(
+      chunk.map((userId) =>
+        createNotification({ userId, title, body, type, data }).catch(() => null),
+      ),
+    );
+  }
+  return { success: true, count: userIds.length };
+};
+
 export const NotificationService = {
+  createNotification,
+  sendBulkNotifications,
   getNotifications,
   getUnreadCount,
   markAsRead,

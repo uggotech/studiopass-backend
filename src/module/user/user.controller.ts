@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import catchAsync from "../../shared/catchAsync";
 import sendResponse from "../../shared/sendResponse";
 import { UserService } from "./user.service";
+import { UserRepository } from "./user.repository";
 import { StationRepository } from "../station/station.repository";
 import { StatusCodes } from "http-status-codes";
 import AppError from "../../errors/AppError";
@@ -20,8 +21,8 @@ const getMyProfile = catchAsync(async (req: Request, res: Response) => {
 
 const updateMyProfile = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
-  // processAndUpload middleware puts the file path in req.body.image
-  const avatar = req.body.image || undefined;
+  // processAndUpload middleware puts the file path in req.body.image or req.body.avatar
+  const avatar = req.body.image || req.body.avatar || undefined;
   const result = await UserService.updateMyProfile(user._id.toString(), {
     ...req.body,
     ...(avatar && { avatar }),
@@ -80,17 +81,25 @@ const getAllMediaStationUsers = catchAsync(async (req: Request, res: Response) =
 
 const createMediaStation = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
+  const userStationId = user?.stationId?.toString();
+  const userPartnerId = user?.partnerId?.toString();
+
+  if (user.role === "station_admin" && userStationId && !req.body.stationId) {
+    req.body.stationId = userStationId;
+  }
+
   const { stationId } = req.body;
 
   // Scope check: ensure the station belongs to the user's scope
   if (stationId) {
-    if ((user.role === "partner_admin" || user.role === "customer_care") && user.partnerId) {
+    if ((user.role === "partner_admin" || user.role === "customer_care") && userPartnerId) {
       const station = await StationRepository.findById(stationId);
-      if (!station || (station.partner as any)?._id?.toString() !== user.partnerId.toString()) {
+      const stationPartnerId = (station?.partner as any)?._id?.toString() || station?.partner?.toString();
+      if (!station || stationPartnerId !== userPartnerId) {
         throw new AppError(StatusCodes.FORBIDDEN, "You can only create users for stations in your partner organization");
       }
-    } else if (user.role === "station_admin" && user.stationId) {
-      if (stationId !== user.stationId.toString()) {
+    } else if (user.role === "station_admin" && userStationId) {
+      if (stationId !== userStationId) {
         throw new AppError(StatusCodes.FORBIDDEN, "You can only create users for your own station");
       }
     }
@@ -127,6 +136,41 @@ const getUserById = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
+const updateUserById = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const targetUserId = String(req.params.id);
+
+  if (user.role === "partner_admin" && user.partnerId) {
+    const targetUser = await UserRepository.findById(targetUserId);
+    if (!targetUser) {
+      throw new AppError(StatusCodes.NOT_FOUND, "User not found");
+    }
+    let targetPartnerId = targetUser.partnerId?.toString();
+    if (!targetPartnerId && targetUser.stationId) {
+      const station = await StationRepository.findById(targetUser.stationId.toString());
+      targetPartnerId = (station?.partner as any)?._id?.toString() || station?.partner?.toString();
+    }
+    if (targetPartnerId !== user.partnerId.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only update users in your partner organization");
+    }
+  } else if (user.role === "station_admin" && user.stationId) {
+    const targetUser = await UserRepository.findById(targetUserId);
+    if (targetUser?.stationId?.toString() !== user.stationId.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only update users in your station");
+    }
+  }
+
+  const result = await UserService.updateUserById(targetUserId, req.body);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "User updated successfully",
+    data: result,
+  });
+});
+
 
 const deactivateUser = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
@@ -186,17 +230,25 @@ const updateFcmToken = catchAsync(async (req: Request, res: Response) => {
 
 const createPresenter = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
+  const userStationId = user?.stationId?.toString();
+  const userPartnerId = user?.partnerId?.toString();
+
+  if (user.role === "station_admin" && userStationId && !req.body.stationId) {
+    req.body.stationId = userStationId;
+  }
+
   const { stationId } = req.body;
 
   // Scope check: ensure the station belongs to the user's scope
   if (stationId) {
-    if ((user.role === "partner_admin" || user.role === "customer_care") && user.partnerId) {
+    if ((user.role === "partner_admin" || user.role === "customer_care") && userPartnerId) {
       const station = await StationRepository.findById(stationId);
-      if (!station || (station.partner as any)?._id?.toString() !== user.partnerId.toString()) {
+      const stationPartnerId = (station?.partner as any)?._id?.toString() || station?.partner?.toString();
+      if (!station || stationPartnerId !== userPartnerId) {
         throw new AppError(StatusCodes.FORBIDDEN, "You can only create presenters for stations in your partner organization");
       }
-    } else if (user.role === "station_admin" && user.stationId) {
-      if (stationId !== user.stationId.toString()) {
+    } else if (user.role === "station_admin" && userStationId) {
+      if (stationId !== userStationId) {
         throw new AppError(StatusCodes.FORBIDDEN, "You can only create presenters for your own station");
       }
     }
@@ -247,12 +299,69 @@ const getAllListeners = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getListenerById = catchAsync(async (req: Request, res: Response) => {
-  const result = await UserService.getListenerById(String(req.params.id));
+  const user = req.user as any;
+  const result = await UserService.getListenerById(String(req.params.id), user?.role);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
     message: "Listener fetched successfully",
+    data: result,
+  });
+});
+
+const getListenerVotes = catchAsync(async (req: Request, res: Response) => {
+  const result = await UserService.getListenerVotes(String(req.params.id));
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Listener poll votes fetched successfully",
+    data: result,
+  });
+});
+
+const getAllCustomerCareUsers = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const scope = {
+    partnerId: user?.partnerId?.toString(),
+    countryId: user?.country?.toString(),
+  };
+
+  const result = await UserService.getAllCustomerCareUsers(req.query, scope);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Customer care users fetched successfully",
+    data: result.users,
+    meta: result.meta,
+  });
+});
+
+const getTopFans = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const scope = {
+    stationId: user?.stationId?.toString(),
+  };
+
+  const result = await UserService.getTopFans(scope);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Top fans fetched successfully",
+    data: result,
+  });
+});
+
+const createCustomerCareUser = catchAsync(async (req: Request, res: Response) => {
+  const result = await UserService.createCustomerCareUser(req.body);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.CREATED,
+    success: true,
+    message: "Customer Care agent created successfully",
     data: result,
   });
 });
@@ -266,9 +375,14 @@ export const UserController = {
   createMediaStation,
   createPresenter,
   getAllPresenters,
+  createCustomerCareUser,
+  getAllCustomerCareUsers,
   getAllListeners,
   getListenerById,
+  getListenerVotes,
+  getTopFans,
   getUserById,
+  updateUserById,
   deactivateUser,
   reactivateUser,
   updateFcmToken,

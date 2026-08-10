@@ -16,7 +16,7 @@ const updatePreferences = z.object({
 
 const updateFcmToken = z.object({
   body: z.object({
-    fcmToken: z.string().min(1, "FCM token is required"),
+    fcmToken: z.string().nullable(),
   }),
 });
 
@@ -49,6 +49,18 @@ const createPresenter = z.object({
   }),
 });
 
+const createCustomerCare = z.object({
+  body: z.object({
+    fullName: z.string().min(1, "Name is required").max(100),
+    username: z.string().min(3, "Username must be at least 3 characters").max(50),
+    email: z.string().email("Invalid email").optional(),
+    phone: z.string().min(1, "Phone is required").max(20).optional(),
+    password: z.string().min(6, "Password must be at least 6 characters").max(100),
+    scopeType: z.enum(["global", "country"]).default("global"),
+    countryId: z.string().optional(),
+  }),
+});
+
 export const UserDto = {
   updateProfile,
   updatePreferences,
@@ -56,4 +68,6 @@ export const UserDto = {
   completeProfile,
   createMediaStation,
   createPresenter,
+  createCustomerCare,
 };
+

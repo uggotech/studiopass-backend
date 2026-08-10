@@ -29,6 +29,7 @@ const userSchema = new Schema<TUser>(
       ],
       required: true,
     },
+    scopeType: { type: String, enum: ["global", "country"] },
     partnerId: { type: Schema.Types.ObjectId, ref: "Partner" },
     stationId: { type: Schema.Types.ObjectId, ref: "Station" },
     profileCompleted: { type: Boolean, default: false },

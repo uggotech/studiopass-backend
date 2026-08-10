@@ -7,11 +7,18 @@ import { errorLogger, logger } from "./logger/logger";
 import ConnectDB from "./db";
 import seedSuperAdmin from "./db/seedSuperAdmin";
 import seedCountries from "./db/seedCountries";
+import { seedPrizeTypes } from "./module/prizeType/prizeType.service";
+import { startChallengeScheduler } from "./module/challenge/challengeScheduler";
 import { initMinio } from "./util/minio";
 import { initSocket, getIO } from "./socket";
 import { startShowScheduler, stopShowScheduler } from "./module/show/showScheduler";
+import { StatusService } from "./module/status/status.service";
+import { CallService } from "./module/call/call.service";
+
+import { ListenerStatementService } from "./module/listenerStatement/listenerStatement.service";
 
 const server = http.createServer(app);
+let cleanupInterval: NodeJS.Timeout | null = null;
 
 export { server };
 
@@ -20,6 +27,8 @@ async function main() {
     await ConnectDB();
     await seedSuperAdmin();
     await seedCountries();
+    await seedPrizeTypes();
+    await ListenerStatementService.syncFreeListenerStatements();
 
     try {
       await redisClient.connect();
@@ -34,8 +43,29 @@ async function main() {
     initSocket(server);
     logger.info("Socket.io initialized");
 
+    // Clean up stale calls from previous server run
+    await CallService.cleanupStaleCalls();
+
+    // Re-register timeouts for active queued calls
+    await CallService.reregisterTimeouts();
+
+    // Periodic stale call cleanup every 30 minutes
+    cleanupInterval = setInterval(async () => {
+      try {
+        await CallService.cleanupStaleCalls();
+      } catch (err) {
+        logger.error("[Call] Periodic cleanup error:", err);
+      }
+    }, 30 * 60 * 1000);
+
     startShowScheduler(60000);
     logger.info("Show scheduler started");
+
+    startChallengeScheduler(60000);
+    logger.info("Challenge scheduler started");
+
+    StatusService.startWeeklyTopFansScheduler();
+    logger.info("Weekly top fans scheduler started");
 
     const port = Number(config.port) || 5000;
 
@@ -59,6 +89,8 @@ async function gracefulShutdown(signal: string) {
 
   try {
     stopShowScheduler();
+    StatusService.stopWeeklyTopFansScheduler();
+    if (cleanupInterval) clearInterval(cleanupInterval);
 
     try {
       const io = getIO();

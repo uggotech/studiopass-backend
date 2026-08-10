@@ -4,7 +4,15 @@ const createPoll = z.object({
   body: z.object({
     stationId: z.string().optional(),
     question: z.string().min(1, "Question is required").max(500),
-    options: z.array(z.string().min(1).max(100)).min(2, "At least 2 options required").max(10),
+    options: z.array(
+      z.union([
+        z.string().min(1).max(100),
+        z.object({
+          label: z.string().min(1).max(100),
+          imageUrl: z.string().optional().nullable(),
+        }),
+      ])
+    ).min(2, "At least 2 options required").max(10),
     showId: z.string().optional(),
     expiresAt: z.string().datetime().optional(),
   }),

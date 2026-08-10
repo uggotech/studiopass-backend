@@ -1,6 +1,8 @@
-FROM node:20-alpine
+FROM node:20-slim
 
 WORKDIR /app
+
+RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
 COPY package.json pnpm-lock.yaml* package-lock.json* ./
 
@@ -11,4 +13,4 @@ COPY src ./src
 
 EXPOSE 5003
 
-CMD ["npx", "ts-node-dev", "--respawn", "--transpile-only", "-r", "tsconfig-paths/register", "src/server.ts"]
+CMD ["npx", "ts-node-dev", "--respawn", "--poll", "--transpile-only", "-r", "tsconfig-paths/register", "src/server.ts"]

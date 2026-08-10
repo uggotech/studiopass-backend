@@ -42,4 +42,12 @@ router.get(
   ShowController.getShowById,
 );
 
+// Dashboard users: update show
+router.patch(
+  "/:id",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  validateRequest(ShowDto.updateShow),
+  ShowController.updateShow,
+);
+
 export const ShowRoutes = router;

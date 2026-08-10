@@ -12,6 +12,7 @@ yarn-error.log*
 
 # Service account and secrets
 serviceAccount.json
+serviceAccount-runtime.json
 *.key
 *.pem
 

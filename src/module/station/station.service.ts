@@ -9,19 +9,22 @@ import { PartnerRepository } from "../partner/partner.repository";
 import { CountryRepository } from "../country/country.repository";
 import { AuthRepository } from "../auth/auth.repository";
 import { UserRepository } from "../user/user.repository";
+import { User } from "../user/user.model";
 import { FollowService } from "../follow/follow.service";
 import { ShowRepository } from "../show/show.repository";
 import { StationApiKeyRepository } from "../stationApiKey/stationApiKey.repository";
+import { ChallengeRepository } from "../challenge/challenge.repository";
 import { TStation } from "./station.interface";
 import { UserRole } from "shared/roles";
 import { LoginProvider } from "../auth/auth.interface";
 import { StationCache } from "./station.cacheManage";
 
-const normalizeStation = (s: TStation) => ({
+const normalizeStation = (s: any) => ({
   id: s._id,
   name: s.name,
   stationCode: s.stationCode,
   category: s.category,
+  channelType: s.channelType || null,
   country: s.country,
   partner: s.partner,
   description: s.description,
@@ -33,6 +36,9 @@ const normalizeStation = (s: TStation) => ({
   isActive: s.isActive,
   isVerified: s.isVerified,
   followersCount: s.followersCount,
+  hasActiveChallenge: s.hasActiveChallenge || false,
+  activeChallengeCount: s.activeChallengeCount || 0,
+  adminUser: s.adminUser || null,
   createdBy: s.createdBy,
   createdAt: s.createdAt,
   updatedAt: s.updatedAt,
@@ -80,8 +86,42 @@ const getAllStations = async (query: Record<string, unknown>, scope?: { partnerI
     StationRepository.count(filter),
   ]);
 
+  const stationIds = stations.map((st: any) => st._id);
+  const adminUsers = await User.find({
+    stationId: { $in: stationIds },
+    role: UserRole.STATION_ADMIN,
+  }).lean();
+
+  const adminMap = new Map<string, any>();
+  adminUsers.forEach((admin: any) => {
+    const stId = typeof admin.stationId === "object" && admin.stationId._id
+      ? admin.stationId._id.toString()
+      : admin.stationId ? admin.stationId.toString() : null;
+    if (stId && stId !== "[object Object]") {
+      adminMap.set(stId, {
+        id: admin._id.toString(),
+        fullName: admin.fullName || "",
+        email: admin.email || "",
+        phone: admin.phone || "",
+      });
+    }
+  });
+
+  const stationsWithChallengeInfo = await Promise.all(
+    stations.map(async (st: any) => {
+      const activeChallengeCount = await ChallengeRepository.countActiveByStation(st._id.toString());
+      const adminUser = adminMap.get(st._id.toString()) || null;
+      return {
+        ...st,
+        activeChallengeCount,
+        hasActiveChallenge: activeChallengeCount > 0,
+        adminUser,
+      };
+    }),
+  );
+
   return {
-    stations: stations.map(normalizeStation),
+    stations: stationsWithChallengeInfo.map(normalizeStation),
     meta: { page, limit, total, totalPage: Math.ceil(total / limit) },
   };
 };
@@ -91,13 +131,32 @@ const getStationById = async (id: string) => {
   if (!station) {
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
   }
-  return normalizeStation(station);
+  const [activeChallengeCount, adminDoc] = await Promise.all([
+    ChallengeRepository.countActiveByStation(id),
+    User.findOne({ stationId: id, role: UserRole.STATION_ADMIN }).lean(),
+  ]);
+  const adminUser = adminDoc
+    ? {
+        id: adminDoc._id.toString(),
+        fullName: adminDoc.fullName || "",
+        email: adminDoc.email || "",
+        phone: adminDoc.phone || "",
+      }
+    : null;
+  const enriched = {
+    ...station,
+    activeChallengeCount,
+    hasActiveChallenge: activeChallengeCount > 0,
+    adminUser,
+  };
+  return normalizeStation(enriched);
 };
 
 const createStationWithAdmin = async (data: {
   name: string;
   stationCode: string;
   category: string;
+  channelType?: string;
   countryId?: string;
   partnerId?: string;
   description?: string;
@@ -156,6 +215,7 @@ const createStationWithAdmin = async (data: {
       name: data.name,
       stationCode: data.stationCode.toUpperCase(),
       category: data.category as any,
+      channelType: data.category === "channel" ? (data.channelType as any) : undefined,
       country: country._id,
       partner: partner._id,
       description: data.description,
@@ -256,6 +316,14 @@ const reactivateStation = async (id: string) => {
   }
 
   const updated = await StationRepository.updateById(id, { isActive: true });
+
+  // Cascade: reactivate shows (non-blocking, best-effort)
+  try {
+    await ShowRepository.reactivateByStation(id);
+  } catch {
+    // Best-effort: log but don't fail the main operation
+  }
+
   StationCache.invalidateStation(id);
   return normalizeStation(updated!);
 };
@@ -294,21 +362,87 @@ const getPublicStations = async (query: Record<string, unknown>, userId?: string
   const stationIds = stations.map((s) => s._id);
   const followedMap = await FollowService.getFollowStatus(userId, stationIds);
 
-  // Normalize with limited fields + isFollowing
-  const normalizedStations = stations.map((s) => ({
-    id: s._id,
-    name: s.name,
-    stationCode: s.stationCode,
-    category: s.category,
-    description: s.description,
-    logo: s.logo,
-    coverImage: s.coverImage,
-    country: s.country,
-    isLive: s.isLive,
-    isVerified: s.isVerified,
-    followersCount: s.followersCount,
-    isFollowing: followedMap.has(s._id.toString()),
-  }));
+const getCurrentShowForStation = (
+  shows: Array<{ _id: any; name: string; days: string[]; startTime: string; endTime: string }>,
+  timezone: string,
+): { id: string; name: string } | null => {
+  if (!shows || shows.length === 0) return null;
+  const now = new Date();
+  const dateFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    weekday: "long",
+  });
+  const dayOfWeek = dateFormatter.format(now).toLowerCase();
+
+  const timeFormatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const timeParts = timeFormatter.formatToParts(now);
+  const hour = timeParts.find((p) => p.type === "hour")?.value ?? "00";
+  const minute = timeParts.find((p) => p.type === "minute")?.value ?? "00";
+  const currentTime = `${hour}:${minute}`;
+
+  for (const show of shows) {
+    if (!show.days?.includes(dayOfWeek as any)) continue;
+
+    if (show.startTime <= show.endTime) {
+      if (show.startTime <= currentTime && currentTime < show.endTime) {
+        return { id: show._id.toString(), name: show.name };
+      }
+    } else {
+      if (currentTime >= show.startTime || currentTime < show.endTime) {
+        return { id: show._id.toString(), name: show.name };
+      }
+    }
+  }
+
+  return null;
+};
+
+  // Normalize with limited fields + isFollowing + hasActiveChallenge + currentShowName
+  const normalizedStations = await Promise.all(
+    stations.map(async (s) => {
+      const activeChallengeCount = await ChallengeRepository.countActiveByStation(s._id.toString());
+      const isRadioOrTv = (s.category as string) === "radio" || (s.category as string) === "tv";
+      let isLive = Boolean(s.isLive);
+      let currentShowName: string | null = null;
+
+      if (isRadioOrTv) {
+        const country = s.country as any;
+        const timezone = country?.timezone || "UTC";
+        const shows = await ShowRepository.findByStation(s._id.toString());
+        const currentShow = getCurrentShowForStation(shows as any, timezone);
+        if (currentShow) {
+          isLive = true;
+          currentShowName = currentShow.name;
+        } else if (shows.length > 0 && s.isLive) {
+          currentShowName = shows[0]?.name || null;
+        }
+      }
+
+      return {
+        id: s._id,
+        name: s.name,
+        stationCode: s.stationCode,
+        category: s.category,
+        channelType: s.channelType || null,
+        description: s.description,
+        logo: s.logo,
+        coverImage: s.coverImage,
+        country: s.country,
+        isLive,
+        currentShowName,
+        isVerified: s.isVerified,
+        followersCount: s.followersCount,
+        isFollowing: followedMap.has(s._id.toString()),
+        hasActiveChallenge: activeChallengeCount > 0,
+        activeChallengeCount,
+      };
+    }),
+  );
 
   return {
     stations: normalizedStations,

@@ -58,7 +58,8 @@ const addCredits = catchAsync(async (req: Request, res: Response) => {
     }
   }
 
-  const result = await CreditService.addCredits(userId, amount, adminId, isFree);
+  const idempotencyKey = req.headers["x-idempotency-key"] as string | undefined;
+  const result = await CreditService.addCredits(userId, amount, adminId, isFree, undefined, undefined, idempotencyKey);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,

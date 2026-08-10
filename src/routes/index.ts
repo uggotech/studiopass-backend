@@ -16,6 +16,12 @@ import { NotificationRoutes } from "../module/notification/notification.route";
 import { StationApiKeyRoutes } from "../module/stationApiKey/stationApiKey.route";
 import { DashboardRoutes } from "../module/dashboard/dashboard.route";
 import { CallRoutes } from "../module/call/call.route";
+import { StatusRoutes } from "../module/status/status.route";
+import { ChallengeRoutes } from "../module/challenge/challenge.route";
+import { ChannelPollRoutes } from "../module/channelPoll/channelPoll.route";
+import { PrizeTypeRoutes } from "../module/prizeType/prizeType.route";
+import { DisbursementRoutes } from "../module/disbursement/disbursement.route";
+import { SupportRoutes } from "../module/support/support.route";
 
 const router: Router = express.Router();
 
@@ -37,9 +43,14 @@ const apiRoutes = [
   { path: "/notification", route: NotificationRoutes },
   { path: "/station-api", route: StationApiKeyRoutes },
   { path: "/dashboard", route: DashboardRoutes },
+  { path: "/status", route: StatusRoutes },
+  { path: "/challenge", route: ChallengeRoutes },
+  { path: "/channel-poll", route: ChannelPollRoutes },
+  { path: "/prize-type", route: PrizeTypeRoutes },
+  { path: "/disbursement", route: DisbursementRoutes },
+  { path: "/support", route: SupportRoutes },
 ];
 
 apiRoutes.forEach((route) => router.use(route.path, route.route));
 
 export default router;
-

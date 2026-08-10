@@ -6,6 +6,7 @@ const stationSchema = new Schema<TStation>(
     name: { type: String, required: true, trim: true },
     stationCode: { type: String, required: true, unique: true, uppercase: true, trim: true },
     category: { type: String, enum: ["radio", "tv", "channel"], required: true },
+    channelType: { type: String, enum: ["challenges", "polls", "message_chat"], default: undefined },
     country: { type: Schema.Types.ObjectId, ref: "Country", required: true },
     partner: { type: Schema.Types.ObjectId, ref: "Partner", required: true },
     description: { type: String, trim: true },
@@ -24,6 +25,14 @@ const stationSchema = new Schema<TStation>(
     isVerified: { type: Boolean, default: false },
     followersCount: { type: Number, default: 0, min: 0 },
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },
+    statusConfig: {
+      type: {
+        weeklyTopFansDay: { type: String, enum: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"], default: "monday" },
+        weeklyTopFansTime: { type: String, default: "00:00" },
+        autoPostExpiryHours: { type: Number, default: 168, min: 1, max: 720 },
+      },
+      default: undefined,
+    },
   },
   { timestamps: true },
 );

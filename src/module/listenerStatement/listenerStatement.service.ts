@@ -1,21 +1,25 @@
+import crypto from "crypto";
 import { StatusCodes } from "http-status-codes";
 import AppError from "../../errors/AppError";
 import { ListenerStatementRepository } from "./listenerStatement.repository";
 import { MessageRepository } from "../message/message.repository";
+import Call from "../call/call.model";
+import { User } from "../user/user.model";
 import { StationRepository } from "../station/station.repository";
 import { ShowRepository } from "../show/show.repository";
 import { Country } from "../country/country.model";
 import { maskMsisdn, shouldMaskMsisdn } from "../../shared/maskMsisdn";
 
-const generateStatementId = (): string => {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).substring(2, 6);
-  return `LS-${timestamp}${random}`.toUpperCase();
-};
-
 const generateTicket = (): string => {
-  const random = Math.random().toString(36).substring(2, 8);
-  return `TKT-${random}`.toUpperCase();
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  const randomValues = new Uint8Array(12);
+  crypto.getRandomValues(randomValues);
+  let result = "";
+  for (let i = 0; i < 12; i++) {
+    const randomValue = randomValues[i] ?? 0;
+    result += chars[randomValue % chars.length];
+  }
+  return `TKT-${result}`;
 };
 
 const createStatementFromMessage = async (messageId: string, isFree: boolean = false) => {
@@ -40,8 +44,7 @@ const createStatementFromMessage = async (messageId: string, isFree: boolean = f
   const amount = isFree ? 0 : (message.creditsUsed || 1) * country.messageCreditPrice;
 
   const statement = await ListenerStatementRepository.create({
-    statementId: generateStatementId(),
-    user: message.user || undefined,
+    user: (message.user as any)?._id?.toString() || (message.user as any)?.toString() || undefined,
     type: "Message",
     sourceModel: "Message",
     sourceId: message._id,
@@ -65,11 +68,51 @@ const createStatementFromMessage = async (messageId: string, isFree: boolean = f
   return statement;
 };
 
-const createStatementFromCall = async (_callId: string) => {
-  // Placeholder for when call module is implemented
-  // Will follow the same pattern as createStatementFromMessage
-  // using country.callCreditPrice instead of messageCreditPrice
-  return null;
+const createStatementFromCall = async (callId: string, isFree: boolean = false) => {
+  const call = await Call.findById(callId);
+  if (!call) return;
+
+  // Idempotency check: skip if statement already exists for this call
+  const existing = await ListenerStatementRepository.findOne({ sourceId: call._id });
+  if (existing) return existing;
+
+  const station = await StationRepository.findById((call as any).station?._id?.toString() || (call as any).station?.toString());
+  if (!station) return;
+
+  const country = await Country.findById(station.country).lean();
+  if (!country) return;
+
+  const show = call.show
+    ? await ShowRepository.findById((call as any).show?._id?.toString() || (call as any).show?.toString())
+    : null;
+
+  const amount = isFree ? 0 : (call.creditsUsed || 1) * country.callCreditPrice;
+
+  const caller = await User.findById(call.startedBy).select("phone").lean();
+
+  const statement = await ListenerStatementRepository.create({
+    user: call.startedBy,
+    type: "Call",
+    sourceModel: "Call",
+    sourceId: call._id,
+    msisdn: caller?.phone || "",
+    station: station._id,
+    stationRef: station.stationCode,
+    mediaStation: station.name,
+    show: show?._id,
+    showName: show?.name,
+    amount,
+    currency: country.currency,
+    currencySymbol: country.currencySymbol,
+    creditsUsed: call.creditsUsed || 1,
+    country: country._id,
+    operator: call.operator,
+    ticket: generateTicket(),
+    isFree,
+    status: "Successful",
+  });
+
+  return statement;
 };
 
 // ─── Shared scope resolution helpers ──────────────────────────────────────────
@@ -187,6 +230,7 @@ const applyQueryFilters = (
   filter: Record<string, unknown>,
   query: Record<string, unknown>,
 ) => {
+  if (query.userId) filter.user = query.userId;
   if (query.type) filter.type = query.type;
   if (query.isFree !== undefined) filter.isFree = query.isFree === "true";
   if (query.country) filter.country = query.country;
@@ -205,6 +249,7 @@ const applyQueryFilters = (
       { msisdn: searchRegex },
       { stationRef: searchRegex },
       { mediaStation: searchRegex },
+      { ticket: searchRegex },
     ];
   }
 };
@@ -321,14 +366,69 @@ const exportStatements = async (
   const shouldMask = callerRole ? shouldMaskMsisdn(callerRole) : false;
 
   if (format === "csv") {
-    const header = "Statement ID,Type,MSISDN,Station,Show,Amount,Currency,Credit Source,Ticket,Status,Created\n";
+    const header = "Type,MSISDN,Station,Show,Amount,Currency,Credit Source,Ticket,Status,Created\n";
     const csv = statements.map((s: any) =>
-      `"${s.statementId}","${s.type}","${shouldMask ? maskMsisdn(s.msisdn || "") : s.msisdn}","${s.mediaStation}","${s.showName || ""}","${s.amount}","${s.currency}","${s.isFree ? "Free" : "Paid"}","${s.ticket}","${s.status}","${s.createdAt}"`
+      `"${s.type}","${shouldMask ? maskMsisdn(s.msisdn || "") : s.msisdn}","${s.mediaStation}","${s.showName || ""}","${s.amount}","${s.currency}","${s.isFree ? "Free" : "Paid"}","${s.ticket}","${s.status}","${s.createdAt}"`
     ).join("\n");
     return { format: "csv", data: header + csv };
   }
 
   return { format: "json", data: statements };
+};
+
+const syncFreeListenerStatements = async () => {
+  try {
+    const { CreditTransaction } = await import("../creditTransaction/creditTransaction.model");
+    const { CreditBalance } = await import("../creditBalance/creditBalance.model");
+    const { default: ListenerStatement } = await import("./listenerStatement.model");
+
+    // 1. Find all users who received admin grants (isFree: true)
+    const adminGrantTxs = await CreditTransaction.find({
+      type: "admin_grant",
+      isFree: true,
+    }).select("user").lean();
+
+    const freeUserIds = Array.from(new Set(adminGrantTxs.map((t: any) => t.user?.toString()).filter(Boolean)));
+
+    for (const userId of freeUserIds) {
+      // Check if user has paid purchases
+      const hasPaidPurchase = await CreditTransaction.exists({
+        user: userId,
+        type: "purchase",
+        isFree: false,
+      });
+
+      if (!hasPaidPurchase) {
+        // User only has free admin credits! Ensure freeBalance is set and paidBalance is reset to 0
+        const balanceDoc = await CreditBalance.findOne({ user: userId }).lean();
+        if (balanceDoc) {
+          const currentBalance = balanceDoc.balance ?? 0;
+          await CreditBalance.updateOne(
+            { user: userId },
+            { $set: { freeBalance: currentBalance, paidBalance: 0 } },
+          );
+        }
+
+        // Update all deduction transactions for this user
+        await CreditTransaction.updateMany(
+          { user: userId, type: { $in: ["message_deduction", "call_deduction"] } },
+          { $set: { isFree: true, localAmount: 0 } },
+        );
+
+        // Update all listener statements for this user
+        const res = await ListenerStatement.updateMany(
+          { user: userId },
+          { $set: { isFree: true, amount: 0 } },
+        );
+
+        if (res.modifiedCount > 0) {
+          console.log(`[syncFreeListenerStatements] Updated ${res.modifiedCount} statement(s) for free user ${userId} to isFree: true, amount: 0`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[syncFreeListenerStatements] Error syncing free listener statements:", err);
+  }
 };
 
 export const ListenerStatementService = {
@@ -338,4 +438,5 @@ export const ListenerStatementService = {
   getStatementById,
   getKPIs,
   exportStatements,
+  syncFreeListenerStatements,
 };

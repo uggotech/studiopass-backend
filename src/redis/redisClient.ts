@@ -7,11 +7,11 @@ class RedisClient {
   private isConnected: boolean = false;
   private connectionPromise: Promise<void> | null = null;
   private retryCount: number = 0;
-  private maxRetries: number = 1; // Reduced from 3 for faster failure
+  private maxRetries: number = 3; // Allow 3 retries before cooldown
   private retryDelay: number = 1000; // 1 second
   private lastError: string | null = null;
   private nextRetryAllowedAt: number = 0;
-  private readonly COOLDOWN_PERIOD = 10 * 60 * 1000; // 10 minutes cooldown
+  private readonly COOLDOWN_PERIOD = 2 * 60 * 1000; // 2 minutes cooldown (reduced from 10)
 
   constructor() {
     this.clientInstance = createClient({

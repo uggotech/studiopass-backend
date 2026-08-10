@@ -14,7 +14,7 @@ const findById = (id: string): Promise<TShow | null> => {
 
 const findByIdPopulated = (id: string) => {
   return Show.findById(id)
-    .populate("station", "name stationCode category")
+    .populate("station", "name stationCode category country")
     .populate("presenter", "fullName avatar")
     .lean();
 };
@@ -45,19 +45,37 @@ const updatePresenter = (showId: string, presenterId: string | null): Promise<TS
 const findActiveShowForStation = async (stationId: string, timezone: string): Promise<TShow | null> => {
   const now = new Date();
 
-  // Use Intl.DateTimeFormat.formatToParts for reliable cross-platform time extraction
-  const dateFormatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    weekday: "long",
-  });
-  const dayOfWeek = dateFormatter.format(now).toLowerCase();
+  // Safe timezone resolution with fallback to UTC
+  let safeTimezone = timezone && timezone.trim() ? timezone.trim() : "UTC";
+  let dateFormatter: Intl.DateTimeFormat;
+  let timeFormatter: Intl.DateTimeFormat;
 
-  const timeFormatter = new Intl.DateTimeFormat("en-GB", {
-    timeZone: timezone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
+  try {
+    dateFormatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: safeTimezone,
+      weekday: "long",
+    });
+    timeFormatter = new Intl.DateTimeFormat("en-GB", {
+      timeZone: safeTimezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  } catch {
+    safeTimezone = "UTC";
+    dateFormatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: "UTC",
+      weekday: "long",
+    });
+    timeFormatter = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "UTC",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  }
+
+  const dayOfWeek = dateFormatter.format(now).toLowerCase();
   const timeParts = timeFormatter.formatToParts(now);
   const hour = timeParts.find((p) => p.type === "hour")?.value ?? "00";
   const minute = timeParts.find((p) => p.type === "minute")?.value ?? "00";
@@ -94,29 +112,43 @@ const create = (data: Partial<TShow>): Promise<TShow> => {
   return Show.create(data);
 };
 
+export interface OverlapConflict {
+  showId: string;
+  showName: string;
+  days: string[];
+  startTime: string;
+  endTime: string;
+}
+
 const checkOverlap = async (
   stationId: string,
   days: string[],
   startTime: string,
   endTime: string,
-): Promise<boolean> => {
+  excludeShowId?: string,
+): Promise<OverlapConflict | null> => {
   // Fetch candidate shows that share at least one day
-  const candidateShows = await Show.find({
+  const filter: Record<string, unknown> = {
     station: stationId,
     isActive: true,
     days: { $in: days as any },
-  }).lean();
+  };
+  if (excludeShowId) {
+    filter._id = { $ne: excludeShowId };
+  }
+  const candidateShows = await Show.find(filter).lean();
 
   // Check time overlap handling midnight-spanning shows
   for (const existing of candidateShows) {
     const existingStart = existing.startTime;
     const existingEnd = existing.endTime;
+    let hasTimeOverlap = false;
 
     // Both shows normal (start < end)
     if (startTime < endTime && existingStart < existingEnd) {
       // Standard overlap: new starts before existing ends AND new ends after existing starts
       if (startTime < existingEnd && endTime > existingStart) {
-        return true;
+        hasTimeOverlap = true;
       }
     }
     // New show spans midnight (start >= end), existing is normal
@@ -124,22 +156,34 @@ const checkOverlap = async (
       // New show wraps: active from startTime to 24:00 AND 00:00 to endTime
       // Overlaps with existing if existing overlaps either half
       if (startTime < existingEnd || endTime > existingStart) {
-        return true;
+        hasTimeOverlap = true;
       }
     }
     // Existing show spans midnight, new is normal
     else if (startTime < endTime && existingStart >= existingEnd) {
       if (existingStart < endTime || existingEnd > startTime) {
-        return true;
+        hasTimeOverlap = true;
       }
     }
     // Both span midnight — they always overlap if they share a day
     else {
-      return true;
+      hasTimeOverlap = true;
+    }
+
+    if (hasTimeOverlap) {
+      // Find the overlapping days between new show and existing show
+      const overlappingDays = days.filter((d) => existing.days.includes(d as any));
+      return {
+        showId: existing._id.toString(),
+        showName: existing.name,
+        days: overlappingDays,
+        startTime: existingStart,
+        endTime: existingEnd,
+      };
     }
   }
 
-  return false;
+  return null;
 };
 
 const findByPresenter = (presenterId: string): Promise<TShow[]> => {
@@ -156,7 +200,7 @@ const checkPresenterOverlap = async (
   startTime: string,
   endTime: string,
   excludeShowId?: string,
-): Promise<boolean> => {
+): Promise<OverlapConflict | null> => {
   // Find all active shows assigned to this presenter that share at least one day
   const filter: Record<string, unknown> = {
     presenter: presenterId,
@@ -172,32 +216,44 @@ const checkPresenterOverlap = async (
   for (const existing of presenterShows) {
     const existingStart = existing.startTime;
     const existingEnd = existing.endTime;
+    let hasTimeOverlap = false;
 
     // Both normal
     if (startTime < endTime && existingStart < existingEnd) {
       if (startTime < existingEnd && endTime > existingStart) {
-        return true;
+        hasTimeOverlap = true;
       }
     }
     // New spans midnight, existing normal
     else if (startTime >= endTime && existingStart < existingEnd) {
       if (startTime < existingEnd || endTime > existingStart) {
-        return true;
+        hasTimeOverlap = true;
       }
     }
     // Existing spans midnight, new normal
     else if (startTime < endTime && existingStart >= existingEnd) {
       if (existingStart < endTime || existingEnd > startTime) {
-        return true;
+        hasTimeOverlap = true;
       }
     }
     // Both span midnight
     else {
-      return true;
+      hasTimeOverlap = true;
+    }
+
+    if (hasTimeOverlap) {
+      const overlappingDays = days.filter((d) => existing.days.includes(d as any));
+      return {
+        showId: existing._id.toString(),
+        showName: existing.name,
+        days: overlappingDays,
+        startTime: existingStart,
+        endTime: existingEnd,
+      };
     }
   }
 
-  return false;
+  return null;
 };
 
 const deactivateByStation = (stationId: string): Promise<{ modifiedCount: number }> => {
@@ -205,6 +261,17 @@ const deactivateByStation = (stationId: string): Promise<{ modifiedCount: number
     { station: stationId, isActive: true },
     { $set: { isActive: false } },
   ).then((result) => ({ modifiedCount: result.modifiedCount }));
+};
+
+const reactivateByStation = (stationId: string): Promise<{ modifiedCount: number }> => {
+  return Show.updateMany(
+    { station: stationId, isActive: false },
+    { $set: { isActive: true } },
+  ).then((result) => ({ modifiedCount: result.modifiedCount }));
+};
+
+const updateById = (id: string, data: Partial<TShow>): Promise<TShow | null> => {
+  return Show.findByIdAndUpdate(id, data, { new: true }).lean();
 };
 
 export const ShowRepository = {
@@ -217,7 +284,9 @@ export const ShowRepository = {
   updatePresenter,
   findActiveShowForStation,
   create,
+  updateById,
   checkOverlap,
   checkPresenterOverlap,
   deactivateByStation,
+  reactivateByStation,
 };

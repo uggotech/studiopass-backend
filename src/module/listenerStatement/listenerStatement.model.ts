@@ -3,12 +3,6 @@ import { TListenerStatement } from "./listenerStatement.interface";
 
 const listenerStatementSchema = new Schema<TListenerStatement>(
   {
-    statementId: {
-      type: String,
-      required: true,
-      unique: true,
-      trim: true,
-    },
     user: {
       type: Schema.Types.ObjectId,
       ref: "User",

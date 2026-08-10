@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import ListenerStatement from "./listenerStatement.model";
 import { TListenerStatement } from "./listenerStatement.interface";
 
@@ -45,8 +46,32 @@ const getAggregation = async (
   totalCalls: number;
   totalRevenue: number;
 }> => {
+  const matchFilter: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(filter)) {
+    if (
+      (key === "user" || key === "station" || key === "show" || key === "country") &&
+      typeof value === "string" &&
+      mongoose.Types.ObjectId.isValid(value)
+    ) {
+      matchFilter[key] = new mongoose.Types.ObjectId(value);
+    } else if (
+      (key === "user" || key === "station" || key === "show" || key === "country") &&
+      (value as any)?.$in
+    ) {
+      matchFilter[key] = {
+        $in: (value as any).$in.map((val: any) =>
+          typeof val === "string" && mongoose.Types.ObjectId.isValid(val)
+            ? new mongoose.Types.ObjectId(val)
+            : val
+        ),
+      };
+    } else {
+      matchFilter[key] = value;
+    }
+  }
+
   const result = await ListenerStatement.aggregate([
-    { $match: filter },
+    { $match: matchFilter },
     {
       $group: {
         _id: null,
