@@ -497,7 +497,7 @@ const recordView = async (statusId: string, userId: string) => {
   return { success: true };
 };
 
-// ─── Like / Reaction ─────────────────────────────────────────────────────────
+// ─── Like / Reaction (One-way like, Instagram Story style) ───────────────────
 
 const toggleLike = async (statusId: string, userId: string) => {
   const status = await StatusRepository.findById(statusId);
@@ -507,20 +507,30 @@ const toggleLike = async (statusId: string, userId: string) => {
 
   const existing = await StatusLike.findOne({ status: statusId, user: userId });
   if (existing) {
-    await StatusLike.deleteOne({ _id: existing._id });
-    const updated = await StatusRepository.decrementLikeCount(statusId);
-    return {
-      isLiked: false,
-      likeCount: updated?.likeCount ?? Math.max(0, (status.likeCount || 0) - 1),
-    };
-  } else {
-    await StatusLike.create({ status: statusId, user: userId });
-    const updated = await StatusRepository.incrementLikeCount(statusId);
+    // Already liked: once liked, it cannot be un-liked (Instagram story behavior)
+    const count = await StatusLike.countDocuments({ status: statusId });
     return {
       isLiked: true,
-      likeCount: updated?.likeCount ?? (status.likeCount || 0) + 1,
+      likeCount: count,
     };
   }
+
+  try {
+    await StatusLike.create({ status: statusId, user: userId });
+  } catch (error: any) {
+    if (error?.code !== 11000) {
+      throw error;
+    }
+  }
+
+  // Exact distinct like count from StatusLike collection to prevent any counter drift
+  const actualLikeCount = await StatusLike.countDocuments({ status: statusId });
+  await StatusRepository.updateById(statusId, { likeCount: actualLikeCount });
+
+  return {
+    isLiked: true,
+    likeCount: actualLikeCount,
+  };
 };
 
 export const StatusService = {
