@@ -10,10 +10,10 @@ import { StatusCodes } from "http-status-codes";
 
 const router = Router();
 
-// Create a manual status post (station admin, super admin)
+// Create a manual status post (station admin, super admin, partner admin)
 router.post(
   "/",
-  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
+  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
   validateRequest(StatusDto.createStatus),
   StatusController.createStatus,
 );
@@ -36,19 +36,45 @@ const handleUploadMedia = async (req: any, res: any) => {
   });
 };
 
+const handleUploadVideo = async (req: any, res: any) => {
+  const video = (req.body as any).video;
+  if (!video) {
+    sendResponse(res, {
+      success: false,
+      statusCode: StatusCodes.BAD_REQUEST,
+      message: "No video uploaded",
+    });
+    return;
+  }
+  sendResponse(res, {
+    success: true,
+    statusCode: StatusCodes.OK,
+    message: "Video uploaded successfully",
+    data: { video },
+  });
+};
+
 // Upload status media image / option image
 router.post(
   "/upload-media",
-  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.MEDIA_STATION, UserRole.PRESENTER),
+  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
   processAndUpload,
   handleUploadMedia,
 );
 
 router.post(
   "/upload",
-  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.MEDIA_STATION, UserRole.PRESENTER),
+  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
   processAndUpload,
   handleUploadMedia,
+);
+
+// Upload status video (mp4/mov up to 150MB)
+router.post(
+  "/upload-video",
+  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
+  processAndUpload,
+  handleUploadVideo,
 );
 
 // Manually trigger weekly top fans generation (super admin only)
@@ -88,6 +114,13 @@ router.post(
   StatusController.recordView,
 );
 
+// Toggle like for a status (app users)
+router.post(
+  "/:id/like",
+  auth(UserRole.USER),
+  StatusController.toggleLike,
+);
+
 // Get single status by ID (any auth)
 router.get(
   "/:id",
@@ -96,10 +129,10 @@ router.get(
   StatusController.getStatusById,
 );
 
-// Delete a status (station admin, super admin)
+// Delete a status (station admin, super admin, partner admin)
 router.delete(
   "/:id",
-  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
+  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
   validateRequest(StatusDto.deleteStatus),
   StatusController.deleteStatus,
 );

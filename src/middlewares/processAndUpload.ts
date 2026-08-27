@@ -12,19 +12,23 @@ const ALLOWED_MIME_TYPES = new Set([
   "image/png",
   "image/webp",
   "image/svg+xml",
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
 ]);
 
-const MULTER_MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
+const MULTER_MAX_FILE_SIZE = 150 * 1024 * 1024; // 150MB
 const MESSAGE_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const GENERAL_MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
+const VIDEO_MAX_FILE_SIZE = 150 * 1024 * 1024; // 150MB
 
 const storage = multer.memoryStorage();
 
 const fileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
   const ext = file.originalname.toLowerCase().substring(file.originalname.lastIndexOf("."));
-  const allowedExts = [".jpg", ".jpeg", ".png", ".webp", ".svg"];
+  const allowedExts = [".jpg", ".jpeg", ".png", ".webp", ".svg", ".mp4", ".mov", ".webm"];
   if (!ALLOWED_MIME_TYPES.has(file.mimetype) && !allowedExts.includes(ext)) {
-    cb(new AppError(StatusCodes.BAD_REQUEST, "Only .jpeg, .jpg, .png, .webp, .svg files supported"));
+    cb(new AppError(StatusCodes.BAD_REQUEST, "Only image and video files (.jpg, .png, .webp, .mp4, .mov) are supported"));
     return;
   }
   cb(null, true);
@@ -40,6 +44,7 @@ const upload = multer({
   { name: "image", maxCount: 1 },
   { name: "avatar", maxCount: 1 },
   { name: "optionImage", maxCount: 10 },
+  { name: "video", maxCount: 1 },
 ]);
 
 const processAndUpload = async (req: Request, _res: Response, next: NextFunction) => {
@@ -59,10 +64,25 @@ const processAndUpload = async (req: Request, _res: Response, next: NextFunction
           if (fieldName === "image" && file.size > MESSAGE_MAX_FILE_SIZE) {
             return next(new AppError(StatusCodes.BAD_REQUEST, "Message image file size must not exceed 10MB"));
           }
-          if (fieldName !== "image" && file.size > GENERAL_MAX_FILE_SIZE) {
+          if (fieldName === "video" && file.size > VIDEO_MAX_FILE_SIZE) {
+            return next(new AppError(StatusCodes.BAD_REQUEST, "Video file size must not exceed 150MB"));
+          }
+          if (fieldName !== "image" && fieldName !== "video" && file.size > GENERAL_MAX_FILE_SIZE) {
             return next(new AppError(StatusCodes.BAD_REQUEST, "File size must not exceed 20MB"));
           }
           const fileName = generateUploadFileName({ originalName: file.originalname });
+
+          if (fieldName === "video") {
+            const rawExt = file.originalname.includes(".")
+              ? file.originalname.substring(file.originalname.lastIndexOf(".")).toLowerCase()
+              : ".mp4";
+            const videoExt = [".mov", ".webm", ".mp4"].includes(rawExt) ? rawExt : ".mp4";
+            const filePath = await uploadFile(file.buffer, `${fileName}${videoExt}`, file.mimetype || "video/mp4");
+            console.log("[processAndUpload] uploaded video:", filePath);
+            if (!req.body) req.body = {};
+            req.body.video = filePath;
+            continue;
+          }
 
           let processedBuffer: Buffer;
           let contentType = "image/webp";

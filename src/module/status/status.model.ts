@@ -22,11 +22,14 @@ const statusSchema = new Schema<TStatus>(
     type: { type: String, enum: ["manual", "auto_weekly_top_fans"], required: true },
     content: { type: String, required: true, trim: true },
     media: { type: String },
+    mediaType: { type: String, enum: ["image", "video"], default: undefined },
+    thumbnail: { type: String },
     topFan: { type: statusTopFanSchema, default: undefined },
     weekStart: { type: Date },
     weekEnd: { type: Date },
     expiresAt: { type: Date, required: true },
     viewCount: { type: Number, default: 0, min: 0 },
+    likeCount: { type: Number, default: 0, min: 0 },
   },
   { timestamps: true },
 );
@@ -35,7 +38,7 @@ const statusSchema = new Schema<TStatus>(
 
 statusSchema.index({ station: 1, expiresAt: 1 });
 statusSchema.index({ station: 1, type: 1, createdAt: -1 });
-statusSchema.index({ station: 1, type: 1, weekStart: 1 }, { unique: true, partialFilterExpression: { type: "auto_weekly_top_fans" } });
+statusSchema.index({ station: 1, type: 1, weekStart: 1, "topFan.rank": 1 }, { unique: true, partialFilterExpression: { type: "auto_weekly_top_fans" } });
 statusSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 }); // TTL index for auto-cleanup
 
 // ─── Model ───────────────────────────────────────────────────────────────────

@@ -5,6 +5,8 @@ const createStatus = z.object({
     stationId: z.string().optional(),
     content: z.string().min(1, "Content is required").max(2000),
     media: z.string().optional(),
+    mediaType: z.enum(["image", "video"]).optional(),
+    thumbnail: z.string().optional(),
     expiresAt: z.string().datetime().optional(),
   }),
 });

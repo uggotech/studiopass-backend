@@ -31,8 +31,13 @@ export interface TStatus {
   // Expiry
   expiresAt: Date;
 
-  // View count (denormalized for fast reads)
+  // Media type & thumbnail for video
+  mediaType?: "image" | "video";
+  thumbnail?: string;
+
+  // Engagement counters (denormalized for fast reads)
   viewCount: number;
+  likeCount: number;
 
   createdAt: Date;
   updatedAt: Date;

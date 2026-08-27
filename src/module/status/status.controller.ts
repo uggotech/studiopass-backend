@@ -5,8 +5,10 @@ import { StatusService } from "./status.service";
 import AppError from "../../errors/AppError";
 
 const createStatus = catchAsync(async (req, res) => {
-  const { content, media, expiresAt } = req.body;
+  const { content, media, mediaType, thumbnail, expiresAt } = req.body;
   const createdBy = req.user!._id.toString();
+  const callerRole = req.user!.role;
+  const userPartnerId = req.user!.partnerId?.toString();
 
   let stationId = req.body.stationId;
   if (!stationId) {
@@ -21,7 +23,11 @@ const createStatus = catchAsync(async (req, res) => {
     createdBy,
     content,
     media,
+    mediaType,
+    thumbnail,
     expiresAt,
+    callerRole,
+    userPartnerId,
   });
 
   sendResponse(res, {
@@ -51,8 +57,15 @@ const getAllStationStatuses = catchAsync(async (req, res) => {
   const stationId = req.params.stationId as string;
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 20));
+  const callerRole = req.user!.role;
+  const userPartnerId = req.user!.partnerId?.toString();
 
-  const result = await StatusService.getAllStationStatuses(stationId, page, limit);
+  const result = await StatusService.getAllStationStatuses(
+    stationId,
+    page,
+    limit,
+    { role: callerRole, partnerId: userPartnerId },
+  );
 
   sendResponse(res, {
     success: true,
@@ -75,7 +88,10 @@ const getStatusById = catchAsync(async (req, res) => {
 
 const deleteStatus = catchAsync(async (req, res) => {
   const id = req.params.id as string;
-  await StatusService.deleteStatus(id);
+  const callerRole = req.user!.role;
+  const userPartnerId = req.user!.partnerId?.toString();
+
+  await StatusService.deleteStatus(id, callerRole, userPartnerId);
 
   sendResponse(res, {
     success: true,
@@ -108,7 +124,8 @@ const getFeedByCountry = catchAsync(async (req, res) => {
     throw new AppError(StatusCodes.BAD_REQUEST, "Country ID is required");
   }
 
-  const result = await StatusService.getFeedByCountry(countryId);
+  const userId = req.user?._id?.toString();
+  const result = await StatusService.getFeedByCountry(countryId, userId);
 
   sendResponse(res, {
     success: true,
@@ -130,6 +147,20 @@ const recordView = catchAsync(async (req, res) => {
   });
 });
 
+const toggleLike = catchAsync(async (req, res) => {
+  const id = req.params.id as string;
+  const userId = req.user!._id.toString();
+
+  const result = await StatusService.toggleLike(id, userId);
+
+  sendResponse(res, {
+    success: true,
+    statusCode: StatusCodes.OK,
+    message: result.isLiked ? "Status liked" : "Status unliked",
+    data: result,
+  });
+});
+
 export const StatusController = {
   createStatus,
   getStationStatuses,
@@ -139,4 +170,5 @@ export const StatusController = {
   generateWeeklyTopFans,
   getFeedByCountry,
   recordView,
+  toggleLike,
 };

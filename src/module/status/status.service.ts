@@ -4,6 +4,10 @@ import { StatusRepository } from "./status.repository";
 import { StationRepository } from "../station/station.repository";
 import { CreditTransaction } from "../creditTransaction/creditTransaction.model";
 import { StatusView } from "../status-view/status-view.model";
+import { StatusLike } from "./status-like.model";
+import config from "../../config";
+import { deleteFile } from "../../util/minio";
+import { UserRole } from "../../shared/roles";
 import AppError from "../../errors/AppError";
 import { StatusCodes } from "http-status-codes";
 
@@ -273,16 +277,32 @@ const createStatus = async (data: {
   createdBy: string;
   content: string;
   media?: string;
+  mediaType?: "image" | "video";
+  thumbnail?: string;
   expiresAt?: string;
+  callerRole?: string;
+  userPartnerId?: string;
 }) => {
   const station = await StationRepository.findById(data.stationId);
   if (!station) {
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
   }
 
+  if (!station.isActive) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Cannot create status posts for an inactive or suspended station");
+  }
+
+  // Scoping check for partner admin
+  if (data.callerRole === UserRole.PARTNER_ADMIN) {
+    const stationPartnerId = (station as any).partner?._id?.toString() || (station as any).partner?.toString();
+    if (stationPartnerId !== data.userPartnerId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You don't have permission to create statuses for this station");
+    }
+  }
+
   // Media MIME/extension validation for station status updates
   if (data.media) {
-    const allowedExtensions = [".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov"];
+    const allowedExtensions = [".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".webm"];
     const rawExt = data.media.includes(".")
       ? data.media.substring(data.media.lastIndexOf("."))
       : "";
@@ -305,8 +325,11 @@ const createStatus = async (data: {
     type: "manual",
     content: data.content,
     media: data.media,
+    mediaType: data.mediaType,
+    thumbnail: data.thumbnail,
     expiresAt,
     viewCount: 0,
+    likeCount: 0,
   });
 };
 
@@ -323,16 +346,50 @@ const getStationStatuses = async (stationId: string, page: number, limit: number
   };
 };
 
-const getAllStationStatuses = async (stationId: string, page: number, limit: number) => {
+const getAllStationStatuses = async (
+  stationId: string,
+  page: number,
+  limit: number,
+  scope?: { role?: string; partnerId?: string },
+) => {
   const skip = (page - 1) * limit;
-  const [statuses, total] = await Promise.all([
-    StatusRepository.findAllByStation(stationId, skip, limit),
-    StatusRepository.countAllByStation(stationId),
+
+  let targetStation: string | string[] = stationId;
+
+  // Partner admin scoping when viewing all statuses
+  if (scope?.role === UserRole.PARTNER_ADMIN && (stationId === "all" || !stationId)) {
+    const partnerStations = await StationRepository.findAll(
+      { partner: scope.partnerId },
+      { limit: 1000 },
+    );
+    const stationIds = partnerStations.map((s: any) => s._id.toString());
+    if (stationIds.length === 0) {
+      return {
+        statuses: [],
+        meta: { page, limit, total: 0, totalPage: 0 },
+      };
+    }
+    targetStation = stationIds;
+  }
+
+  const [statuses, total, metrics] = await Promise.all([
+    StatusRepository.findAllByStation(targetStation, skip, limit),
+    StatusRepository.countAllByStation(targetStation),
+    StatusRepository.getStationStatusMetrics(targetStation),
   ]);
 
   return {
     statuses,
-    meta: { page, limit, total, totalPage: Math.ceil(total / limit) },
+    meta: {
+      page,
+      limit,
+      total,
+      totalPage: Math.ceil(total / limit),
+      activeCount: metrics.activeCount,
+      expiredCount: metrics.expiredCount,
+      totalViews: metrics.totalViews,
+      totalLikes: metrics.totalLikes,
+    },
   };
 };
 
@@ -344,19 +401,50 @@ const getStatusById = async (id: string) => {
   return status;
 };
 
-const deleteStatus = async (id: string) => {
+const deleteStatus = async (
+  id: string,
+  callerRole?: string,
+  userPartnerId?: string,
+) => {
   const status = await StatusRepository.findById(id);
   if (!status) {
     throw new AppError(StatusCodes.NOT_FOUND, "Status not found");
   }
-  await StatusRepository.deleteById(id);
+
+  // Scoping check for partner admin
+  if (callerRole === UserRole.PARTNER_ADMIN) {
+    const station = await StationRepository.findById(status.station._id?.toString() || status.station.toString());
+    const stationPartnerId = (station as any)?.partner?._id?.toString() || (station as any)?.partner?.toString();
+    if (stationPartnerId !== userPartnerId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You don't have permission to delete statuses for this station");
+    }
+  }
+
+  const removeMinioMedia = async (filePath?: string) => {
+    if (!filePath) return;
+    try {
+      const relativeName = filePath.replace(new RegExp(`^${config.minio.bucket}/`), "");
+      await deleteFile(relativeName);
+    } catch (err) {
+      logger.warn(`[StatusService] Failed to delete file from MinIO: ${filePath}`, err);
+    }
+  };
+
+  await Promise.all([
+    StatusRepository.deleteById(id),
+    StatusView.deleteMany({ status: id }),
+    StatusLike.deleteMany({ status: id }),
+    removeMinioMedia(status.media),
+    removeMinioMedia(status.thumbnail),
+  ]);
+
   return status;
 };
 
 // ─── App Feed (grouped by station for a country) ─────────────────────────────
 
-const getFeedByCountry = async (countryId: string) => {
-  const statuses = await StatusRepository.findActiveByCountry(countryId);
+const getFeedByCountry = async (countryId: string, userId?: string) => {
+  const statuses = await StatusRepository.findActiveByCountry(countryId, userId);
 
   // Group by station
   const stationMap = new Map<string, { station: any; statuses: any[] }>();
@@ -375,6 +463,12 @@ const getFeedByCountry = async (countryId: string) => {
       });
     }
     stationMap.get(stationId)!.statuses.push(status);
+  }
+
+  // Inside each station, sort statuses chronologically (oldest active first -> newest active last)
+  // so story playback starts from the oldest active post and progresses to the newest post
+  for (const entry of stationMap.values()) {
+    entry.statuses.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }
 
   return Array.from(stationMap.values());
@@ -403,6 +497,32 @@ const recordView = async (statusId: string, userId: string) => {
   return { success: true };
 };
 
+// ─── Like / Reaction ─────────────────────────────────────────────────────────
+
+const toggleLike = async (statusId: string, userId: string) => {
+  const status = await StatusRepository.findById(statusId);
+  if (!status) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Status not found");
+  }
+
+  const existing = await StatusLike.findOne({ status: statusId, user: userId });
+  if (existing) {
+    await StatusLike.deleteOne({ _id: existing._id });
+    const updated = await StatusRepository.decrementLikeCount(statusId);
+    return {
+      isLiked: false,
+      likeCount: updated?.likeCount ?? Math.max(0, (status.likeCount || 0) - 1),
+    };
+  } else {
+    await StatusLike.create({ status: statusId, user: userId });
+    const updated = await StatusRepository.incrementLikeCount(statusId);
+    return {
+      isLiked: true,
+      likeCount: updated?.likeCount ?? (status.likeCount || 0) + 1,
+    };
+  }
+};
+
 export const StatusService = {
   createStatus,
   getStationStatuses,
@@ -412,6 +532,7 @@ export const StatusService = {
   generateManual,
   getFeedByCountry,
   recordView,
+  toggleLike,
   startWeeklyTopFansScheduler,
   stopWeeklyTopFansScheduler,
 };
