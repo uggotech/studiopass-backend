@@ -1106,6 +1106,8 @@ export const CallService = {
   removeOperatorOnCall,
   isOperatorOnCall,
   getOperatorOnCallId,
+  getConnectedOperatorCount,
+  getAvailableOperatorCount,
 
   // Call lifecycle
   requestCall,

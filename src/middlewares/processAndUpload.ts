@@ -73,27 +73,43 @@ const processAndUpload = async (req: Request, _res: Response, next: NextFunction
             contentType = "image/svg+xml";
           } else {
             const isOptionImage = fieldName === "optionImage" || (req.body && req.body.isOptionImage === "true");
-            const initialQuality = isOptionImage ? 65 : 80;
+
+            let resizeOptions: sharp.ResizeOptions = { width: 1600, withoutEnlargement: true, fit: "inside" };
+            let quality = 80;
+
+            if (fieldName === "logo") {
+              resizeOptions = { width: 500, height: 500, fit: "inside", withoutEnlargement: true };
+              quality = 85;
+            } else if (fieldName === "avatar") {
+              resizeOptions = { width: 500, height: 500, fit: "inside", withoutEnlargement: true };
+              quality = 80;
+            } else if (fieldName === "coverImage") {
+              resizeOptions = { width: 1600, height: 900, fit: "inside", withoutEnlargement: true };
+              quality = 80;
+            } else if (fieldName === "image") {
+              resizeOptions = { width: 1080, height: 1920, fit: "inside", withoutEnlargement: true };
+              quality = 80;
+            } else if (isOptionImage) {
+              resizeOptions = { width: 800, height: 800, fit: "inside", withoutEnlargement: true };
+              quality = 65;
+            }
 
             processedBuffer = await sharp(file.buffer)
-              .resize({ width: 1600, withoutEnlargement: true })
-              .webp({ quality: initialQuality })
+              .resize(resizeOptions)
+              .webp({ quality, effort: 4, alphaQuality: 90 })
               .toBuffer();
 
-            // Check if file size > 400KB (400 * 1024 bytes)
+            // Check if file size > 400KB for option images
             const MAX_400KB = 400 * 1024;
             if (isOptionImage && processedBuffer.length > MAX_400KB) {
-              // Pass 1: 80% of current quality (65 * 0.8 = 52)
               processedBuffer = await sharp(processedBuffer)
-                .webp({ quality: 52 })
+                .webp({ quality: 52, effort: 4, alphaQuality: 90 })
                 .toBuffer();
 
               if (processedBuffer.length > MAX_400KB) {
-                // Pass 2: 80% of current quality (52 * 0.8 = 42)
                 processedBuffer = await sharp(processedBuffer)
-                  .webp({ quality: 42 })
+                  .webp({ quality: 42, effort: 4, alphaQuality: 90 })
                   .toBuffer();
-                // If still > 400KB after 2nd pass, skip further compression
               }
             }
           }
