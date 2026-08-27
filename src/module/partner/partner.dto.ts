@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { passwordSchema } from "../../shared/validators/password.validator";
 
 const createPartnerWithAdmin = z.object({
   body: z.object({
@@ -12,10 +13,7 @@ const createPartnerWithAdmin = z.object({
       .min(3, "Username must be at least 3 characters")
       .max(30)
       .regex(/^[a-zA-Z0-9_]+$/, "Username can only contain letters, numbers, and underscores"),
-    adminPassword: z
-      .string()
-      .min(6, "Password must be at least 6 characters")
-      .max(100),
+    adminPassword: passwordSchema,
   }),
 });
 

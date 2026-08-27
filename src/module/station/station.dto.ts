@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { passwordSchema } from "../../shared/validators/password.validator";
 
 const createStationWithAdmin = z.object({
   body: z.object({
@@ -20,10 +21,7 @@ const createStationWithAdmin = z.object({
       .min(3, "Username must be at least 3 characters")
       .max(30)
       .regex(/^[a-zA-Z0-9_]+$/, "Letters, numbers, underscores only"),
-    adminPassword: z
-      .string()
-      .min(6, "Password must be at least 6 characters")
-      .max(100),
+    adminPassword: passwordSchema,
   }).superRefine((data, ctx) => {
     if (data.category === "channel" && !data.channelType) {
       ctx.addIssue({

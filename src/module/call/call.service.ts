@@ -164,6 +164,27 @@ const getOperatorOnCallId = async (userId: string): Promise<string | null> => {
 };
 
 /**
+ * Check how many operators are connected to the station socket room.
+ * Connected = active socket connection in the station room.
+ */
+const getConnectedOperatorCount = (stationId: string): number => {
+  const io = getIO();
+  const room = `station:${stationId}`;
+  const sockets = io.sockets.adapter.rooms.get(room);
+  if (!sockets || sockets.size === 0) return 0;
+
+  const userIdSet = new Set<string>();
+  for (const socketId of sockets) {
+    const socket = io.sockets.sockets.get(socketId);
+    if (!socket) continue;
+    const userId = (socket as any).userId;
+    if (!userId) continue;
+    userIdSet.add(userId);
+  }
+  return userIdSet.size;
+};
+
+/**
  * Check how many operators are available for a station.
  * Available = connected to station socket room AND not on a call.
  */
@@ -353,9 +374,9 @@ const requestCall = async (userId: string, stationId: string) => {
     );
   }
 
-  // 5. Check operators are online
-  const availableOperators = await getAvailableOperatorCount(stationId);
-  if (availableOperators === 0) {
+  // 5. Check at least one operator is online in the station room
+  const connectedOperators = getConnectedOperatorCount(stationId);
+  if (connectedOperators === 0) {
     throw new AppError(
       StatusCodes.BAD_REQUEST,
       "No operators online. Please try again later.",

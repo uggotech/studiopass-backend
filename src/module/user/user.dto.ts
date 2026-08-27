@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { passwordSchema } from "../../shared/validators/password.validator";
 
 const updateProfile = z.object({
   body: z.object({
@@ -33,7 +34,7 @@ const createMediaStation = z.object({
     phone: z.string().min(1, "Phone is required").max(20).optional(),
     stationId: z.string().min(1, "Station ID is required"),
     username: z.string().min(3, "Username must be at least 3 characters").max(50),
-    password: z.string().min(6, "Password must be at least 6 characters").max(100),
+    password: passwordSchema,
   }),
 });
 
@@ -45,7 +46,7 @@ const createPresenter = z.object({
     stationId: z.string().min(1, "Station ID is required"),
     showId: z.string().optional(),
     username: z.string().min(3, "Username must be at least 3 characters").max(50),
-    password: z.string().min(6, "Password must be at least 6 characters").max(100),
+    password: passwordSchema,
   }),
 });
 
@@ -55,7 +56,7 @@ const createCustomerCare = z.object({
     username: z.string().min(3, "Username must be at least 3 characters").max(50),
     email: z.string().email("Invalid email").optional(),
     phone: z.string().min(1, "Phone is required").max(20).optional(),
-    password: z.string().min(6, "Password must be at least 6 characters").max(100),
+    password: passwordSchema,
     scopeType: z.enum(["global", "country"]).default("global"),
     countryId: z.string().optional(),
   }),

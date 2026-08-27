@@ -24,6 +24,13 @@ export interface TAuth {
   role: UserRole; // stored on Auth for JWT payload
   status: "active" | "inactive" | "suspended";
   lastLogin?: Date | null;
+
+  // 2FA / Authenticator (Dashboard roles)
+  twoFactorEnabled?: boolean;
+  twoFactorSecret?: string;
+  twoFactorTempSecret?: string;
+  twoFactorRecoveryCodes?: string[];
+
   createdAt: Date;
   updatedAt: Date;
 }

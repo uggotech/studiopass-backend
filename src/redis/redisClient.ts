@@ -207,6 +207,26 @@ class RedisClient {
     }
   }
 
+  async del(key: string): Promise<void> {
+    return this.delete(key);
+  }
+
+  async incr(key: string, expiryInSec: number = 300): Promise<number> {
+    try {
+      if (!this.isConnected) {
+        await this.ensureConnected();
+      }
+      const count = await this.clientInstance.incr(key);
+      if (count === 1 && expiryInSec > 0) {
+        await this.clientInstance.expire(key, expiryInSec);
+      }
+      return count;
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err);
+      throw err;
+    }
+  }
+
   async keys(pattern: string): Promise<string[]> {
     try {
       // Only ensure connection if not already connected

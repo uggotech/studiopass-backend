@@ -366,6 +366,18 @@ const createCustomerCareUser = catchAsync(async (req: Request, res: Response) =>
   });
 });
 
+const resetUser2FA = catchAsync(async (req: Request, res: Response) => {
+  const targetUserId = String(req.params.id);
+  const result = await UserService.resetUser2FA(targetUserId);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Two-Factor authentication reset successfully",
+    data: result,
+  });
+});
+
 export const UserController = {
   getMyProfile,
   updateMyProfile,
@@ -386,4 +398,5 @@ export const UserController = {
   deactivateUser,
   reactivateUser,
   updateFcmToken,
+  resetUser2FA,
 };

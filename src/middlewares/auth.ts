@@ -48,9 +48,23 @@ const auth =
       }
 
       // Check auth account status (active/inactive/suspended)
-      const authAccount = await AuthRepository.findById(user.auth.toString());
+      const authId = user.auth ? (user.auth._id?.toString() || user.auth.toString()) : "";
+      const authAccount = await AuthRepository.findById(authId);
       if (!authAccount || authAccount.status !== "active") {
         throw new AppError(StatusCodes.UNAUTHORIZED, "Your account is deactivated");
+      }
+
+      // Normalize IDs so role scoping and filters work identically from cache or DB
+      if (user._id) user._id = user._id.toString();
+      if (user.stationId) {
+        user.stationId = typeof user.stationId === "object" && "_id" in user.stationId
+          ? (user.stationId as any)._id.toString()
+          : user.stationId.toString();
+      }
+      if (user.partnerId) {
+        user.partnerId = typeof user.partnerId === "object" && "_id" in user.partnerId
+          ? (user.partnerId as any)._id.toString()
+          : user.partnerId.toString();
       }
 
       req.user = user;

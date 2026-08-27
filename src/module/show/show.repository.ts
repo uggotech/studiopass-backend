@@ -81,25 +81,44 @@ const findActiveShowForStation = async (stationId: string, timezone: string): Pr
   const minute = timeParts.find((p) => p.type === "minute")?.value ?? "00";
   const currentTime = `${hour}:${minute}`;
 
-  // Fetch all active shows for this station on today's day
-  const candidateShows = await Show.find({
+  const dayOrder = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const currentDayIdx = dayOrder.indexOf(dayOfWeek);
+  const yesterdayIdx = (currentDayIdx - 1 + 7) % 7;
+  const yesterday = dayOrder[yesterdayIdx];
+
+  // 1. Check shows that started today
+  const todayShows = await Show.find({
     station: stationId,
     isActive: true,
     days: dayOfWeek as any,
   }).lean();
 
-  // Find the active show, handling midnight-spanning shows (e.g. 19:00 - 00:00)
-  for (const show of candidateShows) {
+  for (const show of todayShows) {
     if (show.startTime <= show.endTime) {
-      // Normal show: 06:00 - 12:00
-      // Active when startTime <= currentTime < endTime
+      // Normal daytime show: e.g. 06:00 - 12:00
       if (show.startTime <= currentTime && currentTime < show.endTime) {
         return show;
       }
     } else {
-      // Midnight-spanning show: 19:00 - 00:00
-      // Active when currentTime >= startTime OR currentTime < endTime
-      if (currentTime >= show.startTime || currentTime < show.endTime) {
+      // Overnight show that started today: e.g. 22:00 - 02:00
+      // Active in the first half (before midnight)
+      if (currentTime >= show.startTime) {
+        return show;
+      }
+    }
+  }
+
+  // 2. Check overnight shows that started yesterday and extend past midnight into today
+  const yesterdayShows = await Show.find({
+    station: stationId,
+    isActive: true,
+    days: yesterday as any,
+  }).lean();
+
+  for (const show of yesterdayShows) {
+    if (show.startTime > show.endTime) {
+      // Overnight show in second half (past midnight, e.g. 00:00 to 02:00)
+      if (currentTime < show.endTime) {
         return show;
       }
     }

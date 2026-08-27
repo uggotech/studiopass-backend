@@ -37,6 +37,12 @@ const authSchema = new Schema<TAuth>(
       default: "active",
     },
     lastLogin: { type: Date },
+
+    // 2FA / Authenticator (Dashboard roles)
+    twoFactorEnabled: { type: Boolean, default: false },
+    twoFactorSecret: { type: String },
+    twoFactorTempSecret: { type: String },
+    twoFactorRecoveryCodes: { type: [String], default: [] },
   },
   { timestamps: true },
 );

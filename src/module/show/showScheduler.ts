@@ -27,15 +27,25 @@ function getCurrentShowForStation(
   const minute = timeParts.find((p) => p.type === "minute")?.value ?? "00";
   const currentTime = `${hour}:${minute}`;
 
-  for (const show of shows) {
-    if (!show.days.includes(dayOfWeek as any)) continue;
+  const dayOrder = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const currentDayIdx = dayOrder.indexOf(dayOfWeek);
+  const yesterdayIdx = (currentDayIdx - 1 + 7) % 7;
+  const yesterday = dayOrder[yesterdayIdx];
 
+  for (const show of shows) {
     if (show.startTime <= show.endTime) {
-      if (show.startTime <= currentTime && currentTime < show.endTime) {
+      // Normal show starting and ending today
+      if (show.days.includes(dayOfWeek as any) && show.startTime <= currentTime && currentTime < show.endTime) {
         return { id: show._id.toString(), name: show.name };
       }
     } else {
-      if (currentTime >= show.startTime || currentTime < show.endTime) {
+      // Overnight show:
+      // Active if started today and before midnight (currentTime >= startTime)
+      if (show.days.includes(dayOfWeek as any) && currentTime >= show.startTime) {
+        return { id: show._id.toString(), name: show.name };
+      }
+      // OR active if started yesterday and currently past midnight into today (currentTime < endTime)
+      if (show.days.includes(yesterday as any) && currentTime < show.endTime) {
         return { id: show._id.toString(), name: show.name };
       }
     }

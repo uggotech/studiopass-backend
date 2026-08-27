@@ -163,4 +163,11 @@ router.patch(
   UserController.reactivateUser,
 );
 
+// Super admin: reset 2FA for locked-out user
+router.post(
+  "/:id/reset-2fa",
+  auth(UserRole.SUPER_ADMIN),
+  UserController.resetUser2FA,
+);
+
 export const UserRoutes = router;

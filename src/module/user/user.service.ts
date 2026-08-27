@@ -3,6 +3,7 @@ import { StatusCodes } from "http-status-codes";
 import AppError from "../../errors/AppError";
 import { UserRepository } from "./user.repository";
 import { User } from "./user.model";
+import { Auth } from "../auth/auth.model";
 import { AuthRepository } from "../auth/auth.repository";
 import { StationRepository } from "../station/station.repository";
 import { ShowRepository } from "../show/show.repository";
@@ -312,6 +313,23 @@ const getMyProfile = async (userId: string) => {
     throw new AppError(StatusCodes.NOT_FOUND, "User not found");
   }
   const station: any = (user.stationId && typeof user.stationId === "object" && "name" in user.stationId) ? user.stationId : null;
+
+  let timezone = "UTC";
+  if (user.countryId) {
+    const country = await Country.findById(user.countryId).select("timezone").lean();
+    if (country?.timezone) timezone = country.timezone;
+  } else if (station?.country) {
+    const countryId = (station.country as any)?._id || station.country;
+    const country = await Country.findById(countryId).select("timezone").lean();
+    if (country?.timezone) timezone = country.timezone;
+  }
+
+  let twoFactorEnabled = false;
+  if (user.auth) {
+    const authDoc = await Auth.findById(user.auth).select("twoFactorEnabled").lean();
+    twoFactorEnabled = !!authDoc?.twoFactorEnabled;
+  }
+
   return {
     id: user._id,
     fullName: user.fullName ?? "",
@@ -321,7 +339,9 @@ const getMyProfile = async (userId: string) => {
     phoneCountryCode: user.phoneCountryCode ?? null,
     countryName: user.countryName ?? null,
     countryId: user.countryId?.toString() ?? null,
+    timezone,
     role: user.role,
+    twoFactorEnabled,
     stationId: station?._id?.toString() || user.stationId?.toString() || null,
     stationName: station?.name || null,
     stationLogo: station?.logo || null,
@@ -373,6 +393,13 @@ const updateMyProfile = async (
   // Invalidate cache
   UserCache.invalidateProfile(userId);
 
+  let timezone = "UTC";
+  const effectiveCountryId = updated?.countryId || user.countryId;
+  if (effectiveCountryId) {
+    const country = await Country.findById(effectiveCountryId).select("timezone").lean();
+    if (country?.timezone) timezone = country.timezone;
+  }
+
   return {
     id: updated!._id,
     fullName: updated!.fullName ?? "",
@@ -382,6 +409,7 @@ const updateMyProfile = async (
     phoneCountryCode: updated!.phoneCountryCode ?? null,
     countryName: updated!.countryName ?? null,
     countryId: updated!.countryId?.toString() ?? null,
+    timezone,
     role: updated!.role,
     profileCompleted: updated!.profileCompleted,
     preferences: updated!.preferences,
@@ -983,6 +1011,69 @@ const createCustomerCareUser = async (data: {
   }
 };
 
+const resetUser2FA = async (targetUserId: string) => {
+  let user: any = null;
+
+  // 1. Direct User lookup by ID
+  try {
+    user = await UserRepository.findById(targetUserId);
+  } catch {}
+
+  // 2. Lookup by Auth ID in User collection
+  if (!user) {
+    try {
+      user = await UserRepository.findByAuthId(targetUserId);
+    } catch {}
+  }
+
+  // 3. Lookup partner_admin user by Partner ID
+  if (!user) {
+    try {
+      user = await User.findOne({ partnerId: targetUserId, role: UserRole.PARTNER_ADMIN });
+    } catch {}
+  }
+
+  // 4. Lookup station_admin user by Station ID
+  if (!user) {
+    try {
+      user = await User.findOne({ stationId: targetUserId, role: UserRole.STATION_ADMIN });
+    } catch {}
+  }
+
+  let authId: string | undefined;
+
+  if (user) {
+    authId = user.auth?._id?.toString() || user.auth?.toString() || user.id?.toString() || user._id?.toString();
+  } else {
+    // 5. Fallback: check if targetUserId directly matches an Auth document
+    try {
+      const directAuth = await Auth.findById(targetUserId);
+      if (directAuth) {
+        authId = directAuth._id.toString();
+      }
+    } catch {}
+  }
+
+  if (!authId) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User or associated authentication account not found");
+  }
+
+  await Auth.findByIdAndUpdate(authId, {
+    $set: {
+      twoFactorEnabled: false,
+      twoFactorRecoveryCodes: [],
+    },
+    $unset: {
+      twoFactorSecret: 1,
+      twoFactorTempSecret: 1,
+    },
+  });
+
+  return {
+    message: `Two-Factor Authentication has been reset for ${user?.fullName || "the account"}.`,
+  };
+};
+
 export const UserService = {
   getAllStationAdmins,
   getUserById,
@@ -1003,4 +1094,5 @@ export const UserService = {
   updateMyProfile,
   updateMyPreferences,
   updateFcmToken,
+  resetUser2FA,
 };

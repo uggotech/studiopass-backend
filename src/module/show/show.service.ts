@@ -29,13 +29,28 @@ function computeShowStatus(show: TShow, timezone: string): "Active" | "Scheduled
   const minute = timeParts.find((p) => p.type === "minute")?.value ?? "00";
   const currentTime = `${hour}:${minute}`;
 
-  // Handle shows that span midnight (endTime <= startTime, e.g. "19:00" to "00:00")
+  const dayOrder = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const currentDayIdx = dayOrder.indexOf(dayOfWeek);
+  const yesterdayIdx = (currentDayIdx - 1 + 7) % 7;
+  const yesterday = dayOrder[yesterdayIdx];
+
   const isWrapsMidnight = show.startTime >= show.endTime;
-  const isOnAir =
-    show.days.includes(dayOfWeek as any) &&
-    (isWrapsMidnight
-      ? currentTime >= show.startTime || currentTime < show.endTime
-      : show.startTime <= currentTime && show.endTime > currentTime);
+  let isOnAir = false;
+
+  if (isWrapsMidnight) {
+    // Active if:
+    // 1) Started today and currently before midnight (currentTime >= startTime)
+    // 2) OR started yesterday and currently past midnight into today (currentTime < endTime)
+    isOnAir =
+      (show.days.includes(dayOfWeek as any) && currentTime >= show.startTime) ||
+      (show.days.includes(yesterday as any) && currentTime < show.endTime);
+  } else {
+    // Normal daytime show
+    isOnAir =
+      show.days.includes(dayOfWeek as any) &&
+      show.startTime <= currentTime &&
+      currentTime < show.endTime;
+  }
 
   return isOnAir ? "Active" : "Scheduled";
 }
@@ -46,8 +61,13 @@ const getAllShows = async (
 ) => {
   const filter: Record<string, unknown> = {};
 
+  // Query parameter overrides / specifies station
+  const targetStation = (query.station as string) || (query.stationId as string);
+  if (targetStation) {
+    filter.station = targetStation;
+  }
   // Scope: station scoped
-  if (scope?.stationId) {
+  else if (scope?.stationId) {
     filter.station = scope.stationId;
   }
   // Scope: partner scoped — find all stations for this partner
@@ -73,8 +93,10 @@ const getAllShows = async (
 
   // Filter by station name (for super_admin/partner_admin)
   if (query.stationName) {
+    const stationFilter: Record<string, unknown> = { name: query.stationName };
+    if (scope?.partnerId) stationFilter.partner = scope.partnerId;
     const stations = await StationRepository.findAll(
-      { name: query.stationName },
+      stationFilter,
       { limit: 1000 },
     );
     const stationIds = stations.map((s) => s._id);
@@ -108,7 +130,6 @@ const getAllShows = async (
     filter.isActive = false;
   } else if (query.status === "Scheduled") {
     filter.isActive = true;
-    filter.startDate = { $gt: new Date() };
   }
 
   const [shows, total] = await Promise.all([
@@ -269,8 +290,13 @@ function computeTimeRemaining(endTime: string, timezone: string, startTime?: str
   if (startTime) {
     const startMinutes = parseTimeToMinutes(startTime);
     if (startMinutes >= endMinutes) {
-      // Midnight-spanning: remaining = time to midnight + endTime
-      return Math.max(0, (24 * 60 - currentMinutes) + endMinutes);
+      if (currentMinutes >= startMinutes) {
+        // Before midnight: remaining = minutes to midnight + endMinutes
+        return Math.max(0, (24 * 60 - currentMinutes) + endMinutes);
+      } else {
+        // After midnight: remaining = endMinutes - currentMinutes
+        return Math.max(0, endMinutes - currentMinutes);
+      }
     }
   }
 
