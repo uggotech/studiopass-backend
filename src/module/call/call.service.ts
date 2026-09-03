@@ -264,7 +264,7 @@ const startQueueTimeout = (callId: string, userId: string, stationId: string): v
         emitToUser(userId, "call-ended", {
           callId,
           reason: "timeout",
-          message: "No operator available. Please try again later.",
+          message: "The station was unable to take your call. Please try again later.",
         });
         emitToStation(stationId, "call-cancelled", { callId });
         logger.info(`[Call] Queue timeout: call ${callId} auto-missed after ${timeoutMs}ms`);
@@ -469,10 +469,41 @@ const acceptCall = async (callId: string, operatorId: string) => {
     }
   }
 
-  // Check operator is not already on another call
-  const alreadyOnCall = await isOperatorOnCall(operatorId);
-  if (alreadyOnCall) {
-    throw new AppError(StatusCodes.CONFLICT, "You are already on a call. End it before accepting another.");
+  // If operator is already on another call, end it cleanly first (atomic caller switch for MVP)
+  const previousCallId = await getOperatorOnCallId(operatorId);
+  if (previousCallId && previousCallId !== callId) {
+    logger.info(`[Call] Operator ${operatorId} switching from active call ${previousCallId} to new call ${callId}`);
+    try {
+      const prevCall = await Call.findById(previousCallId);
+      if (prevCall && prevCall.status === "answered") {
+        const endedAt = new Date();
+        const duration = prevCall.answeredAt
+          ? Math.max(0, Math.floor((endedAt.getTime() - prevCall.answeredAt.getTime()) / 1000))
+          : 0;
+
+        await Call.findByIdAndUpdate(previousCallId, {
+          $set: { status: "completed", endedAt, duration },
+        });
+
+        clearJoinTimeout(previousCallId);
+        clearQueueTimeout(previousCallId);
+
+        emitCallEnded(
+          previousCallId,
+          prevCall.station.toString(),
+          prevCall.startedBy.toString(),
+          operatorId,
+          "switched",
+          "Presenter switched to another caller.",
+          duration,
+          prevCall.creditsUsed || 0,
+        );
+
+        await createStatementIfNeeded(previousCallId);
+      }
+    } catch (switchErr) {
+      logger.error(`[Call] Error ending previous call ${previousCallId} during switch:`, switchErr);
+    }
   }
 
   // Atomic: only accept if still queued (prevents race condition with two operators)
@@ -1032,7 +1063,7 @@ const reregisterTimeouts = async (): Promise<void> => {
               emitToUser(call.startedBy.toString(), "call-ended", {
                 callId: call._id.toString(),
                 reason: "timeout",
-                message: "No operator available. Please try again later.",
+                message: "The station was unable to take your call. Please try again later.",
               });
               emitToStation(call.station.toString(), "call-cancelled", { callId: call._id.toString() });
             }

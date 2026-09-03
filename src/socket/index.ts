@@ -103,7 +103,7 @@ export function initSocket(server: http.Server): Server {
       logger.info(`Socket ${socket.id} joined station:${stationId}`);
 
       // Refresh operator online status when joining station room
-      if (["media_station", "station_admin", "super_admin"].includes(userRole)) {
+      if (["media_station", "presenter", "station_admin", "super_admin"].includes(userRole)) {
         CallService.refreshOperatorOnline(userId).catch(() => {});
       }
     });
@@ -178,7 +178,7 @@ export function initSocket(server: http.Server): Server {
       const now = Date.now();
       if (now - lastPingAt < 20000) return; // Rate limit: 1 ping per 20s
       lastPingAt = now;
-      if (["media_station", "station_admin", "super_admin"].includes(userRole)) {
+      if (["media_station", "presenter", "station_admin", "super_admin"].includes(userRole)) {
         CallService.refreshOperatorOnline(userId).catch(() => {});
       }
     });
@@ -198,7 +198,7 @@ export function initSocket(server: http.Server): Server {
 
       // Clean up operator status (if operator)
       try {
-        if (["media_station", "station_admin", "super_admin"].includes(disconnectUserRole)) {
+        if (["media_station", "presenter", "station_admin", "super_admin"].includes(disconnectUserRole)) {
           const activeCallId = await CallService.getOperatorOnCallId(disconnectUserId);
           if (activeCallId) {
             await CallService.removeOperatorOnCall(disconnectUserId);
@@ -336,7 +336,7 @@ export function initSocket(server: http.Server): Server {
         }
 
         // Only remove operator online status for operator roles
-        if (["media_station", "station_admin", "super_admin"].includes(disconnectUserRole)) {
+        if (["media_station", "presenter", "station_admin", "super_admin"].includes(disconnectUserRole)) {
           await CallService.removeOperatorOnline(disconnectUserId);
         }
       } catch (err) {
