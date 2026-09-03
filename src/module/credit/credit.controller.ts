@@ -159,20 +159,24 @@ const getTransactions = catchAsync(async (req: Request, res: Response) => {
   const andClauses: any[] = [];
 
   if (req.query.partner && req.query.partner !== "all" && !filter.station) {
-    const partnerStations = await Station.find({ partner: req.query.partner }).select("_id").lean();
-    const stationIds = partnerStations.map((s) => s._id);
-    const partnerUsers = await User.find({ partnerId: req.query.partner }).select("_id").lean();
-    const userIds = partnerUsers.map((u) => u._id);
+    const partnerVal = req.query.partner as string;
+    if (mongoose.Types.ObjectId.isValid(partnerVal)) {
+      const partnerOid = new mongoose.Types.ObjectId(partnerVal);
+      const partnerStations = await Station.find({ partner: partnerOid }).select("_id").lean();
+      const stationIds = partnerStations.map((s) => s._id);
+      const partnerUsers = await User.find({ partnerId: partnerOid }).select("_id").lean();
+      const userIds = partnerUsers.map((u) => u._id);
 
-    const partnerConds: any[] = [];
-    if (stationIds.length > 0) {
-      partnerConds.push({ station: { $in: stationIds } });
-    }
-    if (userIds.length > 0) {
-      partnerConds.push({ user: { $in: userIds } });
-    }
-    if (partnerConds.length > 0) {
-      andClauses.push({ $or: partnerConds });
+      const partnerConds: any[] = [];
+      if (stationIds.length > 0) {
+        partnerConds.push({ station: { $in: stationIds } });
+      }
+      if (userIds.length > 0) {
+        partnerConds.push({ user: { $in: userIds } });
+      }
+      if (partnerConds.length > 0) {
+        andClauses.push({ $or: partnerConds });
+      }
     }
   }
 
