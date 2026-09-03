@@ -23,6 +23,7 @@ router.get("/role-distribution", auth(...adminRoles), DashboardController.getRol
 router.get("/station-overview", auth(...adminRoles), DashboardController.getStationOverview);
 router.get("/recent-activity", auth(...adminRoles), DashboardController.getRecentActivity);
 router.get("/top-stations", auth(...adminRoles), DashboardController.getTopStations);
+router.get("/top-shows", auth(...adminRoles), DashboardController.getTopShows);
 router.get("/recent-users", auth(...adminRoles), DashboardController.getRecentUsers);
 router.get("/credit-stats", auth(...adminRoles), DashboardController.getCreditStats);
 router.get("/country-revenue", auth(UserRole.SUPER_ADMIN), DashboardController.getCountryRevenue);

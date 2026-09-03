@@ -22,6 +22,12 @@ const getTopStations = z.object({
   }),
 });
 
+const getTopShows = z.object({
+  query: z.object({
+    limit: z.coerce.number().int().positive().max(20).default(5),
+  }),
+});
+
 const getRecentUsers = z.object({
   query: z.object({
     limit: z.coerce.number().int().positive().max(20).default(6),
@@ -33,5 +39,6 @@ export const DashboardDto = {
   getMessageActivity,
   getRecentActivity,
   getTopStations,
+  getTopShows,
   getRecentUsers,
 };

@@ -156,6 +156,20 @@ const getTopStations = catchAsync(async (req, res) => {
   });
 });
 
+const getTopShows = catchAsync(async (req, res) => {
+  const scope = buildScope(req);
+  const { limit = 5 } = req.query;
+
+  const result = await DashboardService.getTopShows(Number(limit), scope);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Top shows fetched successfully",
+    data: result,
+  });
+});
+
 const getRecentUsers = catchAsync(async (req, res) => {
   const scope = buildScope(req);
   const { limit = 6 } = req.query;
@@ -260,6 +274,7 @@ export const DashboardController = {
   getStationOverview,
   getRecentActivity,
   getTopStations,
+  getTopShows,
   getRecentUsers,
   getCreditStats,
   getCountryRevenue,

@@ -251,7 +251,7 @@ const getRevenueActivity = async (
   scope?: { partnerId?: string; stationId?: string; country?: string; dateRange?: string; startDate?: string; endDate?: string },
   timezone?: string,
 ) => {
-  const matchFilter: Record<string, unknown> = { isFree: { $ne: true } };
+  const matchFilter: Record<string, unknown> = {};
   const scopeFilter = await resolveScopeStationFilter(scope);
   Object.assign(matchFilter, scopeFilter);
   Object.assign(matchFilter, resolveDateRangeFilter(scope?.dateRange, "createdAt", scope?.startDate, scope?.endDate));
@@ -268,12 +268,27 @@ const getRevenueActivity = async (
 
   const result = await ListenerStatement.aggregate([
     { $match: matchFilter },
-    { $group: { _id: groupId, count: { $sum: "$amount" } } },
+    {
+      $group: {
+        _id: groupId,
+        revenue: {
+          $sum: { $cond: [{ $eq: ["$isFree", false] }, { $ifNull: ["$amount", 0] }, 0] },
+        },
+        credits: {
+          $sum: { $ifNull: ["$creditsUsed", 0] },
+        },
+      },
+    },
     { $sort: { _id: 1 } },
     { $limit: 30 },
   ]);
 
-  return result.map((r) => ({ date: r._id, count: r.count }));
+  return result.map((r) => ({
+    date: r._id,
+    count: r.revenue || 0,
+    revenue: r.revenue || 0,
+    credits: r.credits || 0,
+  }));
 };
 
 const getListenerActivity = async (
@@ -556,6 +571,67 @@ const getTopStations = async (
     messageCount: r.count,
     messages: r.count,
     score: r.count,
+  }));
+};
+
+const getTopShows = async (
+  limit: number,
+  scope?: { partnerId?: string; stationId?: string; country?: string; dateRange?: string; startDate?: string; endDate?: string },
+) => {
+  const matchFilter: Record<string, unknown> = { senderType: "user", isDeleted: { $ne: true } };
+  const scopeFilter = await resolveScopeStationFilter(scope);
+  Object.assign(matchFilter, scopeFilter);
+  Object.assign(matchFilter, resolveDateRangeFilter(scope?.dateRange, "createdAt", scope?.startDate, scope?.endDate));
+
+  // 1. Group messages by show
+  const msgResult = await Message.aggregate([
+    { $match: { ...matchFilter, show: { $exists: true, $ne: null } } },
+    { $group: { _id: "$show", count: { $sum: 1 } } },
+    { $sort: { count: -1 } },
+    { $limit: limit },
+    { $lookup: { from: "shows", localField: "_id", foreignField: "_id", as: "showDoc" } },
+    { $unwind: { path: "$showDoc", preserveNullAndEmptyArrays: true } },
+    { $lookup: { from: "users", localField: "showDoc.presenter", foreignField: "_id", as: "presenterDoc" } },
+    { $unwind: { path: "$presenterDoc", preserveNullAndEmptyArrays: true } },
+  ]);
+
+  if (msgResult.length > 0) {
+    return msgResult.map((r) => ({
+      showId: r._id?.toString() || "",
+      name: r.showDoc?.name || "Live Show",
+      showName: r.showDoc?.name || "Live Show",
+      presenterName: r.presenterDoc?.fullName || "Unassigned",
+      startTime: r.showDoc?.startTime || "",
+      endTime: r.showDoc?.endTime || "",
+      interactionCount: r.count,
+      messages: r.count,
+      score: r.count,
+    }));
+  }
+
+  // Fallback: If no messages tied to specific shows yet, list the station's configured active shows
+  const showFilter: Record<string, unknown> = { isActive: true };
+  if (scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)) {
+    showFilter.station = new mongoose.Types.ObjectId(scope.stationId);
+  } else if (scope?.partnerId && mongoose.Types.ObjectId.isValid(scope.partnerId)) {
+    const partnerStations = await resolvePartnerStationIds(scope.partnerId);
+    showFilter.station = { $in: partnerStations };
+  }
+  const fallbackShows = await Show.find(showFilter)
+    .populate("presenter", "fullName")
+    .limit(limit)
+    .lean();
+
+  return fallbackShows.map((s: any) => ({
+    showId: s._id.toString(),
+    name: s.name,
+    showName: s.name,
+    presenterName: s.presenter?.fullName || "Unassigned",
+    startTime: s.startTime || "",
+    endTime: s.endTime || "",
+    interactionCount: 0,
+    messages: 0,
+    score: 0,
   }));
 };
 
@@ -865,6 +941,7 @@ export const DashboardRepository = {
   getStationOverview,
   getRecentActivity,
   getTopStations,
+  getTopShows,
   getRecentUsers,
   getCreditStats,
   getCountryRevenue,

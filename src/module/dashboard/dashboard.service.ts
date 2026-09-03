@@ -64,6 +64,13 @@ const getTopStations = async (
   return DashboardRepository.getTopStations(limit, scope);
 };
 
+const getTopShows = async (
+  limit: number,
+  scope?: DashboardScope,
+) => {
+  return DashboardRepository.getTopShows(limit, scope);
+};
+
 const getRecentUsers = async (
   limit: number,
   scope?: DashboardScope,
@@ -112,6 +119,7 @@ export const DashboardService = {
   getStationOverview,
   getRecentActivity,
   getTopStations,
+  getTopShows,
   getRecentUsers,
   getCreditStats,
   getCountryRevenue,
