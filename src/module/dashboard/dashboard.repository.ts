@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { Partner } from "../partner/partner.model";
 import { Station } from "../station/station.model";
+import { Show } from "../show/show.model";
 import { User } from "../user/user.model";
 import Message from "../message/message.model";
 import Call from "../call/call.model";
@@ -39,11 +40,32 @@ const resolvePartnerStationIds = async (partnerId?: string): Promise<mongoose.Ty
 /**
  * Resolve date range filter criteria based on preset strings.
  */
-const resolveDateRangeFilter = (dateRange?: string, dateField: string = "createdAt") => {
+const resolveDateRangeFilter = (
+  dateRange?: string,
+  dateField: string = "createdAt",
+  startDate?: string,
+  endDate?: string,
+) => {
+  if (startDate || endDate) {
+    const range: Record<string, unknown> = {};
+    if (startDate) {
+      range.$gte = new Date(startDate);
+    }
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      range.$lte = end;
+    }
+    return { [dateField]: range };
+  }
   if (!dateRange) return {};
   const now = new Date();
   let start: Date;
-  if (dateRange === "30days") {
+  if (dateRange === "today") {
+    start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  } else if (dateRange === "7days") {
+    start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  } else if (dateRange === "30days") {
     start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   } else if (dateRange === "90days") {
     start = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
@@ -60,7 +82,15 @@ const resolveDateRangeFilter = (dateRange?: string, dateField: string = "created
   return { [dateField]: { $gte: start, $lte: now } };
 };
 
-const getStats = async (scope?: { partnerId?: string; stationId?: string; country?: string; role?: string; dateRange?: string }) => {
+const getStats = async (scope?: {
+  partnerId?: string;
+  stationId?: string;
+  country?: string;
+  role?: string;
+  dateRange?: string;
+  startDate?: string;
+  endDate?: string;
+}) => {
   const role = scope?.role;
 
   // Build filters based on role scope
@@ -83,9 +113,17 @@ const getStats = async (scope?: { partnerId?: string; stationId?: string; countr
       partnerFilter._id = scope.partnerId;
       stationFilter.partner = scope.partnerId;
       const stationIds = await resolvePartnerStationIds(scope.partnerId);
-      messageFilter.station = { $in: stationIds };
-      callFilter.station = { $in: stationIds };
-      userFilter.stationId = { $in: stationIds.map((id) => id.toString()) };
+      if (scope?.stationId && stationIds.some((id) => id.toString() === scope.stationId)) {
+        const sid = new mongoose.Types.ObjectId(scope.stationId);
+        stationFilter._id = sid;
+        messageFilter.station = sid;
+        callFilter.station = sid;
+        userFilter.stationId = scope.stationId;
+      } else {
+        messageFilter.station = { $in: stationIds };
+        callFilter.station = { $in: stationIds };
+        userFilter.stationId = { $in: stationIds.map((id) => id.toString()) };
+      }
     }
   } else if (scope?.stationId || scope?.partnerId || scope?.country) {
     const stationMatch = await resolveScopeStationFilter(scope);
@@ -95,10 +133,29 @@ const getStats = async (scope?: { partnerId?: string; stationId?: string; countr
     }
   }
 
-  const dateFilterMsg = resolveDateRangeFilter(scope?.dateRange, "createdAt");
-  const dateFilterCall = resolveDateRangeFilter(scope?.dateRange, "startedAt");
+  const dateFilterMsg = resolveDateRangeFilter(scope?.dateRange, "createdAt", scope?.startDate, scope?.endDate);
+  const dateFilterCall = resolveDateRangeFilter(scope?.dateRange, "startedAt", scope?.startDate, scope?.endDate);
   Object.assign(messageFilter, dateFilterMsg);
   Object.assign(callFilter, dateFilterCall);
+
+  // Build show filter
+  const showFilter: Record<string, unknown> = { isActive: true };
+  if (role === "station_admin" || role === "media_station" || role === "presenter") {
+    if (scope?.stationId) {
+      showFilter.station = new mongoose.Types.ObjectId(scope.stationId);
+    }
+  } else if (role === "partner_admin" || role === "customer_care") {
+    if (scope?.partnerId) {
+      const stationIds = await resolvePartnerStationIds(scope.partnerId);
+      if (scope?.stationId && stationIds.some((id) => id.toString() === scope.stationId)) {
+        showFilter.station = new mongoose.Types.ObjectId(scope.stationId);
+      } else {
+        showFilter.station = { $in: stationIds };
+      }
+    }
+  } else if (scope?.stationId) {
+    showFilter.station = new mongoose.Types.ObjectId(scope.stationId);
+  }
 
   const [
     totalPartners,
@@ -108,6 +165,7 @@ const getStats = async (scope?: { partnerId?: string; stationId?: string; countr
     totalUsers,
     totalMessages,
     totalCalls,
+    activeShows,
     revenueResult,
   ] = await Promise.all([
     Partner.countDocuments(partnerFilter),
@@ -117,6 +175,7 @@ const getStats = async (scope?: { partnerId?: string; stationId?: string; countr
     User.countDocuments(userFilter),
     Message.countDocuments({ ...messageFilter, senderType: "user", isDeleted: { $ne: true } }),
     Call.countDocuments(callFilter),
+    Show.countDocuments(showFilter),
     ListenerStatement.aggregate([
       { $match: { ...messageFilter, isFree: { $ne: true } } },
       { $group: { _id: null, total: { $sum: "$amount" } } },
@@ -131,19 +190,20 @@ const getStats = async (scope?: { partnerId?: string; stationId?: string; countr
     totalUsers,
     totalMessages,
     totalCalls,
+    activeShows,
     totalRevenue: revenueResult.length > 0 ? revenueResult[0].total : 0,
   };
 };
 
 const getMessageActivity = async (
   period: "daily" | "weekly" | "monthly",
-  scope?: { partnerId?: string; stationId?: string; country?: string; dateRange?: string },
+  scope?: { partnerId?: string; stationId?: string; country?: string; dateRange?: string; startDate?: string; endDate?: string },
   timezone?: string,
 ) => {
   const matchFilter: Record<string, unknown> = { senderType: "user", isDeleted: { $ne: true } };
   const scopeFilter = await resolveScopeStationFilter(scope);
   Object.assign(matchFilter, scopeFilter);
-  Object.assign(matchFilter, resolveDateRangeFilter(scope?.dateRange, "createdAt"));
+  Object.assign(matchFilter, resolveDateRangeFilter(scope?.dateRange, "createdAt", scope?.startDate, scope?.endDate));
 
   const tz = timezone || "UTC";
   let groupId: Record<string, unknown>;
@@ -613,13 +673,13 @@ const getCountryRevenue = async (scope?: { partnerId?: string; stationId?: strin
 
 const getCallActivity = async (
   period: "daily" | "weekly" | "monthly",
-  scope?: { partnerId?: string; stationId?: string; country?: string; dateRange?: string },
+  scope?: { partnerId?: string; stationId?: string; country?: string; dateRange?: string; startDate?: string; endDate?: string },
   timezone?: string,
 ) => {
   const matchFilter: Record<string, unknown> = {};
   const scopeFilter = await resolveScopeStationFilter(scope);
   Object.assign(matchFilter, scopeFilter);
-  Object.assign(matchFilter, resolveDateRangeFilter(scope?.dateRange, "startedAt"));
+  Object.assign(matchFilter, resolveDateRangeFilter(scope?.dateRange, "startedAt", scope?.startDate, scope?.endDate));
 
   const tz = timezone || "UTC";
   let groupId: Record<string, unknown>;
@@ -674,11 +734,18 @@ const getCampaignStats = async (scope?: { partnerId?: string; stationId?: string
   };
 };
 
-const getCallOperationsStats = async (scope?: { partnerId?: string; stationId?: string; country?: string; dateRange?: string }) => {
+const getCallOperationsStats = async (scope?: {
+  partnerId?: string;
+  stationId?: string;
+  country?: string;
+  dateRange?: string;
+  startDate?: string;
+  endDate?: string;
+}) => {
   const matchFilter: Record<string, unknown> = {};
   const scopeFilter = await resolveScopeStationFilter(scope);
   Object.assign(matchFilter, scopeFilter);
-  Object.assign(matchFilter, resolveDateRangeFilter(scope?.dateRange, "startedAt"));
+  Object.assign(matchFilter, resolveDateRangeFilter(scope?.dateRange, "startedAt", scope?.startDate, scope?.endDate));
 
   const result = await Call.aggregate([
     { $match: matchFilter },
@@ -688,6 +755,9 @@ const getCallOperationsStats = async (scope?: { partnerId?: string; stationId?: 
         totalCalls: { $sum: 1 },
         answeredCalls: {
           $sum: { $cond: [{ $in: ["$status", ["answered", "completed"]] }, 1, 0] },
+        },
+        queuedCalls: {
+          $sum: { $cond: [{ $eq: ["$status", "queued"] }, 1, 0] },
         },
         missedCalls: {
           $sum: { $cond: [{ $eq: ["$status", "missed"] }, 1, 0] },
@@ -702,23 +772,33 @@ const getCallOperationsStats = async (scope?: { partnerId?: string; stationId?: 
   if (result.length === 0) {
     return {
       incomingCalls: 0,
+      totalCalls: 0,
+      completed: 0,
       answeredCalls: 0,
-      missedCalls: 0,
+      queued: 0,
+      queuedCalls: 0,
+      rejected: 0,
       rejectedCalls: 0,
+      missedCalls: 0,
       callSuccessRate: 0,
       callResponseRate: 0,
     };
   }
 
-  const { totalCalls, answeredCalls, missedCalls, rejectedCalls } = result[0];
+  const { totalCalls, answeredCalls, queuedCalls, missedCalls, rejectedCalls } = result[0];
   const callSuccessRate = totalCalls > 0 ? Number(((answeredCalls / totalCalls) * 100).toFixed(1)) : 0;
   const callResponseRate = totalCalls > 0 ? Number((((answeredCalls + rejectedCalls) / totalCalls) * 100).toFixed(1)) : 0;
 
   return {
     incomingCalls: totalCalls,
+    totalCalls,
+    completed: answeredCalls,
     answeredCalls,
-    missedCalls,
+    queued: queuedCalls || 0,
+    queuedCalls: queuedCalls || 0,
+    rejected: rejectedCalls,
     rejectedCalls,
+    missedCalls,
     callSuccessRate,
     callResponseRate,
   };

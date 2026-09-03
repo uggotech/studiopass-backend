@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import mongoose from "mongoose";
 import catchAsync from "../../shared/catchAsync";
 import sendResponse from "../../shared/sendResponse";
 import { CreditService } from "./credit.service";
@@ -142,7 +143,79 @@ const getTransactions = catchAsync(async (req: Request, res: Response) => {
       filter.station = { $in: stationIds };
     }
   }
-  // super_admin without userId: no filter = all transactions
+
+  // Additional filters for Super Admin / Partner reporting
+  if (req.query.status && req.query.status !== "all") {
+    filter.status = req.query.status;
+  }
+
+  if (req.query.country && req.query.country !== "all") {
+    const countryVal = req.query.country as string;
+    if (mongoose.Types.ObjectId.isValid(countryVal)) {
+      filter.country = new mongoose.Types.ObjectId(countryVal);
+    }
+  }
+
+  const andClauses: any[] = [];
+
+  if (req.query.partner && req.query.partner !== "all" && !filter.station) {
+    const partnerStations = await Station.find({ partner: req.query.partner }).select("_id").lean();
+    const stationIds = partnerStations.map((s) => s._id);
+    const partnerUsers = await User.find({ partnerId: req.query.partner }).select("_id").lean();
+    const userIds = partnerUsers.map((u) => u._id);
+
+    const partnerConds: any[] = [];
+    if (stationIds.length > 0) {
+      partnerConds.push({ station: { $in: stationIds } });
+    }
+    if (userIds.length > 0) {
+      partnerConds.push({ user: { $in: userIds } });
+    }
+    if (partnerConds.length > 0) {
+      andClauses.push({ $or: partnerConds });
+    }
+  }
+
+  if (req.query.startDate || req.query.endDate) {
+    const dateCond: any = {};
+    if (req.query.startDate) {
+      dateCond.$gte = new Date(req.query.startDate as string);
+    }
+    if (req.query.endDate) {
+      const end = new Date(req.query.endDate as string);
+      end.setHours(23, 59, 59, 999);
+      dateCond.$lte = end;
+    }
+    filter.createdAt = dateCond;
+  }
+
+  if (req.query.search) {
+    const searchStr = (req.query.search as string).trim();
+    if (searchStr) {
+      const regex = new RegExp(searchStr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      const matchingUsers = await User.find({
+        $or: [{ fullName: regex }, { phone: regex }, { email: regex }],
+      }).select("_id").lean();
+      const userIds = matchingUsers.map((u) => u._id);
+
+      const orConditions: any[] = [
+        { paymentReference: regex },
+        { paymentProvider: regex },
+        { reason: regex },
+      ];
+      if (userIds.length > 0) {
+        orConditions.push({ user: { $in: userIds } });
+      }
+      if (mongoose.Types.ObjectId.isValid(searchStr)) {
+        orConditions.push({ _id: new mongoose.Types.ObjectId(searchStr) });
+      }
+      andClauses.push({ $or: orConditions });
+    }
+  }
+
+  if (andClauses.length > 0) {
+    filter.$and = andClauses;
+  }
 
   const [transactions, total] = await Promise.all([
     CreditRepository.getAllTransactions(filter, skip, limit),
