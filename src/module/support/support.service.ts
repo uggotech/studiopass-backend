@@ -339,7 +339,7 @@ export const SupportService = {
 
   async searchEntities(
     queryStr: string,
-    agent: { countryId?: Types.ObjectId; scopeType?: string },
+    agent: any,
   ) {
     if (!queryStr || queryStr.trim().length === 0) {
       return { users: [], transactions: [], statements: [], stations: [] };
@@ -349,15 +349,45 @@ export const SupportService = {
     const isObjectId = isValidObjectId(trimmed);
     const regex = new RegExp(trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
 
-    const countryFilter =
-      agent.scopeType === "country" && agent.countryId ? { countryId: agent.countryId } : {};
+    // Role-based scoping
+    const isStationAdmin = agent?.role === "station_admin" || agent?.role === "media_station" || agent?.role === "presenter";
+    const isPartnerAdmin = agent?.role === "partner_admin";
+
+    let userScope: Record<string, unknown> = {};
+    let stationScope: Record<string, unknown> = {};
+    let txScope: Record<string, unknown> = {};
+    let stScope: Record<string, unknown> = {};
+
+    if (isStationAdmin && agent?.stationId) {
+      const sid = new Types.ObjectId(agent.stationId.toString());
+      userScope = { stationId: sid };
+      stationScope = { _id: sid };
+      txScope = { station: sid };
+      stScope = { station: sid };
+    } else if (isPartnerAdmin && agent?.partnerId) {
+      const pid = agent.partnerId.toString();
+      const partnerOid = new Types.ObjectId(pid);
+      const partnerStations = await Station.find({ partner: partnerOid }).select("_id").lean();
+      const sids = partnerStations.map((s) => s._id);
+      userScope = { $or: [{ partnerId: partnerOid }, { stationId: { $in: sids } }] };
+      stationScope = { partner: partnerOid };
+      txScope = { station: { $in: sids } };
+      stScope = { station: { $in: sids } };
+    } else if (agent?.scopeType === "country" && agent?.countryId) {
+      userScope = { countryId: agent.countryId };
+      stationScope = { country: agent.countryId };
+      txScope = { country: agent.countryId };
+      stScope = { country: agent.countryId };
+    }
 
     // 1. Search Users
     const userConditions: any[] = [{ fullName: regex }, { email: regex }, { phone: regex }];
     if (isObjectId) {
       userConditions.push({ _id: new Types.ObjectId(trimmed) });
     }
-    const userQuery: any = { $or: userConditions, ...countryFilter };
+    const userQuery: any = Object.keys(userScope).length > 0
+      ? { $and: [{ $or: userConditions }, userScope] }
+      : { $or: userConditions };
 
     // 2. Search Credit Transactions
     const txConditions: any[] = [{ paymentReference: regex }, { paymentProvider: regex }];
@@ -365,9 +395,9 @@ export const SupportService = {
       txConditions.push({ _id: new Types.ObjectId(trimmed) });
       txConditions.push({ user: new Types.ObjectId(trimmed) });
     }
-    const txCountryFilter =
-      agent.scopeType === "country" && agent.countryId ? { country: agent.countryId } : {};
-    const txQuery: any = { $or: txConditions, ...txCountryFilter };
+    const txQuery: any = Object.keys(txScope).length > 0
+      ? { $and: [{ $or: txConditions }, txScope] }
+      : { $or: txConditions };
 
     // 3. Search Listener Statements
     const stConditions: any[] = [{ ticket: regex }, { msisdn: regex }];
@@ -375,17 +405,22 @@ export const SupportService = {
       stConditions.push({ _id: new Types.ObjectId(trimmed) });
       stConditions.push({ user: new Types.ObjectId(trimmed) });
     }
+    const stQuery: any = Object.keys(stScope).length > 0
+      ? { $and: [{ $or: stConditions }, stScope] }
+      : { $or: stConditions };
 
     // 4. Search Stations
-    const stationConditions: any[] = [{ name: regex }, { code: regex }];
+    const stationConditions: any[] = [{ name: regex }, { stationCode: regex }];
     if (isObjectId) {
       stationConditions.push({ _id: new Types.ObjectId(trimmed) });
     }
-    const stationQuery: any = { $or: stationConditions, ...countryFilter };
+    const stationQuery: any = Object.keys(stationScope).length > 0
+      ? { $and: [{ $or: stationConditions }, stationScope] }
+      : { $or: stationConditions };
 
     const [users, transactions, statements, stations] = await Promise.all([
       User.find(userQuery)
-        .select("fullName email phone avatar role isBlocked countryId countryName createdAt")
+        .select("fullName email phone avatar role isBlocked countryId countryName stationId createdAt")
         .populate("countryId", "name code flag timezone")
         .limit(10)
         .lean(),
@@ -394,7 +429,7 @@ export const SupportService = {
         .populate("country", "name code flag timezone")
         .limit(10)
         .lean(),
-      ListenerStatement.find({ $or: stConditions })
+      ListenerStatement.find(stQuery)
         .populate({
           path: "user",
           select: "fullName email phone avatar countryId countryName createdAt",
@@ -405,8 +440,8 @@ export const SupportService = {
         .limit(10)
         .lean(),
       Station.find(stationQuery)
-        .select("name code type logo isBlocked countryId countryName createdAt")
-        .populate("countryId", "name code flag timezone")
+        .select("name stationCode category logo isLive isActive country createdAt")
+        .populate("country", "name code flag timezone")
         .limit(10)
         .lean(),
     ]);

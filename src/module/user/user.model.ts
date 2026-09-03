@@ -56,6 +56,7 @@ const userSchema = new Schema<TUser>(
 );
 
 userSchema.index({ email: 1 });
+userSchema.index({ fullName: 1 });
 userSchema.index({ phone: 1, phoneCountryCode: 1 });
 userSchema.index({ role: 1 });
 userSchema.index({ partnerId: 1 });

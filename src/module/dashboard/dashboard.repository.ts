@@ -22,8 +22,8 @@ const resolveScopeStationFilter = async (scope?: { partnerId?: string; stationId
   }
   if (scope?.country) {
     const isObjId = mongoose.Types.ObjectId.isValid(scope.country);
-    const filter = isObjId
-      ? { $or: [{ country: scope.country }, { countryName: scope.country }] }
+    const filter: Record<string, unknown> = isObjId
+      ? { country: new mongoose.Types.ObjectId(scope.country) }
       : { countryName: scope.country };
     const stations = await Station.find(filter).select("_id").lean();
     return { station: { $in: stations.map((s) => s._id) } };
@@ -131,6 +131,27 @@ const getStats = async (scope?: {
       messageFilter.station = stationMatch.station;
       callFilter.station = stationMatch.station;
     }
+
+    if (scope?.country) {
+      const isObjId = mongoose.Types.ObjectId.isValid(scope.country);
+      if (isObjId) {
+        const countryOid = new mongoose.Types.ObjectId(scope.country);
+        stationFilter.country = countryOid;
+        userFilter.countryId = countryOid;
+        partnerFilter.country = countryOid;
+      }
+    }
+    if (scope?.partnerId && mongoose.Types.ObjectId.isValid(scope.partnerId)) {
+      const pid = new mongoose.Types.ObjectId(scope.partnerId);
+      stationFilter.partner = pid;
+      userFilter.partnerId = pid;
+      partnerFilter._id = pid;
+    }
+    if (scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)) {
+      const sid = new mongoose.Types.ObjectId(scope.stationId);
+      stationFilter._id = sid;
+      userFilter.stationId = scope.stationId;
+    }
   }
 
   const dateFilterMsg = resolveDateRangeFilter(scope?.dateRange, "createdAt", scope?.startDate, scope?.endDate);
@@ -227,13 +248,13 @@ const getMessageActivity = async (
 
 const getRevenueActivity = async (
   period: "daily" | "weekly" | "monthly" = "monthly",
-  scope?: { partnerId?: string; stationId?: string; country?: string; dateRange?: string },
+  scope?: { partnerId?: string; stationId?: string; country?: string; dateRange?: string; startDate?: string; endDate?: string },
   timezone?: string,
 ) => {
   const matchFilter: Record<string, unknown> = { isFree: { $ne: true } };
   const scopeFilter = await resolveScopeStationFilter(scope);
   Object.assign(matchFilter, scopeFilter);
-  Object.assign(matchFilter, resolveDateRangeFilter(scope?.dateRange, "createdAt"));
+  Object.assign(matchFilter, resolveDateRangeFilter(scope?.dateRange, "createdAt", scope?.startDate, scope?.endDate));
 
   const tz = timezone || "UTC";
   let groupId: Record<string, unknown>;
@@ -512,15 +533,12 @@ const getRecentActivity = async (
 
 const getTopStations = async (
   limit: number,
-  scope?: { partnerId?: string; stationId?: string },
+  scope?: { partnerId?: string; stationId?: string; country?: string; dateRange?: string; startDate?: string; endDate?: string },
 ) => {
   const matchFilter: Record<string, unknown> = { senderType: "user", isDeleted: { $ne: true } };
-  if (scope?.stationId) {
-    matchFilter.station = new mongoose.Types.ObjectId(scope.stationId);
-  } else if (scope?.partnerId) {
-    const stationIds = await resolvePartnerStationIds(scope.partnerId);
-    matchFilter.station = { $in: stationIds };
-  }
+  const scopeFilter = await resolveScopeStationFilter(scope);
+  Object.assign(matchFilter, scopeFilter);
+  Object.assign(matchFilter, resolveDateRangeFilter(scope?.dateRange, "createdAt", scope?.startDate, scope?.endDate));
 
   const result = await Message.aggregate([
     { $match: matchFilter },

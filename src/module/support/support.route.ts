@@ -45,7 +45,7 @@ router.get(
 
 router.get(
   "/search",
-  auth(UserRole.SUPER_ADMIN, UserRole.CUSTOMER_CARE, UserRole.PARTNER_ADMIN),
+  auth(UserRole.SUPER_ADMIN, UserRole.CUSTOMER_CARE, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
   SupportController.searchEntities,
 );
 

@@ -38,6 +38,7 @@ const stationSchema = new Schema<TStation>(
 );
 
 stationSchema.index({ partner: 1 });
+stationSchema.index({ name: 1 });
 stationSchema.index({ country: 1, category: 1, isActive: 1 });
 stationSchema.index({ stationCode: 1 }, { unique: true });
 stationSchema.index({ followersCount: -1 });
