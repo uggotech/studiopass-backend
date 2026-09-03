@@ -41,9 +41,9 @@ export const COUNTRY_PHONE_RULES: Record<string, CountryPhoneRule> = {
     dialCode: "+256",
     dialDigits: "256",
     expectedLength: 9,
-    regex: /^7\d{8}$/,
-    example: "0771234567",
-    formatDescription: "9 digits starting with 7 (e.g. 07... or 7...)",
+    regex: /^[237]\d{8}$/,
+    example: "0771234567 or 0201234567",
+    formatDescription: "9 digits starting with 7, 2, or 3 (e.g. 07..., 02..., or 03...)",
   },
   NG: {
     iso: "NG",

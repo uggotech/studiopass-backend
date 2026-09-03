@@ -2,7 +2,7 @@ import { Types } from "mongoose";
 
 // ─── Channel Poll Types ──────────────────────────────────────────────────────
 
-export type ChannelPollStatus = "draft" | "active" | "completed";
+export type ChannelPollStatus = "draft" | "scheduled" | "active" | "completed";
 export type ChannelPollBillingMode = "credits" | "free";
 
 // ─── Channel Poll Sub-types ──────────────────────────────────────────────────

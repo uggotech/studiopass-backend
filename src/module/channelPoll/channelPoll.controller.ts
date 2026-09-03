@@ -12,7 +12,13 @@ const createPoll = catchAsync(async (req, res) => {
     throw new AppError(StatusCodes.BAD_REQUEST, "Station ID is required");
   }
 
-  const result = await ChannelPollService.createPoll(stationId, req.body, createdBy, req.user?.role);
+  const result = await ChannelPollService.createPoll(
+    stationId,
+    req.body,
+    createdBy,
+    req.user?.role,
+    req.user?.partnerId?.toString(),
+  );
 
   sendResponse(res, {
     success: true,

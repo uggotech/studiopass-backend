@@ -85,11 +85,16 @@ async function checkChallengeStatusTransitions() {
 
     // Check ChannelPoll status transitions
     const activeAndScheduledPolls = await ChannelPoll.find({
-      status: { $in: ["draft", "active"] },
+      status: { $in: ["draft", "scheduled", "active"] },
     });
     const now = new Date();
     for (const poll of activeAndScheduledPolls) {
-      if (poll.status === "draft" && poll.startDate && new Date(poll.startDate) <= now && new Date(poll.endDate) > now) {
+      if (
+        (poll.status === "draft" || poll.status === "scheduled") &&
+        poll.startDate &&
+        new Date(poll.startDate) <= now &&
+        new Date(poll.endDate) > now
+      ) {
         await ChannelPoll.findByIdAndUpdate(poll._id, { status: "active" });
         logger.info(`[ChallengeScheduler] ChannelPoll ${poll._id} (${poll.title}) activated.`);
       } else if (poll.status === "active" && poll.endDate && new Date(poll.endDate) <= now) {

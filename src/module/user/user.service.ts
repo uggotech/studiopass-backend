@@ -6,17 +6,18 @@ import { User } from "./user.model";
 import { Auth } from "../auth/auth.model";
 import { AuthRepository } from "../auth/auth.repository";
 import { StationRepository } from "../station/station.repository";
-import { ShowRepository } from "../show/show.repository";
 import { PartnerRepository } from "../partner/partner.repository";
 import { MessageRepository } from "../message/message.repository";
 import Message from "../message/message.model";
 import Call from "../call/call.model";
 import { CreditTransaction } from "../creditTransaction/creditTransaction.model";
+import { CreditBalance } from "../creditBalance/creditBalance.model";
 import { Country } from "../country/country.model";
 import { LoginProvider } from "../auth/auth.interface";
 import { UserRole } from "shared/roles";
 import bcrypt from "bcryptjs";
 import { UserCache } from "./user.cacheManage";
+import { CarrierService } from "../../shared/telecom/carrier.service";
 
 const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -474,7 +475,6 @@ const createPresenter = async (data: {
   email?: string;
   phone?: string;
   stationId: string;
-  showId?: string;
   username: string;
   password: string;
 }) => {
@@ -490,7 +490,7 @@ const createPresenter = async (data: {
     throw new AppError(StatusCodes.CONFLICT, "Username already taken");
   }
 
-  // Use transaction for atomicity: auth + user (+ optional show update)
+  // Use transaction for atomicity: auth + user
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -518,16 +518,6 @@ const createPresenter = async (data: {
     }, session);
     const user = Array.isArray(users) ? users[0] : users;
 
-    // Assign show if provided
-    let assignedShow: { id: string; name: string } | null = null;
-    if (data.showId) {
-      const show = await ShowRepository.findById(data.showId);
-      if (show) {
-        await ShowRepository.updatePresenter(data.showId, user._id.toString());
-        assignedShow = { id: show._id.toString(), name: show.name };
-      }
-    }
-
     await session.commitTransaction();
 
     return {
@@ -540,7 +530,6 @@ const createPresenter = async (data: {
         name: station.name,
         stationCode: station.stationCode,
       },
-      assignedShow,
     };
   } catch (error) {
     await session.abortTransaction();
@@ -600,6 +589,7 @@ const normalizeListener = (u: any) => ({
   id: u._id,
   fullName: u.fullName || "",
   phone: u.phone || "",
+  operator: CarrierService.detectOperator(u.phone, u.countryName || u.phoneCountryCode || "UG"),
   email: u.email || "",
   avatar: u.avatar || null,
   countryName: u.countryName || "",
@@ -682,7 +672,7 @@ const getAllListeners = async (
 
   const { ChannelPollVote } = await import("../channelPoll/channelPoll.model");
 
-  const [messageCounts, callCounts, voteCounts] = await Promise.all([
+  const [messageCounts, callCounts, voteCounts, creditBalances] = await Promise.all([
     Message.aggregate([
       { $match: { $or: [{ user: { $in: listenerIds } }, { msisdn: { $in: listenerPhones } }], senderType: "user" } },
       { $group: { _id: { $ifNull: ["$user", "$msisdn"] }, count: { $sum: 1 } } },
@@ -695,6 +685,7 @@ const getAllListeners = async (
       { $match: { user: { $in: listenerIds } } },
       { $group: { _id: "$user", count: { $sum: 1 } } },
     ]),
+    CreditBalance.find({ user: { $in: listenerIds } }).select("user balance").lean(),
   ]);
 
   const msgMap = new Map<string, number>();
@@ -709,12 +700,18 @@ const getAllListeners = async (
   voteCounts.forEach((v: any) => {
     if (v._id) voteMap.set(v._id.toString(), v.count);
   });
+  const balanceMap = new Map<string, number>();
+  creditBalances.forEach((b: any) => {
+    if (b.user) balanceMap.set(b.user.toString(), b.balance ?? 0);
+  });
 
   const normalized = users.map((u: any) => ({
     ...normalizeListener(u),
     messageCount: msgMap.get(u._id.toString()) || msgMap.get(u.phone) || 0,
     callCount: callMap.get(u._id.toString()) || 0,
     voteCount: voteMap.get(u._id.toString()) || 0,
+    creditBalance: balanceMap.get(u._id.toString()) || 0,
+    balance: balanceMap.get(u._id.toString()) || 0,
   }));
 
   return {
@@ -765,7 +762,7 @@ const getListenerById = async (id: string, callerRole?: string) => {
 
   const { ChannelPollVote } = await import("../channelPoll/channelPoll.model");
 
-  const [totalMessages, totalCalls, totalVotes, spendResult] = await Promise.all([
+  const [totalMessages, totalCalls, totalVotes, spendResult, balanceDoc] = await Promise.all([
     Message.countDocuments(messageFilter),
     Call.countDocuments(callFilter),
     ChannelPollVote.countDocuments({ user: userIdObj }),
@@ -785,6 +782,7 @@ const getListenerById = async (id: string, callerRole?: string) => {
         },
       },
     ]),
+    CreditBalance.findOne({ user: userIdObj }).lean(),
   ]);
 
   let totalSpend = 0;
@@ -800,6 +798,10 @@ const getListenerById = async (id: string, callerRole?: string) => {
 
   return {
     ...normalizeListener(user),
+    balance: balanceDoc?.balance ?? 0,
+    creditBalance: balanceDoc?.balance ?? 0,
+    freeBalance: balanceDoc?.freeBalance ?? 0,
+    paidBalance: balanceDoc?.paidBalance ?? 0,
     totalMessages,
     totalCalls,
     totalVotes,

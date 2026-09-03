@@ -44,7 +44,6 @@ const createPresenter = z.object({
     email: z.string().email("Invalid email").optional(),
     phone: z.string().min(1, "Phone is required").max(20).optional(),
     stationId: z.string().min(1, "Station ID is required"),
-    showId: z.string().optional(),
     username: z.string().min(3, "Username must be at least 3 characters").max(50),
     password: passwordSchema,
   }),

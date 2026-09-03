@@ -7,25 +7,34 @@ import validateRequest from "../../middlewares/validateRequest";
 
 const router = Router();
 
-// User views own balance, admin views any user's balance
+// User views own balance, Super/Partner/Customer Care views listener balance (Station Admin excluded)
 router.get(
   "/balance",
-  auth(UserRole.USER, UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  auth(UserRole.USER, UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.CUSTOMER_CARE),
   validateRequest(CreditDto.getBalance),
   CreditController.getBalance,
 );
 
+// Super Admin & Partner Admin can grant credits
 router.post(
   "/add",
-  auth(UserRole.SUPER_ADMIN),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
   validateRequest(CreditDto.addCredits),
   CreditController.addCredits,
 );
 
-// User views own transactions, admin views any user's transactions
+// Super Admin & Partner Admin can deduct credits
+router.post(
+  "/deduct",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN),
+  validateRequest(CreditDto.deductCredits),
+  CreditController.deductCredits,
+);
+
+// User views own transactions, Admin views scoped transactions
 router.get(
   "/transactions",
-  auth(UserRole.USER, UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  auth(UserRole.USER, UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.CUSTOMER_CARE, UserRole.STATION_ADMIN),
   CreditController.getTransactions,
 );
 

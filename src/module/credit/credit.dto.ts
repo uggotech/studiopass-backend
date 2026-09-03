@@ -5,6 +5,15 @@ const addCredits = z.object({
     userId: z.string().min(1, "User ID is required"),
     amount: z.number().int().positive("Amount must be a positive integer"),
     isFree: z.boolean().optional().default(true),
+    reason: z.string().optional(),
+  }),
+});
+
+const deductCredits = z.object({
+  body: z.object({
+    userId: z.string().min(1, "User ID is required"),
+    amount: z.number().int().positive("Amount must be a positive integer"),
+    reason: z.string().min(3, "Reason must be at least 3 characters"),
   }),
 });
 
@@ -14,4 +23,4 @@ const getBalance = z.object({
   }),
 });
 
-export const CreditDto = { addCredits, getBalance };
+export const CreditDto = { addCredits, deductCredits, getBalance };

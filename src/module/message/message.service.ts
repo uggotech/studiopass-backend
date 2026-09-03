@@ -15,6 +15,7 @@ import { emitToStation, emitToShow, emitToUser, checkAndEmitShowTransition } fro
 import { ListenerStatementService } from "../listenerStatement/listenerStatement.service";
 import { maskMsisdn, shouldMaskMsisdn } from "../../shared/maskMsisdn";
 import { logger } from "../../logger/logger";
+import { CarrierService } from "../../shared/telecom/carrier.service";
 
 // ─── Timezone Helper ───────────────────────────────────────────────────────
 // Fetches the station's country timezone. Returns "UTC" on failure.
@@ -127,6 +128,7 @@ const sendUserMessage = async (
       status: messageStatus,
       country: user.countryId,
       creditsUsed: 1,
+      operator: CarrierService.detectOperator(user.phone, country?.code || "UG") || undefined,
     }, session);
 
     // 2. Deduct credits via CreditService (handles isFree detection + transaction record)
@@ -429,7 +431,7 @@ const normalizeMessage = (msg: any, showName?: string) => {
     imageUrl: msg.imageUrl || null,
     msisdn: msg.msisdn || null,
     country: msg.country?.name || msg.country || null,
-    operator: msg.operator || null,
+    operator: msg.operator || CarrierService.detectOperator(msg.msisdn, (msg.country as any)?.code || (msg.country as any)?.iso || "UG") || null,
     status: msg.status,
     isReplied: msg.isReplied,
     isRead: msg.isRead ?? false,

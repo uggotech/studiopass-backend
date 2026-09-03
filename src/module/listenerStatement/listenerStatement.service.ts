@@ -9,6 +9,7 @@ import { StationRepository } from "../station/station.repository";
 import { ShowRepository } from "../show/show.repository";
 import { Country } from "../country/country.model";
 import { maskMsisdn, shouldMaskMsisdn } from "../../shared/maskMsisdn";
+import { CarrierService } from "../../shared/telecom/carrier.service";
 
 const generateTicket = (): string => {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
@@ -59,7 +60,7 @@ const createStatementFromMessage = async (messageId: string, isFree: boolean = f
     currencySymbol: country.currencySymbol,
     creditsUsed: message.creditsUsed || 1,
     country: country._id,
-    operator: message.operator,
+    operator: message.operator || CarrierService.detectOperator(message.msisdn, country.code || "UG") || undefined,
     ticket: generateTicket(),
     isFree,
     status: "Successful",
@@ -106,7 +107,7 @@ const createStatementFromCall = async (callId: string, isFree: boolean = false) 
     currencySymbol: country.currencySymbol,
     creditsUsed: call.creditsUsed || 1,
     country: country._id,
-    operator: call.operator,
+    operator: call.operator || CarrierService.detectOperator(caller?.phone, country.code || "UG") || undefined,
     ticket: generateTicket(),
     isFree,
     status: "Successful",

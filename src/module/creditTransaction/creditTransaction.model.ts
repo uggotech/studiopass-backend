@@ -4,9 +4,14 @@ import { TCreditTransaction } from "./creditTransaction.interface";
 const creditTransactionSchema = new Schema<TCreditTransaction>(
   {
     user: { type: Schema.Types.ObjectId, ref: "User", required: true },
-    type: { type: String, enum: ["purchase", "admin_grant", "message_deduction", "call_deduction", "call_refund", "challenge_deduction", "challenge_refund", "poll_deduction", "poll_refund", "challenge_reward"], required: true },
+    type: { type: String, enum: ["purchase", "admin_grant", "admin_deduction", "message_deduction", "call_deduction", "call_refund", "challenge_deduction", "challenge_refund", "poll_deduction", "poll_refund", "challenge_reward"], required: true },
     amount: { type: Number, required: true },
     isFree: { type: Boolean, required: true, default: false },
+    previousBalance: { type: Number },
+    newBalance: { type: Number },
+    reason: { type: String, trim: true },
+    adminRole: { type: String, trim: true },
+    adminName: { type: String, trim: true },
     paymentMethod: { type: String, enum: ["mobile_money", "card"] },
     paymentProvider: { type: String, trim: true },
     paymentReference: { type: String, trim: true },

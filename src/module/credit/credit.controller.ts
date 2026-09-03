@@ -6,28 +6,49 @@ import { CreditRepository } from "./credit.repository";
 import { StatusCodes } from "http-status-codes";
 import { Station } from "../station/station.model";
 import { User } from "../user/user.model";
+import { Partner } from "../partner/partner.model";
 import AppError from "../../errors/AppError";
+
+/**
+ * Shared helper to verify that a staff user has permission to access or modify a target listener's credits.
+ */
+const verifyAdminAccessToUser = async (caller: any, targetUserId: string) => {
+  const role = caller.role;
+  if (role === "super_admin") return; // Super admin has global unrestricted access
+
+  const targetUser = await User.findById(targetUserId).select("countryId role").lean();
+  if (!targetUser) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User not found");
+  }
+
+  if (role === "partner_admin" || role === "customer_care") {
+    if (!caller.partnerId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "Access denied: missing partner assignment");
+    }
+    const partner = await Partner.findById(caller.partnerId).select("country").lean();
+    const partnerCountryId = (partner?.country as any)?._id?.toString() || partner?.country?.toString();
+
+    // If partner has an assigned country, verify target listener belongs to that country
+    if (partnerCountryId && targetUser.countryId?.toString() !== partnerCountryId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only access users within your assigned country");
+    }
+    return;
+  }
+
+  throw new AppError(StatusCodes.FORBIDDEN, "You do not have permission to access user credit records");
+};
 
 const getBalance = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
   const role = user.role;
 
-  // Admin can view any user's balance via query param, user can only view own
+  // Admin can view any user's balance via query param, end user can only view their own
   const userId = (role !== "user" && req.query.userId)
     ? req.query.userId as string
     : user._id.toString();
 
-  // Scope check: ensure the target user falls within the requesting user's scope
-  if (role === "partner_admin" && req.query.userId && user.partnerId) {
-    const targetUser = await User.findById(userId).select("partnerId").lean();
-    if (!targetUser || targetUser.partnerId?.toString() !== user.partnerId.toString()) {
-      throw new AppError(StatusCodes.FORBIDDEN, "You can only view balances of users in your partner organization");
-    }
-  } else if (role === "station_admin" && req.query.userId && user.stationId) {
-    const targetUser = await User.findById(userId).select("stationId").lean();
-    if (!targetUser || targetUser.stationId?.toString() !== user.stationId.toString()) {
-      throw new AppError(StatusCodes.FORBIDDEN, "You can only view balances of users in your station");
-    }
+  if (role !== "user" && req.query.userId) {
+    await verifyAdminAccessToUser(user, userId);
   }
 
   const result = await CreditService.getBalance(userId);
@@ -43,28 +64,50 @@ const getBalance = catchAsync(async (req: Request, res: Response) => {
 const addCredits = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
   const adminId = user._id.toString();
-  const { userId, amount, isFree } = req.body;
+  const { userId, amount, isFree, reason } = req.body;
 
-  // Scope check: ensure the target user falls within the requesting user's scope
-  if (user.role === "partner_admin" && user.partnerId) {
-    const targetUser = await User.findById(userId).select("partnerId").lean();
-    if (!targetUser || targetUser.partnerId?.toString() !== user.partnerId.toString()) {
-      throw new AppError(StatusCodes.FORBIDDEN, "You can only add credits to users in your partner organization");
-    }
-  } else if (user.role === "station_admin" && user.stationId) {
-    const targetUser = await User.findById(userId).select("stationId").lean();
-    if (!targetUser || targetUser.stationId?.toString() !== user.stationId.toString()) {
-      throw new AppError(StatusCodes.FORBIDDEN, "You can only add credits to users in your station");
-    }
-  }
+  await verifyAdminAccessToUser(user, userId);
 
   const idempotencyKey = req.headers["x-idempotency-key"] as string | undefined;
-  const result = await CreditService.addCredits(userId, amount, adminId, isFree, undefined, undefined, idempotencyKey);
+  const result = await CreditService.addCredits(
+    userId,
+    amount,
+    adminId,
+    isFree,
+    undefined,
+    undefined,
+    idempotencyKey,
+    reason,
+    { role: user.role, fullName: user.fullName },
+  );
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
     message: "Credits added successfully",
+    data: result,
+  });
+});
+
+const deductCredits = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const adminId = user._id.toString();
+  const { userId, amount, reason } = req.body;
+
+  await verifyAdminAccessToUser(user, userId);
+
+  const result = await CreditService.deductCreditsByAdmin(
+    userId,
+    amount,
+    adminId,
+    reason,
+    { role: user.role, fullName: user.fullName },
+  );
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Credits deducted successfully",
     data: result,
   });
 });
@@ -84,22 +127,9 @@ const getTransactions = catchAsync(async (req: Request, res: Response) => {
     // Users can only see their own transactions
     filter.user = user._id;
   } else if (req.query.userId) {
-    // Admin viewing a specific user's transactions — scope check required
+    // Admin viewing a specific user's transactions
     const targetUserId = req.query.userId as string;
-    if (role === "partner_admin" && user.partnerId) {
-      const targetUser = await User.findById(targetUserId).select("partnerId").lean();
-      if (!targetUser || targetUser.partnerId?.toString() !== user.partnerId.toString()) {
-        throw new AppError(StatusCodes.FORBIDDEN, "You can only view transactions of users in your partner organization");
-      }
-    } else if (role === "station_admin" && user.stationId) {
-      const targetUser = await User.findById(targetUserId).select("stationId").lean();
-      if (!targetUser || targetUser.stationId?.toString() !== user.stationId.toString()) {
-        throw new AppError(StatusCodes.FORBIDDEN, "You can only view transactions of users in your station");
-      }
-    } else if (role !== "super_admin") {
-      // For any other non-super_admin role with userId, deny access
-      throw new AppError(StatusCodes.FORBIDDEN, "You don't have permission to view other users' transactions");
-    }
+    await verifyAdminAccessToUser(user, targetUserId);
     filter.user = targetUserId;
   } else if (role === "station_admin" && user.stationId) {
     // Station admin: transactions where station matches their station
@@ -112,7 +142,7 @@ const getTransactions = catchAsync(async (req: Request, res: Response) => {
       filter.station = { $in: stationIds };
     }
   }
-  // super_admin: no filter = all transactions
+  // super_admin without userId: no filter = all transactions
 
   const [transactions, total] = await Promise.all([
     CreditRepository.getAllTransactions(filter, skip, limit),
@@ -136,5 +166,6 @@ const getTransactions = catchAsync(async (req: Request, res: Response) => {
 export const CreditController = {
   getBalance,
   addCredits,
+  deductCredits,
   getTransactions,
 };

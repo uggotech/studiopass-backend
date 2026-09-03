@@ -148,6 +148,8 @@ const addCredits = async (
   session?: mongoose.ClientSession,
   paymentReference?: string,
   idempotencyKey?: string,
+  reason?: string,
+  adminUser?: { role?: string; fullName?: string },
 ) => {
   // Validate user exists before creating balance
   const user = await User.findById(userId).select("countryId").lean();
@@ -169,7 +171,11 @@ const addCredits = async (
     }
   }
 
+  const prevDoc = await CreditRepository.getBalance(userId);
+  const previousBalance = prevDoc?.balance ?? 0;
+
   const updated = await CreditRepository.incrementBalance(userId, amount, isFree, session);
+  const newBalance = updated?.balance ?? (previousBalance + amount);
 
   // Look up country currency for transaction record
   const countryDoc = user.countryId
@@ -181,6 +187,11 @@ const addCredits = async (
     type: "admin_grant",
     amount,
     isFree,
+    previousBalance,
+    newBalance,
+    reason: reason || undefined,
+    adminRole: adminUser?.role || undefined,
+    adminName: adminUser?.fullName || undefined,
     country: user.countryId || undefined,
     currency: countryDoc?.currency || undefined,
     grantedBy: adminId,
@@ -188,7 +199,72 @@ const addCredits = async (
     status: "completed",
   }, session);
 
-  return { balance: updated?.balance ?? 0 };
+  return { balance: newBalance };
+};
+
+const deductCreditsByAdmin = async (
+  userId: string,
+  amount: number,
+  adminId: string,
+  reason: string,
+  adminUser?: { role?: string; fullName?: string },
+) => {
+  const user = await User.findById(userId).select("countryId").lean();
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "User not found");
+  }
+
+  const currentDoc = await CreditRepository.getBalance(userId);
+  const currentBalance = currentDoc?.balance ?? 0;
+
+  if (currentBalance < amount) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      `Cannot deduct ${amount} credits. User only has ${currentBalance} available credits.`,
+    );
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const previousBalance = currentBalance;
+    const { updated } = await CreditRepository.decrementBalance(userId, amount, session);
+
+    if (!updated) {
+      throw new AppError(StatusCodes.BAD_REQUEST, "Insufficient user credit balance");
+    }
+
+    const newBalance = updated.balance;
+
+    const countryDoc = user.countryId
+      ? await Country.findById(user.countryId).select("code currency").lean()
+      : null;
+
+    await CreditRepository.createTransaction({
+      user: userId,
+      type: "admin_deduction",
+      amount: -amount,
+      isFree: true,
+      previousBalance,
+      newBalance,
+      reason,
+      adminRole: adminUser?.role || undefined,
+      adminName: adminUser?.fullName || undefined,
+      country: user.countryId || undefined,
+      currency: countryDoc?.currency || undefined,
+      grantedBy: adminId,
+      status: "completed",
+    }, session);
+
+    await session.commitTransaction();
+    return { balance: newBalance, previousBalance, deducted: amount };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 };
 
 const rewardChallengeWinner = async (
@@ -230,6 +306,7 @@ export const CreditService = {
   deductCredits,
   refundCredits,
   addCredits,
+  deductCreditsByAdmin,
   rewardChallengeWinner,
 };
 

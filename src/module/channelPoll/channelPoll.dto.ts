@@ -30,9 +30,15 @@ const createPoll = z.object({
     .superRefine((data, ctx) => {
       const start = new Date(data.startDate).getTime();
       const end = new Date(data.endDate).getTime();
-      const nowBuffer = Date.now() - 5 * 60 * 1000; // 5 mins grace period for network latency
+      const nowBuffer = Date.now() - 15 * 60 * 1000; // 15 mins grace period for form completion / latency
 
-      if (!isNaN(start) && start < nowBuffer) {
+      if (isNaN(start)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Invalid start date",
+          path: ["startDate"],
+        });
+      } else if (start < nowBuffer) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "Start date cannot be in the past",
@@ -40,7 +46,13 @@ const createPoll = z.object({
         });
       }
 
-      if (!isNaN(start) && !isNaN(end) && end <= start) {
+      if (isNaN(end)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Invalid end date",
+          path: ["endDate"],
+        });
+      } else if (!isNaN(start) && end <= start) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "End date must be after start date",
@@ -54,14 +66,14 @@ const getStationPolls = z.object({
   query: z.object({
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(20),
-    status: z.enum(["draft", "active", "completed"]).optional(),
+    status: z.enum(["draft", "scheduled", "active", "completed"]).optional(),
   }),
 });
 
 const getAllPolls = z.object({
   query: z.object({
     station: z.string().optional(),
-    status: z.enum(["draft", "active", "completed"]).optional(),
+    status: z.enum(["draft", "scheduled", "active", "completed"]).optional(),
     search: z.string().optional(),
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(20),
@@ -97,7 +109,7 @@ const updatePoll = z.object({
   body: z.object({
     title: z.string().min(1).max(200).optional(),
     description: z.string().max(2000).optional(),
-    status: z.enum(["draft", "active", "completed"]).optional(),
+    status: z.enum(["draft", "scheduled", "active", "completed"]).optional(),
   }),
 });
 

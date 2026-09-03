@@ -38,7 +38,7 @@ const channelPollSchema = new Schema<TChannelPoll>(
     },
     status: {
       type: String,
-      enum: ["draft", "active", "completed"],
+      enum: ["draft", "scheduled", "active", "completed"],
       default: "draft",
     },
     billingMode: {

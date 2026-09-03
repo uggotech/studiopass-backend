@@ -19,6 +19,7 @@ import {
   getIO,
 } from "../../socket";
 import { ListenerStatementService } from "../listenerStatement/listenerStatement.service";
+import { CarrierService } from "../../shared/telecom/carrier.service";
 
 // ─── Shared Call Helpers ────────────────────────────────────────────────────
 // Single source of truth for refund, statement, and notification logic.
@@ -390,6 +391,9 @@ const requestCall = async (userId: string, stationId: string) => {
   session.startTransaction();
 
   try {
+    const callerUser = await User.findById(userId).select("phone").lean();
+    const operator = CarrierService.detectOperator(callerUser?.phone, country?.code || "UG") || undefined;
+
     const call = await Call.create(
       [{
         station: stationId,
@@ -399,6 +403,7 @@ const requestCall = async (userId: string, stationId: string) => {
         status: "queued",
         creditsUsed: 1,
         country: countryId,
+        operator,
         waitStartedAt: new Date(),
         startedAt: new Date(),
       }],

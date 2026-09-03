@@ -90,6 +90,14 @@ console.log("\nTesting Uganda (UG, +256):");
   const r2 = validatePhoneNumber("701234567", { iso: "UG" });
   assert(r2.isValid === true, "Valid Airtel Uganda without 0 (701234567)");
   assert(r2.fullPhone === "+256701234567", "E.164 is +256701234567");
+
+  const r3 = validatePhoneNumber("0201234567", { iso: "UG" });
+  assert(r3.isValid === true, "Valid Airtel Uganda 020 (0201234567)");
+  assert(r3.fullPhone === "+256201234567", "E.164 is +256201234567");
+
+  const r4 = validatePhoneNumber("0311234567", { iso: "UG" });
+  assert(r4.isValid === true, "Valid MTN Uganda 031 (0311234567)");
+  assert(r4.fullPhone === "+256311234567", "E.164 is +256311234567");
 }
 
 // 4. Nigeria (+234, NG) Tests

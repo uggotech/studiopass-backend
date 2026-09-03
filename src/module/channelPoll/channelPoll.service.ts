@@ -19,6 +19,7 @@ const createPoll = async (
   },
   createdBy: string,
   userRole?: string,
+  userPartnerId?: string,
 ) => {
   const station: any = await StationRepository.findById(stationId);
   if (!station) {
@@ -34,16 +35,38 @@ const createPoll = async (
     }
   }
 
+  if (userRole === "partner_admin" && userPartnerId) {
+    const stationPartnerId = station.partner?._id || station.partner?.id || station.partner;
+    if (stationPartnerId?.toString() !== userPartnerId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "Unauthorized to create polls for stations outside your country partner.");
+    }
+  }
+
+  const startDate = new Date(data.startDate);
+  const endDate = new Date(data.endDate);
+  const now = new Date();
+
+  let resolvedStatus = data.status;
+  if (!resolvedStatus) {
+    if (startDate > now) {
+      resolvedStatus = "scheduled";
+    } else if (endDate <= now) {
+      resolvedStatus = "completed";
+    } else {
+      resolvedStatus = "active";
+    }
+  }
+
   const poll = await ChannelPollRepository.create({
     station: stationId,
     title: data.title,
     description: data.description,
     categories: data.categories,
-    status: data.status || "active",
+    status: resolvedStatus,
     billingMode: data.billingMode || "free",
     creditCost: data.creditCost || 1,
-    startDate: new Date(data.startDate),
-    endDate: new Date(data.endDate),
+    startDate,
+    endDate,
     totalVotes: 0,
     createdBy,
   });
@@ -63,10 +86,13 @@ const getStationPolls = async (
     ChannelPollRepository.countByStation(stationId, status),
   ]);
 
-  // Auto-complete expired polls
+  // Synchronize dynamic status transitions on read
   const now = new Date();
   for (const poll of polls) {
-    if (poll.status === "active" && new Date(poll.endDate) <= now) {
+    if ((poll.status === "scheduled" || poll.status === "draft") && new Date(poll.startDate) <= now && new Date(poll.endDate) > now) {
+      await ChannelPollRepository.updateById(poll._id.toString(), { status: "active" });
+      poll.status = "active";
+    } else if (poll.status === "active" && new Date(poll.endDate) <= now) {
       await ChannelPollRepository.updateById(poll._id.toString(), { status: "completed" });
       poll.status = "completed";
     }
@@ -109,6 +135,18 @@ const getAllPolls = async (
     ChannelPollRepository.count(filter),
   ]);
 
+  // Synchronize dynamic status transitions on read
+  const now = new Date();
+  for (const poll of polls) {
+    if ((poll.status === "scheduled" || poll.status === "draft") && new Date(poll.startDate) <= now && new Date(poll.endDate) > now) {
+      await ChannelPollRepository.updateById(poll._id.toString(), { status: "active" });
+      poll.status = "active";
+    } else if (poll.status === "active" && new Date(poll.endDate) <= now) {
+      await ChannelPollRepository.updateById(poll._id.toString(), { status: "completed" });
+      poll.status = "completed";
+    }
+  }
+
   return {
     polls,
     meta: { page, limit, total, totalPage: Math.ceil(total / limit) },
@@ -119,6 +157,16 @@ const getPollById = async (id: string, userId?: string) => {
   const poll: any = await ChannelPollRepository.findById(id);
   if (!poll) {
     throw new AppError(StatusCodes.NOT_FOUND, "Poll not found");
+  }
+
+  // Synchronize dynamic status transitions on read
+  const now = new Date();
+  if ((poll.status === "scheduled" || poll.status === "draft") && new Date(poll.startDate) <= now && new Date(poll.endDate) > now) {
+    await ChannelPollRepository.updateById(poll._id.toString(), { status: "active" });
+    poll.status = "active";
+  } else if (poll.status === "active" && new Date(poll.endDate) <= now) {
+    await ChannelPollRepository.updateById(poll._id.toString(), { status: "completed" });
+    poll.status = "completed";
   }
 
   const results = await ChannelPollRepository.getResults(id);
@@ -164,8 +212,21 @@ const votePoll = async (
     throw new AppError(StatusCodes.NOT_FOUND, "Poll not found");
   }
 
+  const now = new Date();
   if (poll.status !== "active") {
+    if (poll.status === "scheduled" || now < new Date(poll.startDate)) {
+      throw new AppError(StatusCodes.BAD_REQUEST, "This poll has not started yet.");
+    }
     throw new AppError(StatusCodes.BAD_REQUEST, "This poll is not active.");
+  }
+
+  if (now < new Date(poll.startDate)) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "This poll has not started yet.");
+  }
+
+  if (now > new Date(poll.endDate)) {
+    await ChannelPollRepository.updateById(pollId, { status: "completed" });
+    throw new AppError(StatusCodes.BAD_REQUEST, "This poll has already ended.");
   }
 
   // Validate category index

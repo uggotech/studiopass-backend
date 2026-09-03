@@ -10,7 +10,7 @@ const router = Router();
 // Create a channel poll (station admin, super admin)
 router.post(
   "/",
-  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
+  auth(UserRole.STATION_ADMIN, UserRole.PARTNER_ADMIN, UserRole.SUPER_ADMIN),
   validateRequest(ChannelPollDto.createPoll),
   ChannelPollController.createPoll,
 );
@@ -26,7 +26,7 @@ router.get(
 // Get channel polls for a specific station
 router.get(
   "/station/:stationId",
-  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN, UserRole.USER),
+  auth(UserRole.STATION_ADMIN, UserRole.PARTNER_ADMIN, UserRole.SUPER_ADMIN, UserRole.USER),
   ChannelPollController.getStationPolls,
 );
 
@@ -57,7 +57,7 @@ router.get(
 // Update channel poll
 router.patch(
   "/:id",
-  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
+  auth(UserRole.STATION_ADMIN, UserRole.PARTNER_ADMIN, UserRole.SUPER_ADMIN),
   validateRequest(ChannelPollDto.updatePoll),
   ChannelPollController.updatePoll,
 );
@@ -65,7 +65,7 @@ router.patch(
 // Delete channel poll
 router.delete(
   "/:id",
-  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
+  auth(UserRole.STATION_ADMIN, UserRole.PARTNER_ADMIN, UserRole.SUPER_ADMIN),
   validateRequest(ChannelPollDto.deletePoll),
   ChannelPollController.deletePoll,
 );
