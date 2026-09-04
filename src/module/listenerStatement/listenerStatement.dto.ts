@@ -7,6 +7,7 @@ const getAllStatements = z.object({
   query: z.object({
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(20),
+    userId: z.string().regex(objectIdRegex, "Invalid user ID format").optional(),
     type: z.enum(["Call", "Message"]).optional(),
     station: z.string().regex(objectIdRegex, "Invalid station ID format").optional(),
     country: z.string().regex(objectIdRegex, "Invalid country ID format").optional(),

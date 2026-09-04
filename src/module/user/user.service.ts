@@ -6,6 +6,7 @@ import { User } from "./user.model";
 import { Auth } from "../auth/auth.model";
 import { AuthRepository } from "../auth/auth.repository";
 import { StationRepository } from "../station/station.repository";
+import { Station } from "../station/station.model";
 import { PartnerRepository } from "../partner/partner.repository";
 import { MessageRepository } from "../message/message.repository";
 import Message from "../message/message.model";
@@ -237,6 +238,7 @@ const createMediaStation = async (data: {
       phone: data.phone,
       role: UserRole.MEDIA_STATION,
       stationId: station._id,
+      partnerId: (station.partner as any)?._id || station.partner,
       profileCompleted: false,
     }, session);
     const user = Array.isArray(users) ? users[0] : users;
@@ -268,7 +270,12 @@ const getAllMediaStationUsers = async (query: Record<string, unknown>, scope?: {
   if (scope?.stationId) {
     filter.stationId = scope.stationId;
   } else if (scope?.partnerId) {
-    filter.partnerId = scope.partnerId;
+    const partnerStations = await Station.find({ partner: scope.partnerId }).select("_id").lean();
+    const stationIds = partnerStations.map((s) => s._id);
+    filter.$or = [
+      { partnerId: scope.partnerId },
+      { stationId: { $in: stationIds } },
+    ];
   }
 
   if (query.isActive !== undefined) {
@@ -514,6 +521,7 @@ const createPresenter = async (data: {
       phone: data.phone,
       role: UserRole.PRESENTER,
       stationId: station._id,
+      partnerId: (station.partner as any)?._id || station.partner,
       profileCompleted: false,
     }, session);
     const user = Array.isArray(users) ? users[0] : users;
@@ -544,6 +552,13 @@ const getAllPresenters = async (query: Record<string, unknown>, scope?: { partne
 
   if (scope?.stationId) {
     filter.stationId = scope.stationId;
+  } else if (scope?.partnerId) {
+    const partnerStations = await Station.find({ partner: scope.partnerId }).select("_id").lean();
+    const stationIds = partnerStations.map((s) => s._id);
+    filter.$or = [
+      { partnerId: scope.partnerId },
+      { stationId: { $in: stationIds } },
+    ];
   }
 
   if (query.isActive !== undefined) {
