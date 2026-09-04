@@ -48,7 +48,7 @@ export const authLimiter = rateLimit({
 
 export const strictLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 5,
+  max: 200,
   message: {
     success: false,
     message: "Too many requests for this operation.",

@@ -4,7 +4,6 @@ import { CallDto } from "./call.dto";
 import { UserRole } from "shared/roles";
 import auth from "../../middlewares/auth";
 import validateRequest from "../../middlewares/validateRequest";
-import { strictLimiter } from "../../middlewares/security";
 
 const router = Router();
 
@@ -12,7 +11,6 @@ const router = Router();
 router.post(
   "/request",
   auth(UserRole.USER),
-  strictLimiter,
   validateRequest(CallDto.requestCall),
   CallController.requestCall,
 );
@@ -21,7 +19,6 @@ router.post(
 router.post(
   "/accept",
   auth(UserRole.MEDIA_STATION, UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
-  strictLimiter,
   validateRequest(CallDto.acceptCall),
   CallController.acceptCall,
 );
@@ -38,7 +35,6 @@ router.post(
 router.post(
   "/end",
   auth(UserRole.USER, UserRole.MEDIA_STATION, UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
-  strictLimiter,
   validateRequest(CallDto.endCall),
   CallController.endCall,
 );
@@ -47,7 +43,6 @@ router.post(
 router.post(
   "/cancel",
   auth(UserRole.USER),
-  strictLimiter,
   validateRequest(CallDto.cancelCall),
   CallController.cancelCall,
 );
@@ -56,7 +51,6 @@ router.post(
 router.post(
   "/reject",
   auth(UserRole.MEDIA_STATION, UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
-  strictLimiter,
   validateRequest(CallDto.rejectCall),
   CallController.rejectCall,
 );
