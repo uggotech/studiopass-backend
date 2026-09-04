@@ -99,6 +99,8 @@ services:
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin_secure_pass}
       - MINIO_BUCKET=studiopass
       - MINIO_USE_SSL=false
+      - MINIO_PUBLIC_URL=http://192.168.0.200:9000
+      - API_BASE_URL=http://192.168.0.200:5003
       - CHOKIDAR_USEPOLLING=true
       - WATCHPACK_POLLING=true
       - CHOKIDAR_INTERVAL=1000

@@ -5,6 +5,7 @@ import sharp from "sharp";
 import AppError from "../errors/AppError";
 import { uploadFile } from "../util/minio";
 import generateUploadFileName from "../util/generateUploadFileName";
+import { logger } from "../logger/logger";
 
 const ALLOWED_MIME_TYPES = new Set([
   "image/jpeg",
@@ -142,8 +143,11 @@ const processAndUpload = async (req: Request, _res: Response, next: NextFunction
           req.body[fieldName] = filePath;
         }
       }
-    } catch (error) {
-      return next(new AppError(StatusCodes.INTERNAL_SERVER_ERROR, "Image processing failed"));
+    } catch (error: any) {
+      logger.error(`[processAndUpload] Error processing or uploading file: ${error?.message || error}`, {
+        stack: error?.stack,
+      });
+      return next(new AppError(StatusCodes.INTERNAL_SERVER_ERROR, `Image upload failed: ${error?.message || error}`));
     }
 
     next();

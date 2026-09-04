@@ -17,6 +17,8 @@ const getClient = (): Client => {
   return minioClient;
 };
 
+let bucketChecked = false;
+
 const ensureBucket = async (): Promise<void> => {
   try {
     const client = getClient();
@@ -40,6 +42,7 @@ const ensureBucket = async (): Promise<void> => {
     } else {
       logger.info(`[minio] Bucket "${config.minio.bucket}" exists`);
     }
+    bucketChecked = true;
   } catch (error) {
     logger.error(`[minio] Failed to ensure bucket: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -50,6 +53,9 @@ const uploadFile = async (
   fileName: string,
   contentType: string,
 ): Promise<string> => {
+  if (!bucketChecked) {
+    await ensureBucket();
+  }
   const client = getClient();
   await client.putObject(config.minio.bucket, fileName, buffer, buffer.length, {
     "Content-Type": contentType,
