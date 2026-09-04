@@ -30,7 +30,6 @@ router.post(
 router.post(
   "/join",
   auth(UserRole.USER),
-  strictLimiter,
   validateRequest(CallDto.joinCall),
   CallController.joinCall,
 );

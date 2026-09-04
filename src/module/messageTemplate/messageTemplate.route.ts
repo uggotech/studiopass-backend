@@ -11,7 +11,6 @@ const stationRoles = [
   UserRole.SUPER_ADMIN,
   UserRole.PARTNER_ADMIN,
   UserRole.STATION_ADMIN,
-  UserRole.MEDIA_STATION,
   UserRole.PRESENTER,
 ];
 
@@ -23,7 +22,7 @@ router.get(
 
 router.post(
   "/",
-  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
   validateRequest(
     z.object({
       body: z.object({
@@ -36,13 +35,13 @@ router.post(
 
 router.delete(
   "/:id",
-  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
   MessageTemplateController.deleteTemplate,
 );
 
 router.patch(
   "/:id",
-  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
   validateRequest(
     z.object({
       body: z.object({

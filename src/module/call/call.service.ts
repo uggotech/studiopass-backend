@@ -221,7 +221,7 @@ const getAvailableOperatorCount = async (stationId: string): Promise<number> => 
 const generateAgoraToken = (
   channelName: string,
   uid: number,
-  isPublisher: boolean = false,
+  isPublisher: boolean = true,
 ): string => {
   const appId = config.agora.app_id;
   const appCertificate = config.agora.app_certificate;
@@ -538,7 +538,7 @@ const acceptCall = async (callId: string, operatorId: string) => {
 
   // Generate Agora token for operator (UID in range 1000000–1999999, disjoint from user range)
   const operatorUid = (((operatorId.split("").reduce((acc, char) => ((acc << 5) - acc + char.charCodeAt(0)) | 0, 0) >>> 0) % 1000000) + 1000000);
-  const token = generateAgoraToken(result.agoraChannelId, operatorUid);
+  const token = generateAgoraToken(result.agoraChannelId, operatorUid, true);
 
   // Start join-confirmation timeout
   startJoinTimeout(callId, result.startedBy.toString(), result.station.toString(), operatorId);
@@ -585,7 +585,7 @@ const joinCall = async (callId: string, userId: string) => {
 
   // Generate token for user (UID in range 1–999999, disjoint from operator range 1000000–1999999)
   const userUid = (((userId.split("").reduce((acc, char) => ((acc << 5) - acc + char.charCodeAt(0)) | 0, 0) >>> 0) % 999999) + 1) || 1;
-  const token = generateAgoraToken(call.agoraChannelId, userUid);
+  const token = generateAgoraToken(call.agoraChannelId, userUid, true);
 
   logger.info(`[Call] User joined call: ${callId}`);
 
