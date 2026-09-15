@@ -39,6 +39,12 @@ const sendUserMessage = async (
   content: string | undefined,
   userId: string,
   imageUrl?: string,
+  videoUrl?: string,
+  audioUrl?: string,
+  audioDuration?: number,
+  waveform?: number[],
+  mediaType?: "text" | "image" | "video" | "audio" | "sticker",
+  stickerUrl?: string,
 ) => {
   const station = await StationRepository.findById(stationId);
   if (!station) {
@@ -116,6 +122,18 @@ const sendUserMessage = async (
   session.startTransaction();
 
   try {
+    const detectedMediaType =
+      mediaType ||
+      (stickerUrl
+        ? "sticker"
+        : audioUrl
+          ? "audio"
+          : videoUrl
+            ? "video"
+            : imageUrl
+              ? "image"
+              : "text");
+
     // 1. Create message (within transaction)
     const message = await MessageRepository.createMessage({
       station: stationId,
@@ -125,6 +143,12 @@ const sendUserMessage = async (
       msisdn: user.phone,
       content: content || '',
       imageUrl: imageUrl || undefined,
+      videoUrl: videoUrl || undefined,
+      audioUrl: audioUrl || undefined,
+      stickerUrl: stickerUrl || undefined,
+      audioDuration: audioDuration || undefined,
+      waveform: waveform || undefined,
+      mediaType: detectedMediaType,
       status: messageStatus,
       country: user.countryId,
       creditsUsed: 1,
@@ -179,17 +203,22 @@ const sendUserMessage = async (
 
 const sendStationReply = async (
   stationId: string,
-  content: string,
+  content: string | undefined,
   senderUserId: string,
   msisdn: string,
   templateUsed?: string,
+  imageUrl?: string,
+  audioUrl?: string,
+  audioDuration?: number,
+  waveform?: number[],
+  mediaType?: "text" | "image" | "video" | "audio",
 ) => {
   const station = await StationRepository.findById(stationId);
   if (!station) {
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
   }
 
-  // Presenter template restriction: presenters must use templates
+  // Presenter template restriction: presenters must use templates (unless sending pure media or template text)
   const sender = await User.findById(senderUserId).lean();
   if (sender?.role === "presenter") {
     if (templateUsed) {
@@ -205,7 +234,7 @@ const sendStationReply = async (
         throw new AppError(StatusCodes.BAD_REQUEST, "Template is no longer active.");
       }
       content = template.text;
-    } else {
+    } else if (content && content.trim().length > 0) {
       // No template ID — check if the content matches any active template for this station
       const matchingTemplate = await MessageTemplate.findOne({
         station: stationId,
@@ -233,6 +262,8 @@ const sendStationReply = async (
     showId = recentUserMsg ? (recentUserMsg as any).show : null;
   }
 
+  const detectedMediaType = mediaType || (audioUrl ? "audio" : (imageUrl ? "image" : "text"));
+
   // Use transaction for atomicity: message creation + markAsReplied
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -244,7 +275,12 @@ const sendStationReply = async (
       show: showId || undefined,
       senderType: "station",
       senderUser: senderUserId,
-      content,
+      content: content || "",
+      imageUrl: imageUrl || undefined,
+      audioUrl: audioUrl || undefined,
+      audioDuration: audioDuration || undefined,
+      waveform: waveform || undefined,
+      mediaType: detectedMediaType,
       msisdn,
       templateUsed: templateUsed || undefined,
       status: "delivered",
@@ -298,11 +334,19 @@ const sendStationReply = async (
   // Send push notification + create notification record (socket + FCM)
   try {
     if (listenerUser) {
+      const notifBody = (content && content.trim().length > 0)
+        ? content.substring(0, 100)
+        : (detectedMediaType === "audio" || audioUrl)
+          ? "🎤 Voice note"
+          : (detectedMediaType === "image" || imageUrl)
+            ? "📷 Photo"
+            : "New reply received";
+
       await NotificationService.createNotification({
         userId: listenerUser._id.toString(),
         type: "reply",
         title: `New reply from ${station?.name || "Station"}`,
-        body: content.substring(0, 100),
+        body: notifBody,
         data: {
           stationId,
           messageId: message._id.toString(),
@@ -322,10 +366,11 @@ const getUserThread = async (
   msisdn: string,
   page: number,
   limit: number,
+  viewerUserId?: string,
 ) => {
   const skip = (page - 1) * limit;
   const [messages, total, stationTimezone] = await Promise.all([
-    MessageRepository.findThread(stationId, msisdn, skip, limit),
+    MessageRepository.findThread(stationId, msisdn, skip, limit, viewerUserId),
     Message.countDocuments({ station: stationId, msisdn }).lean(),
     getStationTimezone(stationId),
   ]);
@@ -346,11 +391,29 @@ const getStationThreads = async (
   stationId: string | undefined,
   page: number,
   limit: number,
+  showId?: string,
+  todayOnly?: boolean,
 ) => {
   const skip = (page - 1) * limit;
+  let showStart: Date | undefined;
+
+  if (showId && todayOnly && stationId) {
+    try {
+      const { Show } = await import("../show/show.model");
+      const { getShowStartTimestamp } = await import("../show/show.service");
+      const show = await Show.findById(showId).lean();
+      if (show) {
+        const tz = await getStationTimezone(stationId);
+        showStart = getShowStartTimestamp(show.startTime, show.endTime, tz);
+      }
+    } catch (e) {
+      // Ignore and continue without date filter
+    }
+  }
+
   const [threads, total, stationTimezone] = await Promise.all([
-    MessageRepository.findThreadsByStation(stationId, skip, limit),
-    MessageRepository.countThreadsByStation(stationId),
+    MessageRepository.findThreadsByStation(stationId, skip, limit, showId, showStart),
+    MessageRepository.countThreadsByStation(stationId, showId, showStart),
     stationId ? getStationTimezone(stationId) : Promise.resolve("UTC"),
   ]);
 
@@ -418,6 +481,19 @@ const getUserThreads = async (
 };
 
 const normalizeMessage = (msg: any, showName?: string) => {
+  const deletedForEveryone = Boolean(msg.deletedForEveryone);
+  const mediaType =
+    msg.mediaType ||
+    (msg.stickerUrl
+      ? "sticker"
+      : msg.audioUrl
+        ? "audio"
+        : msg.videoUrl
+          ? "video"
+          : msg.imageUrl
+            ? "image"
+            : "text");
+
   return {
     id: msg._id,
     stationId: msg.station,
@@ -427,14 +503,24 @@ const normalizeMessage = (msg: any, showName?: string) => {
       ? msg.senderUser?.fullName || null
       : msg.user?.fullName || msg.msisdn || null,
     userAvatar: msg.user?.avatar || null,
-    content: msg.content,
-    imageUrl: msg.imageUrl || null,
+    content: deletedForEveryone ? null : msg.content,
+    imageUrl: deletedForEveryone ? null : msg.imageUrl || null,
+    videoUrl: deletedForEveryone ? null : msg.videoUrl || null,
+    audioUrl: deletedForEveryone ? null : msg.audioUrl || null,
+    stickerUrl: deletedForEveryone ? null : msg.stickerUrl || null,
+    audioDuration: deletedForEveryone ? null : msg.audioDuration || null,
+    waveform: deletedForEveryone ? null : msg.waveform || null,
+    mediaType: deletedForEveryone ? "text" : mediaType,
     msisdn: msg.msisdn || null,
     country: msg.country?.name || msg.country || null,
     operator: msg.operator || CarrierService.detectOperator(msg.msisdn, (msg.country as any)?.code || (msg.country as any)?.iso || "UG") || null,
     status: msg.status,
     isReplied: msg.isReplied,
     isRead: msg.isRead ?? false,
+    readAt: msg.readAt || null,
+    isEdited: msg.isEdited ?? false,
+    editedAt: msg.editedAt || null,
+    deletedForEveryone,
     createdAt: msg.createdAt,
   };
 };
@@ -515,6 +601,162 @@ const deleteMessage = async (messageId: string) => {
     throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
   }
   await MessageRepository.deleteMessage(messageId);
+
+  try {
+    const stationId = (message as any).station?.toString?.() || (message as any).station;
+    emitToStation(stationId, "message-deleted", { messageId, scope: "staff" });
+    const ownerId =
+      (message as any).user?._id?.toString?.() ||
+      (message as any).user?.toString?.();
+    if (ownerId) {
+      emitToUser(ownerId, "message-deleted-for-everyone", {
+        messageId,
+        deletedForEveryone: true,
+      });
+    }
+  } catch {}
+};
+
+const MESSAGE_EDIT_WINDOW_MINUTES = Number(process.env.MESSAGE_EDIT_WINDOW_MINUTES || 15);
+
+const canEditMessage = (message: any, userId: string, role: string): boolean => {
+  if (message.deletedForEveryone || message.isDeleted) return false;
+
+  // Station replies: only the original sender (staff) can edit their own reply
+  if (message.senderType === "station") {
+    if (role !== "media_station" && role !== "presenter" && role !== "station_admin" && role !== "super_admin") {
+      return false;
+    }
+    const senderId = message.senderUser?._id?.toString?.() || message.senderUser?.toString?.();
+    return senderId === userId;
+  }
+
+  // User messages: only the listener who sent them
+  if (message.senderType === "user") {
+    const ownerId = message.user?._id?.toString?.() || message.user?.toString?.();
+    return ownerId === userId;
+  }
+
+  return false;
+};
+
+const isWithinEditWindow = (message: any): boolean => {
+  const created = new Date(message.createdAt).getTime();
+  const windowMs = MESSAGE_EDIT_WINDOW_MINUTES * 60 * 1000;
+  return Date.now() - created <= windowMs;
+};
+
+const editMessage = async (
+  messageId: string,
+  content: string,
+  userId: string,
+  role: string,
+) => {
+  const message = await MessageRepository.findMessageById(messageId);
+  if (!message) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
+  }
+
+  if (!canEditMessage(message, userId, role)) {
+    throw new AppError(StatusCodes.FORBIDDEN, "You can only edit your own messages.");
+  }
+
+  if (!isWithinEditWindow(message)) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      `Messages can only be edited within ${MESSAGE_EDIT_WINDOW_MINUTES} minutes of sending.`,
+    );
+  }
+
+  const mediaType = (message as any).mediaType;
+  if (mediaType === "image" || mediaType === "video" || mediaType === "audio" || mediaType === "sticker") {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Only text messages can be edited.");
+  }
+
+  const updated = await MessageRepository.editMessageContent(messageId, content);
+  const normalized = normalizeMessage(updated);
+
+  try {
+    const stationId = (message as any).station?.toString?.() || (message as any).station;
+    emitToStation(stationId, "message-edited", { message: normalized });
+    // Listener always gets the event for their thread (station replies too)
+    const listenerId =
+      (message as any).user?._id?.toString?.() ||
+      (message as any).user?.toString?.();
+    if (listenerId) {
+      emitToUser(listenerId, "message-edited", { message: normalized });
+    } else {
+      const staffId =
+        (message as any).senderUser?._id?.toString?.() ||
+        (message as any).senderUser?.toString?.();
+      if (staffId) {
+        emitToUser(staffId, "message-edited", { message: normalized });
+      }
+    }
+  } catch {}
+
+  return normalized;
+};
+
+const deleteMessageForMe = async (messageId: string, userId: string) => {
+  const message = await MessageRepository.findMessageById(messageId);
+  if (!message) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
+  }
+
+  await MessageRepository.deleteMessageForUser(messageId, userId);
+  return { messageId, deletedForMe: true };
+};
+
+const deleteMessageForEveryone = async (
+  messageId: string,
+  userId: string,
+  role: string,
+) => {
+  const message = await MessageRepository.findMessageById(messageId);
+  if (!message) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
+  }
+
+  if (!canEditMessage(message, userId, role)) {
+    throw new AppError(
+      StatusCodes.FORBIDDEN,
+      "You can only delete your own messages for everyone.",
+    );
+  }
+
+  const updated = await MessageRepository.deleteMessageForEveryone(messageId);
+  const normalized = normalizeMessage(updated);
+
+  try {
+    const stationId = (message as any).station?.toString?.() || (message as any).station;
+    emitToStation(stationId, "message-deleted-for-everyone", {
+      messageId,
+      message: normalized,
+    });
+    // Listener always gets the event (covers staff deleting station replies)
+    const listenerId =
+      (message as any).user?._id?.toString?.() ||
+      (message as any).user?.toString?.();
+    if (listenerId) {
+      emitToUser(listenerId, "message-deleted-for-everyone", {
+        messageId,
+        message: normalized,
+      });
+    } else {
+      const staffId =
+        (message as any).senderUser?._id?.toString?.() ||
+        (message as any).senderUser?.toString?.();
+      if (staffId) {
+        emitToUser(staffId, "message-deleted-for-everyone", {
+          messageId,
+          message: normalized,
+        });
+      }
+    }
+  } catch {}
+
+  return normalized;
 };
 
 const markAsRead = async (messageId: string) => {
@@ -554,14 +796,24 @@ const getPendingMessages = async (
   }
 
   // Type filter
-  if (options?.type === "text") {
-    filter.$or = [
-      { imageUrl: { $exists: false } },
-      { imageUrl: null },
-      { imageUrl: "" },
-    ];
-  } else if (options?.type === "image") {
-    filter.imageUrl = { $exists: true, $ne: null, $nin: ["", null] };
+  if (options?.type && options.type !== "all") {
+    if (options.type === "image") {
+      filter.$or = [
+        { mediaType: "image" },
+        { imageUrl: { $exists: true, $ne: null, $nin: ["", null] } },
+      ];
+    } else if (options.type === "audio") {
+      filter.$or = [
+        { mediaType: "audio" },
+        { audioUrl: { $exists: true, $ne: null, $nin: ["", null] } },
+      ];
+    } else if (options.type === "text") {
+      filter.$and = [
+        { $or: [{ mediaType: "text" }, { mediaType: { $exists: false } }] },
+        { imageUrl: { $in: ["", null, undefined] } },
+        { audioUrl: { $in: ["", null, undefined] } },
+      ];
+    }
   }
 
   // Time Range filter
@@ -628,7 +880,10 @@ const exportMessages = async (
   const rows = messages.map((m) => ({
     id: m._id,
     msisdn: shouldMask ? maskMsisdn(m.msisdn || "") : m.msisdn,
-    content: m.content,
+    content: m.content || "",
+    mediaType: m.mediaType || (m.audioUrl ? "audio" : (m.videoUrl ? "video" : (m.imageUrl ? "image" : "text"))),
+    imageUrl: m.imageUrl || "",
+    audioUrl: m.audioUrl || "",
     station: (m.station as any)?.toString(),
     show: (m.show as any)?.name || "",
     status: m.status,
@@ -636,9 +891,9 @@ const exportMessages = async (
   }));
 
   if (format === "csv") {
-    const header = "ID,MSISDN,Content,Station,Show,Created\n";
+    const header = "ID,MSISDN,Content,MediaType,ImageUrl,AudioUrl,Station,Show,Status,Created\n";
     const csv = rows.map((r) =>
-      `"${r.id}","${r.msisdn}","${(r.content || "").replace(/"/g, '""')}","${r.station}","${r.show}","${r.createdAt}"`
+      `"${r.id}","${r.msisdn}","${(r.content || "").replace(/"/g, '""')}","${r.mediaType}","${r.imageUrl}","${r.audioUrl}","${r.station}","${r.show}","${r.createdAt}"`
     ).join("\n");
     return { format: "csv", data: header + csv };
   }
@@ -749,6 +1004,9 @@ export const MessageService = {
   rejectMessage,
   sendToOutput,
   deleteMessage,
+  editMessage,
+  deleteMessageForMe,
+  deleteMessageForEveryone,
   markAsRead,
   getPendingMessages,
   exportMessages,

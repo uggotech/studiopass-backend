@@ -94,6 +94,16 @@ app.use(
   }),
 );
 
+// Built-in sticker pack SVGs
+app.use(
+  "/stickers",
+  express.static("public/stickers", {
+    maxAge: "7d",
+    etag: true,
+    dotfiles: "deny",
+  }),
+);
+
 // ============ 10. HEALTH CHECK (no auth needed) ============
 app.get("/health", healthCheck);
 

@@ -1,6 +1,7 @@
 import { StatusCodes } from "http-status-codes";
 import bcrypt from "bcryptjs";
 import AppError from "../../errors/AppError";
+import config from "../../config";
 import { PartnerRepository } from "./partner.repository";
 import { AuthRepository } from "../auth/auth.repository";
 
@@ -102,7 +103,8 @@ const createPartnerWithAdmin = async (data: {
   });
 
   // Create auth for partner admin
-  const hashedPassword = await bcrypt.hash(data.adminPassword, 10);
+  const saltRounds = Number(config.bcrypt_salt_rounds) || 10;
+  const hashedPassword = await bcrypt.hash(data.adminPassword, saltRounds);
   const authDoc = await AuthRepository.create({
     username: data.adminUsername,
     password: hashedPassword,
@@ -158,7 +160,12 @@ const deactivatePartner = async (id: string) => {
   // Deactivate the partner admin's auth account
   const partnerAdmin = await UserRepository.findByPartnerIdAndRole(id, UserRole.PARTNER_ADMIN);
   if (partnerAdmin) {
-    await AuthRepository.updateById(partnerAdmin.auth.toString(), { status: "inactive" });
+    const authId = partnerAdmin.auth.toString();
+    await AuthRepository.updateById(authId, { status: "inactive" });
+    try {
+      const { UserCache } = await import("../user/user.cacheManage");
+      await UserCache.invalidateAuthStatus(authId);
+    } catch {}
   }
 
   const updated = await PartnerRepository.updateById(id, { status: "inactive" });

@@ -3,6 +3,7 @@ import { Follow } from "./follow.model";
 import { Station } from "../station/station.model";
 import AppError from "../../errors/AppError";
 import { StatusCodes } from "http-status-codes";
+import { StationCache } from "../station/station.cacheManage";
 
 const toggleFollow = async (userId: string, stationId: string) => {
   const station = await Station.findById(stationId);
@@ -51,6 +52,11 @@ const toggleFollow = async (userId: string, stationId: string) => {
     following = true;
     followersCount = updated?.followersCount ?? 0;
   }
+
+  // Public list caches include isFollowing + followersCount — drop them
+  try {
+    StationCache.invalidateStation(stationId);
+  } catch {}
 
   return { following, followersCount };
 };

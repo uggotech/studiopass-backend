@@ -47,14 +47,6 @@ router.post(
   AuthController.setup2FAEnable,
 );
 
-// Dashboard: Skip 2FA setup during login
-router.post(
-  "/2fa/skip-setup",
-  authLimiter,
-  validateRequest(AuthDto.skip2FASetup),
-  AuthController.skip2FASetup,
-);
-
 // Dashboard Settings: Initialize 2FA setup
 router.post(
   "/2fa/setup-init",
@@ -76,6 +68,13 @@ router.post(
   authLimiter,
   validateRequest(AuthDto.refresh),
   AuthController.refresh,
+);
+
+// All authenticated roles: manual logout (revokes own device session)
+router.post(
+  "/logout",
+  auth(),
+  AuthController.logout,
 );
 
 // All authenticated roles: change password

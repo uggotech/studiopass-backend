@@ -27,7 +27,7 @@ export default {
   // ============================================================================
   // SECURITY
   // ============================================================================
-  bcrypt_salt_rounds: process.env.BCRYPT_SALT_ROUNDS || "8",
+  bcrypt_salt_rounds: process.env.BCRYPT_SALT_ROUNDS || "10",
   admin_secret_key: process.env.ADMIN_SECRET_KEY,
 
   // ============================================================================

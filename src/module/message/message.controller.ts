@@ -6,10 +6,21 @@ import AppError from "../../errors/AppError";
 import { resolveMsisdn } from "../../shared/maskMsisdn";
 
 const sendMessage = catchAsync(async (req, res) => {
-  const { stationId, content, imageUrl } = req.body;
+  const { stationId, content, imageUrl, videoUrl, audioUrl, audioDuration, waveform, mediaType, stickerUrl } = req.body;
   const userId = req.user!._id.toString();
 
-  const result = await MessageService.sendUserMessage(stationId, content, userId, imageUrl);
+  const result = await MessageService.sendUserMessage(
+    stationId,
+    content,
+    userId,
+    imageUrl,
+    videoUrl,
+    audioUrl,
+    audioDuration,
+    waveform,
+    mediaType,
+    stickerUrl,
+  );
 
   sendResponse(res, {
     success: true,
@@ -20,7 +31,7 @@ const sendMessage = catchAsync(async (req, res) => {
 });
 
 const sendStationReply = catchAsync(async (req, res) => {
-  const { msisdn, content, templateUsed } = req.body;
+  const { msisdn, content, templateUsed, imageUrl, audioUrl, audioDuration, waveform, mediaType } = req.body;
   const senderUserId = req.user!._id.toString();
 
   // Auto-inject stationId from JWT (more secure than body)
@@ -51,6 +62,11 @@ const sendStationReply = catchAsync(async (req, res) => {
     senderUserId,
     resolvedMsisdn,
     templateUsed,
+    imageUrl,
+    audioUrl,
+    audioDuration,
+    waveform,
+    mediaType,
   );
 
   // msisdnMasker middleware handles masking in the response automatically
@@ -106,6 +122,7 @@ const getThread = catchAsync(async (req, res) => {
     resolvedMsisdn,
     Number(page),
     Number(limit),
+    userRole === "user" ? req.user!._id.toString() : undefined,
   );
 
   // msisdnMasker middleware handles masking in the response automatically
@@ -117,7 +134,7 @@ const getThread = catchAsync(async (req, res) => {
 });
 
 const getThreads = catchAsync(async (req, res) => {
-  const { stationId, page = 1, limit = 50 } = req.query;
+  const { stationId, showId, todayOnly, page = 1, limit = 50 } = req.query;
 
   const userRole = req.user!.role;
 
@@ -178,10 +195,13 @@ const getThreads = catchAsync(async (req, res) => {
     }
   }
 
+  const isTodayOnly = String(todayOnly) === "true";
   const result = await MessageService.getStationThreads(
     resolvedStationId,
     Number(page),
     Number(limit),
+    showId as string | undefined,
+    isTodayOnly,
   );
 
   // msisdnMasker middleware handles masking automatically
@@ -295,6 +315,51 @@ const deleteMessage = catchAsync(async (req, res) => {
     success: true,
     statusCode: StatusCodes.OK,
     message: "Message deleted successfully",
+  });
+});
+
+const editMessage = catchAsync(async (req, res) => {
+  const id = req.params.id as string;
+  const content = (req.body as any).content as string;
+  const userId = req.user!._id.toString();
+  const role = req.user!.role;
+
+  const result = await MessageService.editMessage(id, content, userId, role);
+
+  sendResponse(res, {
+    success: true,
+    statusCode: StatusCodes.OK,
+    message: "Message edited successfully",
+    data: result,
+  });
+});
+
+const deleteForMe = catchAsync(async (req, res) => {
+  const id = req.params.id as string;
+  const userId = req.user!._id.toString();
+
+  const result = await MessageService.deleteMessageForMe(id, userId);
+
+  sendResponse(res, {
+    success: true,
+    statusCode: StatusCodes.OK,
+    message: "Message deleted for you",
+    data: result,
+  });
+});
+
+const deleteForEveryone = catchAsync(async (req, res) => {
+  const id = req.params.id as string;
+  const userId = req.user!._id.toString();
+  const role = req.user!.role;
+
+  const result = await MessageService.deleteMessageForEveryone(id, userId, role);
+
+  sendResponse(res, {
+    success: true,
+    statusCode: StatusCodes.OK,
+    message: "Message deleted for everyone",
+    data: result,
   });
 });
 
@@ -468,6 +533,9 @@ export const MessageController = {
   rejectMessage,
   sendToOutput,
   deleteMessage,
+  editMessage,
+  deleteForMe,
+  deleteForEveryone,
   markAsRead,
   getPendingMessages,
   exportMessages,

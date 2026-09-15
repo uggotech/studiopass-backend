@@ -82,15 +82,120 @@ const resolveDateRangeFilter = (
   return { [dateField]: { $gte: start, $lte: now } };
 };
 
-const getStats = async (scope?: {
-  partnerId?: string;
-  stationId?: string;
-  country?: string;
-  role?: string;
-  dateRange?: string;
-  startDate?: string;
-  endDate?: string;
-}) => {
+/**
+ * Helper: safely get first element from aggregation result
+ */
+const aggFirst = <T = any>(result: any[]): T | null => {
+  return result?.length > 0 ? (result[0] as T) : null;
+};
+
+/**
+ * Helper: safely get a number from aggregation
+ */
+const aggNum = (result: any[], field: string, fallback = 0): number => {
+  const first = aggFirst(result);
+  return first && typeof first[field] === "number" ? first[field] : fallback;
+};
+
+/**
+ * Helper: get period boundaries for cash flow
+ */
+const getPeriodBoundaries = () => {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfYesterday = new Date(startOfToday);
+  startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+
+  // This week: Monday of current week
+  const dayOfWeek = now.getDay();
+  const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  const startOfThisWeek = new Date(startOfToday);
+  startOfThisWeek.setDate(startOfThisWeek.getDate() + mondayOffset);
+
+  const startOfLastWeek = new Date(startOfThisWeek);
+  startOfLastWeek.setDate(startOfLastWeek.getDate() - 7);
+  const endOfLastWeek = new Date(startOfThisWeek);
+  endOfLastWeek.setMilliseconds(endOfLastWeek.getMilliseconds() - 1);
+
+  const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const endOfLastMonth = new Date(startOfThisMonth);
+  endOfLastMonth.setMilliseconds(endOfLastMonth.getMilliseconds() - 1);
+
+  return {
+    today: { start: startOfToday, end: now },
+    yesterday: { start: startOfYesterday, end: startOfToday },
+    thisWeek: { start: startOfThisWeek, end: now },
+    lastWeek: { start: startOfLastWeek, end: endOfLastWeek },
+    thisMonth: { start: startOfThisMonth, end: now },
+    lastMonth: { start: startOfLastMonth, end: endOfLastMonth },
+  };
+};
+
+/**
+ * Helper: sum credit transactions for a period, scoped
+ */
+const sumCreditsForPeriod = async (
+  start: Date,
+  end: Date,
+  scope?: { partnerId?: string; stationId?: string; country?: string },
+  type?: "collection" | "disbursement",
+): Promise<number> => {
+  try {
+    const matchFilter: Record<string, any> = {
+      createdAt: { $gte: start, $lte: end },
+      status: "completed",
+    };
+
+    if (type === "collection") {
+      matchFilter.type = { $in: ["purchase", "admin_grant"] };
+    } else if (type === "disbursement") {
+      matchFilter.type = { $in: ["message_deduction", "call_deduction"] };
+    }
+
+    if (scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)) {
+      const stationUsers = await User.find({ stationId: scope.stationId }).select("_id").lean();
+      matchFilter.user = { $in: stationUsers.map((u: any) => u._id) };
+    } else if (scope?.partnerId && mongoose.Types.ObjectId.isValid(scope.partnerId)) {
+      const partnerStations = await Station.find({ partner: scope.partnerId }).select("country").lean();
+      const countryIds = [...new Set(partnerStations.map((s: any) => s.country?.toString()).filter(Boolean))];
+      if (countryIds.length > 0) {
+        matchFilter.country = { $in: countryIds };
+      }
+    }
+
+    const result = await CreditTransaction.aggregate([
+      { $match: matchFilter },
+      { $group: { _id: null, total: { $sum: { $abs: "$localAmount" } } } },
+    ]);
+    return aggNum(result, "total");
+  } catch (err) {
+    console.error(`[Dashboard] Failed to sum credits for period ${start.toISOString()}-${end.toISOString()}:`, err);
+    return 0;
+  }
+};
+
+/**
+ * Helper: calculate percent change between two values
+ */
+const pctChange = (current: number, previous: number): number => {
+  if (previous === 0) return current > 0 ? 100 : 0;
+  return Number(((current - previous) / previous * 100).toFixed(1));
+};
+
+const getStats = async (
+  scope?: {
+    partnerId?: string;
+    stationId?: string;
+    country?: string;
+    role?: string;
+    dateRange?: string;
+    startDate?: string;
+    endDate?: string;
+  },
+  period?: string,
+  timezone?: string,
+) => {
   const role = scope?.role;
 
   // Build filters based on role scope
@@ -178,6 +283,7 @@ const getStats = async (scope?: {
     showFilter.station = new mongoose.Types.ObjectId(scope.stationId);
   }
 
+  // ─── Core stats queries ───────────────────────────────────────────────
   const [
     totalPartners,
     activePartners,
@@ -189,19 +295,193 @@ const getStats = async (scope?: {
     activeShows,
     revenueResult,
   ] = await Promise.all([
-    Partner.countDocuments(partnerFilter),
-    Partner.countDocuments({ ...partnerFilter, isActive: true }),
-    Station.countDocuments(stationFilter),
-    Station.countDocuments({ ...stationFilter, isActive: true }),
-    User.countDocuments(userFilter),
-    Message.countDocuments({ ...messageFilter, senderType: "user", isDeleted: { $ne: true } }),
-    Call.countDocuments(callFilter),
-    Show.countDocuments(showFilter),
+    Partner.countDocuments(partnerFilter).catch(() => 0),
+    Partner.countDocuments({ ...partnerFilter, isActive: true }).catch(() => 0),
+    Station.countDocuments(stationFilter).catch(() => 0),
+    Station.countDocuments({ ...stationFilter, isActive: true }).catch(() => 0),
+    User.countDocuments(userFilter).catch(() => 0),
+    Message.countDocuments({ ...messageFilter, senderType: "user", isDeleted: { $ne: true } }).catch(() => 0),
+    Call.countDocuments(callFilter).catch(() => 0),
+    Show.countDocuments(showFilter).catch(() => 0),
     ListenerStatement.aggregate([
       { $match: { ...messageFilter, isFree: { $ne: true } } },
       { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]),
+    ]).catch(() => []),
   ]);
+
+  // ─── Active Listeners (distinct users who messaged in last 7 days) ──
+  let activeListeners = 0;
+  try {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const activeListenerFilter: Record<string, any> = {
+      senderType: "user",
+      isDeleted: { $ne: true },
+      createdAt: { $gte: sevenDaysAgo },
+    };
+    if (messageFilter.station) activeListenerFilter.station = messageFilter.station;
+
+    const activeListenerResult = await Message.aggregate([
+      { $match: activeListenerFilter },
+      { $group: { _id: { $ifNull: ["$user", "$msisdn"] } } },
+      { $count: "total" },
+    ]);
+    activeListeners = aggNum(activeListenerResult, "total");
+  } catch (err) {
+    console.error("[Dashboard] Failed to calculate activeListeners:", err);
+  }
+
+  // ─── Hourly Transactions (today's credit transactions by hour) ──────
+  let hourlyTransactions: { hour: number; collections: number; disbursements: number }[] = [];
+  try {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const hourlyMatchFilter: Record<string, any> = {
+      createdAt: { $gte: startOfToday, $lte: new Date() },
+      status: "completed",
+    };
+    if (scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)) {
+      const stationUsers = await User.find({ stationId: scope.stationId }).select("_id").lean();
+      hourlyMatchFilter.user = { $in: stationUsers.map((u: any) => u._id) };
+    } else if (scope?.partnerId && mongoose.Types.ObjectId.isValid(scope.partnerId)) {
+      const partnerStations = await Station.find({ partner: scope.partnerId }).select("country").lean();
+      const countryIds = [...new Set(partnerStations.map((s: any) => s.country?.toString()).filter(Boolean))];
+      if (countryIds.length > 0) hourlyMatchFilter.country = { $in: countryIds };
+    }
+
+    const hourlyResult = await CreditTransaction.aggregate([
+      { $match: hourlyMatchFilter },
+      {
+        $group: {
+          _id: {
+            hour: { $hour: { date: "$createdAt", timezone: timezone || "UTC" } },
+            type: {
+              $cond: [
+                { $in: ["$type", ["purchase", "admin_grant"]] },
+                "collection",
+                "disbursement",
+              ],
+            },
+          },
+          total: { $sum: { $abs: "$localAmount" } },
+        },
+      },
+    ]);
+
+    // Build 24-hour map
+    const hourMap = new Map<number, { collections: number; disbursements: number }>();
+    for (let h = 0; h < 24; h++) {
+      hourMap.set(h, { collections: 0, disbursements: 0 });
+    }
+    for (const row of hourlyResult) {
+      const hour = row._id?.hour ?? 0;
+      const existing = hourMap.get(hour) || { collections: 0, disbursements: 0 };
+      if (row._id?.type === "collection") {
+        existing.collections += row.total || 0;
+      } else {
+        existing.disbursements += row.total || 0;
+      }
+      hourMap.set(hour, existing);
+    }
+    hourlyTransactions = Array.from(hourMap.entries()).map(([hour, data]) => ({
+      hour,
+      collections: data.collections,
+      disbursements: data.disbursements,
+    }));
+  } catch (err) {
+    console.error("[Dashboard] Failed to calculate hourlyTransactions:", err);
+  }
+
+  // ─── Cash Flow Summary (6 periods) ──────────────────────────────────
+  let cashFlow: Record<string, { amount: number; previousAmount: number; percentChange: number }> = {};
+  try {
+    const periods = getPeriodBoundaries();
+    const periodEntries = await Promise.all(
+      Object.entries(periods).map(async ([key, { start, end }]) => {
+        const amount = await sumCreditsForPeriod(start, end, scope, "collection");
+        // Previous period: same duration before start
+        const duration = end.getTime() - start.getTime();
+        const prevStart = new Date(start.getTime() - duration);
+        const prevEnd = new Date(start.getTime() - 1);
+        const previousAmount = await sumCreditsForPeriod(prevStart, prevEnd, scope, "collection");
+        return {
+          key,
+          amount,
+          previousAmount,
+          percentChange: pctChange(amount, previousAmount),
+        };
+      }),
+    );
+    for (const entry of periodEntries) {
+      cashFlow[entry.key] = {
+        amount: entry.amount,
+        previousAmount: entry.previousAmount,
+        percentChange: entry.percentChange,
+      };
+    }
+  } catch (err) {
+    console.error("[Dashboard] Failed to calculate cashFlow:", err);
+  }
+
+  // ─── Daily Collections & Disbursements ──────────────────────────────
+  let dailyCollections: { date: string; amount: number }[] = [];
+  let dailyDisbursements: { date: string; amount: number }[] = [];
+  try {
+    const tz = timezone || "UTC";
+    const dailyPeriod = period || "week";
+    let daysBack = 7;
+    if (dailyPeriod === "month") daysBack = 28;
+    else if (dailyPeriod === "quarter") daysBack = 90;
+
+    const startDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+
+    const dailyMatchFilter: Record<string, any> = {
+      createdAt: { $gte: startDate, $lte: new Date() },
+      status: "completed",
+    };
+    if (scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)) {
+      const stationUsers = await User.find({ stationId: scope.stationId }).select("_id").lean();
+      dailyMatchFilter.user = { $in: stationUsers.map((u: any) => u._id) };
+    } else if (scope?.partnerId && mongoose.Types.ObjectId.isValid(scope.partnerId)) {
+      const partnerStations = await Station.find({ partner: scope.partnerId }).select("country").lean();
+      const countryIds = [...new Set(partnerStations.map((s: any) => s.country?.toString()).filter(Boolean))];
+      if (countryIds.length > 0) dailyMatchFilter.country = { $in: countryIds };
+    }
+
+    const [collectionsResult, disbursementsResult] = await Promise.all([
+      CreditTransaction.aggregate([
+        { $match: { ...dailyMatchFilter, type: { $in: ["purchase", "admin_grant"] } } },
+        {
+          $group: {
+            _id: { $dateToString: { format: "%d-%b-%Y", date: "$createdAt", timezone: tz } },
+            amount: { $sum: { $abs: "$localAmount" } },
+          },
+        },
+        { $sort: { _id: -1 } },
+      ]).catch(() => []),
+      CreditTransaction.aggregate([
+        { $match: { ...dailyMatchFilter, type: { $in: ["message_deduction", "call_deduction"] } } },
+        {
+          $group: {
+            _id: { $dateToString: { format: "%d-%b-%Y", date: "$createdAt", timezone: tz } },
+            amount: { $sum: { $abs: "$localAmount" } },
+          },
+        },
+        { $sort: { _id: -1 } },
+      ]).catch(() => []),
+    ]);
+
+    dailyCollections = (collectionsResult || []).map((r: any) => ({
+      date: r._id,
+      amount: r.amount || 0,
+    }));
+    dailyDisbursements = (disbursementsResult || []).map((r: any) => ({
+      date: r._id,
+      amount: r.amount || 0,
+    }));
+  } catch (err) {
+    console.error("[Dashboard] Failed to calculate dailyCollections/disbursements:", err);
+  }
 
   return {
     totalPartners,
@@ -212,7 +492,12 @@ const getStats = async (scope?: {
     totalMessages,
     totalCalls,
     activeShows,
-    totalRevenue: revenueResult.length > 0 ? revenueResult[0].total : 0,
+    totalRevenue: aggNum(revenueResult, "total"),
+    activeListeners,
+    hourlyTransactions,
+    cashFlow,
+    dailyCollections,
+    dailyDisbursements,
   };
 };
 

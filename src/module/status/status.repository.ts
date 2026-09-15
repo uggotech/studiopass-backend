@@ -179,7 +179,7 @@ const findActiveByCountry = (countryId: string, userId?: string) => {
       $addFields: {
         stationName: "$stationDoc.name",
         stationLogo: "$stationDoc.logo",
-        stationIsVerified: "$stationDoc.isVerified",
+        stationIsActive: "$stationDoc.isActive",
         isViewed: userObjectId ? { $gt: [{ $size: { $ifNull: ["$userView", []] } }, 0] } : false,
         isLiked: userObjectId ? { $gt: [{ $size: { $ifNull: ["$userLike", []] } }, 0] } : false,
         likeCount: { $ifNull: ["$likeCount", 0] },

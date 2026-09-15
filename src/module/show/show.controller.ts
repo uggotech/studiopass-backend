@@ -101,11 +101,24 @@ const updateShow = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const getLiveStats = catchAsync(async (req: Request, res: Response) => {
+  const { stationId } = req.params as { stationId: string };
+  const result = await ShowService.getLiveStats(stationId);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Live show stats fetched successfully",
+    data: result,
+  });
+});
+
 export const ShowController = {
   getAllShows,
   getShowById,
   createShow,
   getMyShows,
   getActiveShow,
+  getLiveStats,
   updateShow,
 };

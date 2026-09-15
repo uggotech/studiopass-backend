@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+/** Same HH:mm format as Show — any minute 00–59 */
+const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
 const createChallenge = z.object({
   body: z.object({
     title: z.string().min(1, "Title is required").max(200),
@@ -9,9 +12,9 @@ const createChallenge = z.object({
     description: z.string().min(1, "Description is required").max(2000),
     instructions: z.string().max(2000).optional(),
     startDate: z.string().min(1, "Start date is required"),
-    startTime: z.string().min(1, "Start time is required"),
+    startTime: z.string().regex(timeRegex, "Start time must be in HH:mm format"),
     endDate: z.string().min(1, "End date is required"),
-    endTime: z.string().min(1, "End time is required"),
+    endTime: z.string().regex(timeRegex, "End time must be in HH:mm format"),
     questions: z
       .array(
         z.object({

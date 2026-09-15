@@ -35,6 +35,14 @@ router.get(
   ShowController.getActiveShow,
 );
 
+// Dashboard: get live active show stats for a station
+router.get(
+  "/live-stats/:stationId",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION, UserRole.PRESENTER),
+  validateRequest(ShowDto.getLiveStats),
+  ShowController.getLiveStats,
+);
+
 // Dashboard users: get single show by ID
 router.get(
   "/:id",

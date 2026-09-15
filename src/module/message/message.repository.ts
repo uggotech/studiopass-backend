@@ -24,12 +24,19 @@ const findThread = (
   msisdn: string,
   skip: number,
   limit: number,
+  viewerUserId?: string,
 ) => {
-  return Message.find({
+  const filter: Record<string, unknown> = {
     station: stationId,
     msisdn,
     isDeleted: { $ne: true },
-  })
+  };
+  // Hide messages the viewer deleted for themselves only
+  if (viewerUserId) {
+    filter.deletedFor = { $ne: new mongoose.Types.ObjectId(viewerUserId) };
+  }
+
+  return Message.find(filter)
     .populate("show", "name")
     .populate("senderUser", "fullName")
     .populate("user", "fullName avatar")
@@ -43,10 +50,18 @@ const findThreadsByStation = (
   stationId: string | undefined,
   skip: number,
   limit: number,
+  showId?: string,
+  sinceDate?: Date,
 ) => {
   const matchStage: Record<string, unknown> = { senderType: "user", isDeleted: { $ne: true } };
   if (stationId) {
     matchStage.station = new mongoose.Types.ObjectId(stationId);
+  }
+  if (showId) {
+    matchStage.show = new mongoose.Types.ObjectId(showId);
+  }
+  if (sinceDate) {
+    matchStage.createdAt = { $gte: sinceDate };
   }
 
   return Message.aggregate([
@@ -59,6 +74,8 @@ const findThreadsByStation = (
         _id: "$msisdn",
         lastMessage: { $first: "$content" },
         lastImageUrl: { $first: "$imageUrl" },
+        lastAudioUrl: { $first: "$audioUrl" },
+        lastMediaType: { $first: "$mediaType" },
         lastTime: { $first: "$createdAt" },
         count: { $sum: 1 },
         unrepliedCount: {
@@ -128,10 +145,10 @@ const findThreadsByStation = (
             in: "$$first.logo",
           },
         },
-        isVerified: {
+        isActive: {
           $let: {
             vars: { first: { $arrayElemAt: ["$stationDoc", 0] } },
-            in: "$$first.isVerified",
+            in: "$first.isActive",
           },
         },
         listenerName: {
@@ -146,6 +163,40 @@ const findThreadsByStation = (
             in: "$$first.avatar",
           },
         },
+        lastMessage: {
+          $cond: [
+            {
+              $and: [
+                { $ne: ["$lastMessage", ""] },
+                { $ne: ["$lastMessage", null] },
+              ],
+            },
+            "$lastMessage",
+            {
+              $cond: [
+                {
+                  $or: [
+                    { $eq: ["$lastMediaType", "audio"] },
+                    { $and: [{ $ne: ["$lastAudioUrl", null] }, { $ne: ["$lastAudioUrl", ""] }] },
+                  ],
+                },
+                "🎤 Voice note",
+                {
+                  $cond: [
+                    {
+                      $or: [
+                        { $eq: ["$lastMediaType", "image"] },
+                        { $and: [{ $ne: ["$lastImageUrl", null] }, { $ne: ["$lastImageUrl", ""] }] },
+                      ],
+                    },
+                    "📷 Photo",
+                    "",
+                  ],
+                },
+              ],
+            },
+          ],
+        },
         msisdn: "$_id",
       },
     },
@@ -156,10 +207,20 @@ const findThreadsByStation = (
   ]);
 };
 
-const countThreadsByStation = (stationId: string | undefined) => {
+const countThreadsByStation = (
+  stationId: string | undefined,
+  showId?: string,
+  sinceDate?: Date,
+) => {
   const filter: Record<string, unknown> = { senderType: "user", isDeleted: { $ne: true } };
   if (stationId) {
     filter.station = stationId;
+  }
+  if (showId) {
+    filter.show = showId;
+  }
+  if (sinceDate) {
+    filter.createdAt = { $gte: sinceDate };
   }
   return Message.distinct("msisdn", filter).then((res) => res.length);
 };
@@ -235,6 +296,9 @@ const findThreadsByPresenter = (
       $group: {
         _id: "$msisdn",
         lastMessage: { $first: "$content" },
+        lastImageUrl: { $first: "$imageUrl" },
+        lastAudioUrl: { $first: "$audioUrl" },
+        lastMediaType: { $first: "$mediaType" },
         lastTime: { $first: "$createdAt" },
         count: { $sum: 1 },
         unrepliedCount: {
@@ -274,6 +338,40 @@ const findThreadsByPresenter = (
             vars: { first: { $arrayElemAt: ["$userDoc", 0] } },
             in: "$$first.avatar",
           },
+        },
+        lastMessage: {
+          $cond: [
+            {
+              $and: [
+                { $ne: ["$lastMessage", ""] },
+                { $ne: ["$lastMessage", null] },
+              ],
+            },
+            "$lastMessage",
+            {
+              $cond: [
+                {
+                  $or: [
+                    { $eq: ["$lastMediaType", "audio"] },
+                    { $and: [{ $ne: ["$lastAudioUrl", null] }, { $ne: ["$lastAudioUrl", ""] }] },
+                  ],
+                },
+                "🎤 Voice note",
+                {
+                  $cond: [
+                    {
+                      $or: [
+                        { $eq: ["$lastMediaType", "image"] },
+                        { $and: [{ $ne: ["$lastImageUrl", null] }, { $ne: ["$lastImageUrl", ""] }] },
+                      ],
+                    },
+                    "📷 Photo",
+                    "",
+                  ],
+                },
+              ],
+            },
+          ],
         },
         msisdn: "$_id",
       },
@@ -347,6 +445,46 @@ const deleteMessage = (messageId: string) => {
   );
 };
 
+const editMessageContent = (messageId: string, content: string) => {
+  return Message.findByIdAndUpdate(
+    messageId,
+    {
+      content,
+      isEdited: true,
+      editedAt: new Date(),
+    },
+    { new: true },
+  )
+    .populate("show", "name")
+    .populate("senderUser", "fullName")
+    .populate("user", "fullName phone avatar")
+    .populate("station", "name stationCode")
+    .populate("country", "name code")
+    .lean();
+};
+
+const deleteMessageForUser = (messageId: string, userId: string) => {
+  return Message.findByIdAndUpdate(
+    messageId,
+    { $addToSet: { deletedFor: new mongoose.Types.ObjectId(userId) } },
+    { new: true },
+  ).lean();
+};
+
+const deleteMessageForEveryone = (messageId: string) => {
+  return Message.findByIdAndUpdate(
+    messageId,
+    { deletedForEveryone: true },
+    { new: true },
+  )
+    .populate("show", "name")
+    .populate("senderUser", "fullName")
+    .populate("user", "fullName phone avatar")
+    .populate("station", "name stationCode")
+    .populate("country", "name code")
+    .lean();
+};
+
 const markAsRead = (messageId: string) => {
   return Message.findByIdAndUpdate(
     messageId,
@@ -369,6 +507,9 @@ const findThreadsByUserPhone = (
       $group: {
         _id: "$station",
         lastMessage: { $first: "$content" },
+        lastImageUrl: { $first: "$imageUrl" },
+        lastAudioUrl: { $first: "$audioUrl" },
+        lastMediaType: { $first: "$mediaType" },
         lastMessageTime: { $first: "$createdAt" },
         lastSenderType: { $first: "$senderType" },
         count: { $sum: 1 },
@@ -434,10 +575,10 @@ const findThreadsByUserPhone = (
             in: "$$first.logo",
           },
         },
-        isVerified: {
+        isActive: {
           $let: {
             vars: { first: { $arrayElemAt: ["$stationDoc", 0] } },
-            in: "$$first.isVerified",
+            in: "$first.isActive",
           },
         },
         showName: {
@@ -447,6 +588,40 @@ const findThreadsByUserPhone = (
           },
         },
         isFollowed: { $gt: [{ $size: "$followDoc" }, 0] },
+        lastMessage: {
+          $cond: [
+            {
+              $and: [
+                { $ne: ["$lastMessage", ""] },
+                { $ne: ["$lastMessage", null] },
+              ],
+            },
+            "$lastMessage",
+            {
+              $cond: [
+                {
+                  $or: [
+                    { $eq: ["$lastMediaType", "audio"] },
+                    { $and: [{ $ne: ["$lastAudioUrl", null] }, { $ne: ["$lastAudioUrl", ""] }] },
+                  ],
+                },
+                "🎤 Voice note",
+                {
+                  $cond: [
+                    {
+                      $or: [
+                        { $eq: ["$lastMediaType", "image"] },
+                        { $and: [{ $ne: ["$lastImageUrl", null] }, { $ne: ["$lastImageUrl", ""] }] },
+                      ],
+                    },
+                    "📷 Photo",
+                    "",
+                  ],
+                },
+              ],
+            },
+          ],
+        },
         msisdn: phone,
       },
     },

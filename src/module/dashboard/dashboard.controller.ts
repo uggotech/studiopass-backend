@@ -32,15 +32,42 @@ const buildScope = (req: Request) => {
   };
 };
 
+const getDefaultStats = () => ({
+  totalPartners: 0,
+  activePartners: 0,
+  totalStations: 0,
+  activeStations: 0,
+  totalUsers: 0,
+  totalMessages: 0,
+  totalCalls: 0,
+  activeShows: 0,
+  totalRevenue: 0,
+  activeListeners: 0,
+  hourlyTransactions: [],
+  cashFlow: {
+    today: { amount: 0, previousAmount: 0, percentChange: 0 },
+    yesterday: { amount: 0, previousAmount: 0, percentChange: 0 },
+    thisWeek: { amount: 0, previousAmount: 0, percentChange: 0 },
+    lastWeek: { amount: 0, previousAmount: 0, percentChange: 0 },
+    thisMonth: { amount: 0, previousAmount: 0, percentChange: 0 },
+    lastMonth: { amount: 0, previousAmount: 0, percentChange: 0 },
+  },
+  dailyCollections: [],
+  dailyDisbursements: [],
+});
+
 const getStats = catchAsync(async (req, res) => {
   const scope = buildScope(req);
-  const result = await DashboardService.getStats(scope);
+  const period = (req.query.period as string) || "week";
+  const timezone = req.query.timezone as string | undefined;
+
+  const result = await DashboardService.getStats(scope, period, timezone);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
     message: "Dashboard stats fetched successfully",
-    data: result,
+    data: result || getDefaultStats(),
   });
 });
 

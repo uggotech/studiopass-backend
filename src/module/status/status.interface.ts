@@ -32,8 +32,9 @@ export interface TStatus {
   expiresAt: Date;
 
   // Media type & thumbnail for video
-  mediaType?: "image" | "video";
+  mediaType?: "image" | "video" | "sticker";
   thumbnail?: string;
+  stickerUrl?: string; // built-in StudioPass sticker path
 
   // Engagement counters (denormalized for fast reads)
   viewCount: number;

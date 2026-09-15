@@ -103,7 +103,7 @@ const getHistory = catchAsync(async (req, res) => {
 });
 
 const getStationCalls = catchAsync(async (req, res) => {
-  const { stationId, status, page = 1, limit = 20 } = req.query;
+  const { stationId, showId, todayOnly, status, page = 1, limit = 20 } = req.query;
   const user = req.user!;
 
   // Station-scope authorization: non-super_admin can only see their own station's calls
@@ -138,11 +138,14 @@ const getStationCalls = catchAsync(async (req, res) => {
     }
   }
 
+  const isTodayOnly = String(todayOnly) === "true";
   const result = await CallService.getStationCalls(
     stationId as string,
     Number(page),
     Number(limit),
     status as string | undefined,
+    showId as string | undefined,
+    isTodayOnly,
   );
 
   sendResponse(res, {

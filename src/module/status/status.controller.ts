@@ -5,7 +5,7 @@ import { StatusService } from "./status.service";
 import AppError from "../../errors/AppError";
 
 const createStatus = catchAsync(async (req, res) => {
-  const { content, media, mediaType, thumbnail, expiresAt } = req.body;
+  const { content, media, mediaType, thumbnail, expiresAt, stickerUrl } = req.body;
   const createdBy = req.user!._id.toString();
   const callerRole = req.user!.role;
   const userPartnerId = req.user!.partnerId?.toString();
@@ -25,6 +25,7 @@ const createStatus = catchAsync(async (req, res) => {
     media,
     mediaType,
     thumbnail,
+    stickerUrl,
     expiresAt,
     callerRole,
     userPartnerId,

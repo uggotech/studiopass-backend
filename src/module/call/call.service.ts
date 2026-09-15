@@ -869,12 +869,17 @@ const getStationCalls = async (
   page: number = 1,
   limit: number = 20,
   status?: string,
+  showId?: string,
+  todayOnly?: boolean,
 ) => {
   const skip = (page - 1) * limit;
   const filter: Record<string, unknown> = { station: stationId };
   if (status) {
     const statuses = status.split(",").map((s: string) => s.trim()).filter(Boolean);
     filter.status = statuses.length === 1 ? statuses[0] : { $in: statuses };
+  }
+  if (showId) {
+    filter.show = showId;
   }
 
   // Fetch station timezone
@@ -890,6 +895,20 @@ const getStationCalls = async (
     }
   } catch (err) {
     logger.warn(`[Call] Failed to resolve timezone for station ${stationId}:`, err);
+  }
+
+  if (showId && todayOnly) {
+    try {
+      const { Show } = await import("../show/show.model");
+      const { getShowStartTimestamp } = await import("../show/show.service");
+      const show = await Show.findById(showId).lean();
+      if (show) {
+        const showStart = getShowStartTimestamp(show.startTime, show.endTime, stationTimezone);
+        filter.startedAt = { $gte: showStart };
+      }
+    } catch (err) {
+      logger.warn(`[Call] Failed to resolve show start for show ${showId}:`, err);
+    }
   }
 
   const [calls, total] = await Promise.all([

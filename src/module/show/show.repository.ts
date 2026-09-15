@@ -8,6 +8,18 @@ const findByStation = (stationId: string): Promise<TShow[]> => {
     .lean();
 };
 
+/** Batch-load active shows for many stations (avoids N+1 on public list). */
+const findByStations = (stationIds: string[]): Promise<Array<TShow & { station: unknown }>> => {
+  if (!stationIds.length) return Promise.resolve([]);
+  return Show.find({
+    station: { $in: stationIds },
+    isActive: true,
+  })
+    .select("name days startTime endTime station")
+    .sort({ startTime: 1 })
+    .lean() as any;
+};
+
 const findById = (id: string): Promise<TShow | null> => {
   return Show.findById(id).lean();
 };
@@ -295,6 +307,7 @@ const updateById = (id: string, data: Partial<TShow>): Promise<TShow | null> => 
 
 export const ShowRepository = {
   findByStation,
+  findByStations,
   findById,
   findByIdPopulated,
   findByPresenter,

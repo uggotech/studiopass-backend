@@ -3,7 +3,7 @@ import { buildCacheKey, buildCachePattern } from "../../redis/cache.utils";
 
 const TTL = {
   station: 300, // 5min
-  stationList: 120, // 2min
+  stationList: 45, // 45s — live show/follow changes frequently
 };
 
 const KEYS = {
@@ -27,6 +27,11 @@ const invalidateStation = (stationId: string) => {
   cacheService.invalidateByPattern(buildCachePattern("station", "list", "*"));
 };
 
+/** Wipe all public-station list entries (follow/station writes). */
+const invalidateAllLists = () => {
+  cacheService.invalidateByPattern(buildCachePattern("station", "list", "*"));
+};
+
 const getStationList = (partnerId?: string) => {
   return cacheService.getCache<any>(KEYS.stationList(partnerId));
 };
@@ -39,6 +44,7 @@ export const StationCache = {
   getStation,
   setStation,
   invalidateStation,
+  invalidateAllLists,
   getStationList,
   setStationList,
   KEYS,

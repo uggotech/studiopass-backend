@@ -10,8 +10,8 @@ export interface DashboardScope {
   dateRange?: string;
 }
 
-const getStats = async (scope?: DashboardScope) => {
-  return DashboardRepository.getStats(scope);
+const getStats = async (scope?: DashboardScope, period?: string, timezone?: string) => {
+  return DashboardRepository.getStats(scope, period, timezone);
 };
 
 const getMessageActivity = async (

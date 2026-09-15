@@ -17,8 +17,12 @@ import { Country } from "../country/country.model";
 import { LoginProvider } from "../auth/auth.interface";
 import { UserRole } from "shared/roles";
 import bcrypt from "bcryptjs";
+import config from "../../config";
 import { UserCache } from "./user.cacheManage";
 import { CarrierService } from "../../shared/telecom/carrier.service";
+import { AuditLogService } from "../auditLog/auditLog.service";
+
+const BCRYPT_SALT_ROUNDS = Number(config.bcrypt_salt_rounds) || 10;
 
 const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -122,7 +126,9 @@ const deactivateUser = async (id: string) => {
 
   const updated = await UserRepository.updateById(id, { isBlocked: true } as any);
   if (user.auth) {
-    await AuthRepository.updateById(user.auth.toString(), { status: "inactive" });
+    const authId = user.auth.toString();
+    await AuthRepository.updateById(authId, { status: "inactive" });
+    await UserCache.invalidateAuthStatus(authId);
   }
   UserCache.invalidateProfile(id);
   return normalizeUser(updated!);
@@ -136,7 +142,9 @@ const reactivateUser = async (id: string) => {
 
   const updated = await UserRepository.updateById(id, { isBlocked: false } as any);
   if (user.auth) {
-    await AuthRepository.updateById(user.auth.toString(), { status: "active" });
+    const authId = user.auth.toString();
+    await AuthRepository.updateById(authId, { status: "active" });
+    await UserCache.invalidateAuthStatus(authId);
   }
   UserCache.invalidateProfile(id);
   return normalizeUser(updated!);
@@ -172,7 +180,7 @@ const updateUserById = async (
   const updated = await UserRepository.updateById(id, updateData as any);
 
   if (data.password && user.auth) {
-    const hashedPassword = await bcrypt.hash(data.password, 10);
+    const hashedPassword = await bcrypt.hash(data.password, BCRYPT_SALT_ROUNDS);
     await AuthRepository.updatePassword(user.auth.toString(), hashedPassword);
   }
 
@@ -220,7 +228,7 @@ const createMediaStation = async (data: {
 
   try {
     // Create auth for media station user
-    const hashedPassword = await bcrypt.hash(data.password, 10);
+    const hashedPassword = await bcrypt.hash(data.password, BCRYPT_SALT_ROUNDS);
     const authDocs = await AuthRepository.create({
       username: data.username,
       password: hashedPassword,
@@ -459,6 +467,7 @@ const updateMyPreferences = async (
 const normalizePresenter = (u: any) => ({
   id: u._id,
   fullName: u.fullName,
+  username: (u.auth as any)?.username || u.username || "",
   avatar: u.avatar,
   email: u.email,
   phone: u.phone,
@@ -503,7 +512,7 @@ const createPresenter = async (data: {
 
   try {
     // Create auth for presenter
-    const hashedPassword = await bcrypt.hash(data.password, 10);
+    const hashedPassword = await bcrypt.hash(data.password, BCRYPT_SALT_ROUNDS);
     const authDocs = await AuthRepository.create({
       username: data.username,
       password: hashedPassword,
@@ -517,6 +526,7 @@ const createPresenter = async (data: {
     const users = await UserRepository.create({
       auth: authDoc._id,
       fullName: data.fullName,
+      username: data.username,
       email: data.email,
       phone: data.phone,
       role: UserRole.PRESENTER,
@@ -531,6 +541,7 @@ const createPresenter = async (data: {
     return {
       id: user._id,
       fullName: user.fullName,
+      username: data.username,
       email: user.email,
       role: user.role,
       station: {
@@ -573,6 +584,7 @@ const getAllPresenters = async (query: Record<string, unknown>, scope?: { partne
     const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
     filter.$or = [
       { fullName: searchRegex },
+      { username: searchRegex },
       { email: searchRegex },
       { phone: searchRegex },
     ];
@@ -977,7 +989,7 @@ const createCustomerCareUser = async (data: {
   session.startTransaction();
 
   try {
-    const hashedPassword = await bcrypt.hash(data.password, 10);
+    const hashedPassword = await bcrypt.hash(data.password, BCRYPT_SALT_ROUNDS);
 
     const authDocs = await AuthRepository.create(
       {
@@ -1028,7 +1040,15 @@ const createCustomerCareUser = async (data: {
   }
 };
 
-const resetUser2FA = async (targetUserId: string) => {
+const resetUser2FA = async (
+  targetUserId: string,
+  adminInfo: { authId: string; ipAddress?: string; userAgent?: string },
+) => {
+  // Self-reset guard
+  if (targetUserId === adminInfo.authId) {
+    throw new AppError(StatusCodes.FORBIDDEN, "You cannot reset your own 2FA via administrative override.");
+  }
+
   let user: any = null;
 
   // 1. Direct User lookup by ID
@@ -1078,12 +1098,25 @@ const resetUser2FA = async (targetUserId: string) => {
   await Auth.findByIdAndUpdate(authId, {
     $set: {
       twoFactorEnabled: false,
-      twoFactorRecoveryCodes: [],
+      twoFactorResetRequired: true,
     },
     $unset: {
       twoFactorSecret: 1,
       twoFactorTempSecret: 1,
     },
+  });
+
+  await AuditLogService.logAuthEvent({
+    action: "2FA_RESET",
+    status: "SUCCESS",
+    userId: user?._id,
+    authId: authId as any,
+    usernameOrPhone: user?.phone || user?.username,
+    role: user?.role,
+    ipAddress: adminInfo.ipAddress,
+    userAgent: adminInfo.userAgent,
+    reason: "Super Admin reset Two-Factor Authentication — user must reconfigure on next login",
+    metadata: { targetUserId, adminAuthId: adminInfo.authId, forcedReSetup: true },
   });
 
   return {

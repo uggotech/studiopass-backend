@@ -5,7 +5,7 @@ const authSchema = new Schema<TAuth>(
   {
     // Dashboard fields
     username: { type: String, trim: true, sparse: true },
-    password: { type: String },
+    password: { type: String, select: false },
 
     // App fields
     phone: { type: String, trim: true },
@@ -40,9 +40,9 @@ const authSchema = new Schema<TAuth>(
 
     // 2FA / Authenticator (Dashboard roles)
     twoFactorEnabled: { type: Boolean, default: false },
-    twoFactorSecret: { type: String },
-    twoFactorTempSecret: { type: String },
-    twoFactorRecoveryCodes: { type: [String], default: [] },
+    twoFactorSecret: { type: String, select: false },
+    twoFactorTempSecret: { type: String, select: false },
+    twoFactorResetRequired: { type: Boolean, default: false },
   },
   { timestamps: true },
 );

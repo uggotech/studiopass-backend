@@ -5,9 +5,30 @@ import { CreditRepository } from "./credit.repository";
 import { User } from "../user/user.model";
 import { Country } from "../country/country.model";
 
+async function invalidateBalanceCache(userId: string) {
+  try {
+    const { default: redisClient } = await import("../../redis/redisClient");
+    await redisClient.del(`credit:balance:${userId}`);
+  } catch {}
+}
+
 const getBalance = async (userId: string) => {
+  const cacheKey = `credit:balance:${userId}`;
+  try {
+    const { default: redisClient } = await import("../../redis/redisClient");
+    const cached = await redisClient.get(cacheKey);
+    if (cached != null) {
+      return { balance: Number(cached) };
+    }
+  } catch {}
+
   const doc = await CreditRepository.getBalance(userId);
-  return { balance: doc?.balance ?? 0 };
+  const balance = doc?.balance ?? 0;
+  try {
+    const { default: redisClient } = await import("../../redis/redisClient");
+    await redisClient.set(cacheKey, String(balance), 20);
+  } catch {}
+  return { balance };
 };
 
 /**
@@ -83,6 +104,7 @@ const deductCredits = async (
     status: "completed",
   }, session);
 
+  await invalidateBalanceCache(userId);
   return { balance: updated.balance, isFree };
 };
 
@@ -137,6 +159,7 @@ const refundCredits = async (
     status: "completed",
   }, session);
 
+  await invalidateBalanceCache(userId);
   return { balance: updated?.balance ?? 0 };
 };
 
@@ -199,6 +222,7 @@ const addCredits = async (
     status: "completed",
   }, session);
 
+  await invalidateBalanceCache(userId);
   return { balance: newBalance };
 };
 
@@ -258,6 +282,7 @@ const deductCreditsByAdmin = async (
     }, session);
 
     await session.commitTransaction();
+    await invalidateBalanceCache(userId);
     return { balance: newBalance, previousBalance, deducted: amount };
   } catch (error) {
     await session.abortTransaction();
@@ -298,6 +323,7 @@ const rewardChallengeWinner = async (
     status: "completed",
   }, session);
 
+  await invalidateBalanceCache(userId);
   return { balance: updated?.balance ?? 0 };
 };
 

@@ -22,6 +22,12 @@ export interface TMessage {
   // Content
   content: string;
   imageUrl?: string; // MinIO path for image messages
+  videoUrl?: string; // MinIO path for video messages
+  audioUrl?: string; // MinIO path for voice notes
+  stickerUrl?: string; // MinIO path for sticker images
+  audioDuration?: number; // Duration in seconds
+  waveform?: number[]; // Normalized audio amplitude bars
+  mediaType?: "text" | "image" | "video" | "audio" | "sticker";
 
   // TV approval (only for user messages on TV stations)
   status: MessageStatus;
@@ -38,7 +44,13 @@ export interface TMessage {
   isReplied: boolean; // default: false — fast stats query
   isRead: boolean; // default: false — read receipt tracking
   readAt?: Date; // when the message was read
-  isDeleted: boolean; // default: false — soft delete
+  isDeleted: boolean; // default: false — staff/admin soft delete
+
+  // Edit & user-level delete (WhatsApp-style)
+  isEdited: boolean; // default: false
+  editedAt?: Date;
+  deletedFor?: Types.ObjectId[]; // user ids who deleted for themselves only
+  deletedForEveryone: boolean; // default: false — tombstone for all viewers
 
   createdAt: Date;
   updatedAt: Date;

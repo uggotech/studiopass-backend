@@ -18,13 +18,12 @@ import generateOTP from "../../util/generateOTP";
 
 import {
   generate2FASetup,
-  generateRecoveryCodes,
   verify2FACode,
-  hashRecoveryCodes,
-  verifyAndConsumeRecoveryCode,
 } from "../../shared/utils/twoFactor.util";
 import { Auth } from "./auth.model";
 import { validatePhoneNumber } from "../../shared/validators/phone.validator";
+import { DeviceSessionService } from "../device-session/device-session.service";
+import { AuditLogService } from "../auditLog/auditLog.service";
 
 const OTP_EXPIRY_MINUTES = 30;
 const OTP_MAX_ATTEMPTS = 5;
@@ -41,9 +40,16 @@ const DASHBOARD_ROLES = [
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const generateTokens = (userId: string, authId: string, role: string) => {
-  const accessPayload = { userId, authId, role };
-  const refreshPayload = { authId, type: "refresh" };
+const generateTokens = (
+  userId: string,
+  authId: string,
+  role: string,
+  sessionId?: string,
+) => {
+  const accessPayload: Record<string, any> = { userId, authId, role };
+  if (sessionId) accessPayload.sid = sessionId;
+  const refreshPayload: Record<string, any> = { authId, type: "refresh" };
+  if (sessionId) refreshPayload.sid = sessionId;
 
   const accessToken = createJwtToken(
     accessPayload,
@@ -65,9 +71,15 @@ const generate2FATempToken = (
   authId: string,
   role: string,
   stage: "login" | "setup",
+  deviceMeta?: {
+    deviceId?: string;
+    deviceName?: string;
+    ipAddress?: string;
+    userAgent?: string;
+  },
 ) => {
   return createJwtToken(
-    { userId, authId, role, type: "2fa_temp", stage },
+    { userId, authId, role, type: "2fa_temp", stage, ...deviceMeta },
     config.jwt.jwt_secret as string,
     "5m",
   );
@@ -90,7 +102,12 @@ const verify2FATempToken = async (tempToken: string) => {
   return payload;
 };
 
-const normalizeAuthResponse = async (auth: any, user: any, tokens: any) => {
+const normalizeAuthResponse = async (
+  auth: any,
+  user: any,
+  tokens: any,
+  sessionInfo?: any
+) => {
   // Fetch station category and timezone for station-level roles
   let stationCategory = "radio";
   let channelType: string | null = null;
@@ -150,6 +167,9 @@ const normalizeAuthResponse = async (auth: any, user: any, tokens: any) => {
     username: auth.username,
     role: auth.role,
     twoFactorEnabled: !!auth.twoFactorEnabled,
+    sessionId: sessionInfo?.sessionId,
+    isApprovedStudioDevice: sessionInfo?.isApprovedStudioDevice || false,
+    deviceId: sessionInfo?.deviceId,
     user: user
       ? {
           id: user._id,
@@ -170,6 +190,9 @@ const normalizeAuthResponse = async (auth: any, user: any, tokens: any) => {
           profileCompleted: user.profileCompleted,
           preferences: user.preferences,
           twoFactorEnabled: !!auth.twoFactorEnabled,
+          sessionId: sessionInfo?.sessionId,
+          isApprovedStudioDevice: sessionInfo?.isApprovedStudioDevice || false,
+          deviceId: sessionInfo?.deviceId,
         }
       : null,
     ...tokens,
@@ -332,26 +355,81 @@ const verifyOtp = async (data: { phone: string; countryCode: string; otp: string
 
 // ─── Dashboard Flow: Username + Password Login ───────────────────────────────
 
-const login = async (data: { username: string; password: string }) => {
+const login = async (data: {
+  username: string;
+  password: string;
+  deviceId?: string;
+  deviceName?: string;
+  ipAddress?: string;
+  userAgent?: string;
+}) => {
   const auth = await AuthRepository.findByUsername(data.username);
   if (!auth) {
+    await AuditLogService.logAuthEvent({
+      action: "LOGIN_FAILED",
+      status: "FAILED",
+      usernameOrPhone: data.username,
+      ipAddress: data.ipAddress,
+      userAgent: data.userAgent,
+      reason: "Invalid credentials (user not found)",
+    });
     throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid credentials.");
   }
 
   if (auth.loginProvider !== LoginProvider.USERNAME) {
+    await AuditLogService.logAuthEvent({
+      action: "LOGIN_FAILED",
+      status: "FAILED",
+      authId: auth._id,
+      usernameOrPhone: data.username,
+      role: auth.role,
+      ipAddress: data.ipAddress,
+      userAgent: data.userAgent,
+      reason: "This account uses phone login",
+    });
     throw new AppError(StatusCodes.BAD_REQUEST, "This account uses phone login.");
   }
 
   if (!auth.password) {
+    await AuditLogService.logAuthEvent({
+      action: "LOGIN_FAILED",
+      status: "FAILED",
+      authId: auth._id,
+      usernameOrPhone: data.username,
+      role: auth.role,
+      ipAddress: data.ipAddress,
+      userAgent: data.userAgent,
+      reason: "Account misconfigured (missing password)",
+    });
     throw new AppError(StatusCodes.INTERNAL_SERVER_ERROR, "Account misconfigured.");
   }
 
   const isPasswordValid = await bcrypt.compare(data.password, auth.password);
   if (!isPasswordValid) {
+    await AuditLogService.logAuthEvent({
+      action: "LOGIN_FAILED",
+      status: "FAILED",
+      authId: auth._id,
+      usernameOrPhone: data.username,
+      role: auth.role,
+      ipAddress: data.ipAddress,
+      userAgent: data.userAgent,
+      reason: "Invalid credentials (password mismatch)",
+    });
     throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid credentials.");
   }
 
   if (auth.status !== "active") {
+    await AuditLogService.logAuthEvent({
+      action: "LOGIN_FAILED",
+      status: "FAILED",
+      authId: auth._id,
+      usernameOrPhone: data.username,
+      role: auth.role,
+      ipAddress: data.ipAddress,
+      userAgent: data.userAgent,
+      reason: "Account is deactivated",
+    });
     throw new AppError(StatusCodes.UNAUTHORIZED, "Your account is deactivated. Please contact support.");
   }
 
@@ -361,11 +439,29 @@ const login = async (data: { username: string; password: string }) => {
   }
 
   if (user.isBlocked || user.isDeleted) {
+    await AuditLogService.logAuthEvent({
+      action: "LOGIN_FAILED",
+      status: "FAILED",
+      userId: user._id,
+      authId: auth._id,
+      usernameOrPhone: data.username,
+      role: auth.role,
+      ipAddress: data.ipAddress,
+      userAgent: data.userAgent,
+      reason: "User profile blocked or deleted",
+    });
     throw new AppError(StatusCodes.UNAUTHORIZED, "Your account is deactivated. Please contact support.");
   }
 
   // Check if 2FA applies to this role
   if (DASHBOARD_ROLES.includes(auth.role)) {
+    const deviceMeta = {
+      deviceId: data.deviceId,
+      deviceName: data.deviceName,
+      ipAddress: data.ipAddress,
+      userAgent: data.userAgent,
+    };
+
     // 1. Account already has 2FA configured and enabled
     if (auth.twoFactorEnabled && auth.twoFactorSecret) {
       const tempToken = generate2FATempToken(
@@ -373,6 +469,7 @@ const login = async (data: { username: string; password: string }) => {
         auth._id.toString(),
         auth.role,
         "login",
+        deviceMeta,
       );
       return {
         requires2FA: true,
@@ -380,45 +477,102 @@ const login = async (data: { username: string; password: string }) => {
       };
     }
 
-    // 2. Account does NOT have 2FA enabled yet -> Prompt setup with skip option
-    const setup = await generate2FASetup(
-      auth.username || user.email || user.fullName || "User",
-      "StudioPass",
-    );
+    // 2. Check if 2FA is required (admin reset flag OR global enforcement)
+    const isResetRequired = !!auth.twoFactorResetRequired;
 
-    // Save temporary secret to auth record
-    await Auth.findByIdAndUpdate(auth._id, {
-      twoFactorTempSecret: setup.secret,
-    });
+    let isEnforced = false;
+    try {
+      const { Settings } = await import("../settings/settings.model");
+      const settings = await Settings.findOne({ _id: "security" }).lean();
+      if (settings?.enforce2FA && settings.enforcedRoles?.includes(auth.role)) {
+        isEnforced = true;
+      }
+    } catch {
+      // Settings module may not exist yet — treat as not enforced
+    }
 
-    const tempToken = generate2FATempToken(
-      user._id.toString(),
-      auth._id.toString(),
-      auth.role,
-      "setup",
-    );
+    const mustSetup2FA = isResetRequired || isEnforced;
 
-    return {
-      requires2FASetup: true,
-      tempToken,
-      secret: setup.secret,
-      qrCode: setup.qrCodeDataUrl,
-      recoveryCodes: setup.recoveryCodes,
-    };
+    if (mustSetup2FA) {
+      // Force 2FA setup — no skip allowed
+      const setup = await generate2FASetup(
+        auth.username || user.email || user.fullName || "User",
+        "StudioPass",
+      );
+
+      await Auth.findByIdAndUpdate(auth._id, {
+        twoFactorTempSecret: setup.secret,
+      });
+
+      const tempToken = generate2FATempToken(
+        user._id.toString(),
+        auth._id.toString(),
+        auth.role,
+        "setup",
+        deviceMeta,
+      );
+
+      return {
+        requires2FASetup: true,
+        forceSetup: true,
+        tempToken,
+        secret: setup.secret,
+        qrCode: setup.qrCodeDataUrl,
+      };
+    }
   }
 
   // Standard non-dashboard user login
   await AuthRepository.updateById(auth._id.toString(), { lastLogin: new Date() });
-  const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role);
-  return await normalizeAuthResponse(auth, user, tokens);
+  const stationId = user.stationId
+    ? (user.stationId._id?.toString() || user.stationId.toString())
+    : undefined;
+  const sessionInfo = await DeviceSessionService.registerSession({
+    userId: user._id.toString(),
+    authId: auth._id.toString(),
+    stationId,
+    deviceId: data.deviceId,
+    deviceName: data.deviceName,
+    ipAddress: data.ipAddress,
+    userAgent: data.userAgent,
+  });
+  const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role, sessionInfo.sessionId);
+
+  await AuditLogService.logAuthEvent({
+    action: "LOGIN_SUCCESS",
+    status: "SUCCESS",
+    userId: user._id,
+    authId: auth._id,
+    usernameOrPhone: data.username,
+    role: auth.role,
+    ipAddress: data.ipAddress,
+    userAgent: data.userAgent,
+    metadata: { sessionId: sessionInfo.sessionId },
+  });
+
+  return await normalizeAuthResponse(auth, user, tokens, sessionInfo);
 };
 
 // ─── Dashboard 2FA Flow Methods ──────────────────────────────────────────────
 
-const verify2FALogin = async (data: { tempToken: string; code: string }) => {
+const verify2FALogin = async (data: {
+  tempToken: string;
+  code: string;
+  deviceId?: string;
+  deviceName?: string;
+  ipAddress?: string;
+  userAgent?: string;
+}) => {
   const payload = await verify2FATempToken(data.tempToken);
-  const auth = await Auth.findById(payload.authId);
+  const auth = await Auth.findById(payload.authId).select("+twoFactorSecret");
   if (!auth) {
+    await AuditLogService.logAuthEvent({
+      action: "LOGIN_FAILED",
+      status: "FAILED",
+      ipAddress: data.ipAddress,
+      userAgent: data.userAgent,
+      reason: "Account not found for 2FA token",
+    });
     throw new AppError(StatusCodes.NOT_FOUND, "Account not found.");
   }
 
@@ -434,6 +588,15 @@ const verify2FALogin = async (data: { tempToken: string; code: string }) => {
     redisClient = redisModule.default;
     const currentAttempts = await redisClient.get(attemptKey);
     if (currentAttempts && parseInt(currentAttempts, 10) >= 5) {
+      await AuditLogService.logAuthEvent({
+        action: "LOGIN_FAILED",
+        status: "FAILED",
+        authId: auth._id,
+        role: auth.role,
+        ipAddress: data.ipAddress || payload.ipAddress,
+        userAgent: data.userAgent || payload.userAgent,
+        reason: "Too many failed 2FA attempts (temporarily locked)",
+      });
       throw new AppError(
         StatusCodes.TOO_MANY_REQUESTS,
         "Too many failed 2FA attempts. Please log in again with your password.",
@@ -444,29 +607,24 @@ const verify2FALogin = async (data: { tempToken: string; code: string }) => {
   }
 
   const cleanCode = data.code.trim();
-  let isCodeValid = verify2FACode(cleanCode, auth.twoFactorSecret);
-
-  if (!isCodeValid && auth.twoFactorRecoveryCodes && auth.twoFactorRecoveryCodes.length > 0) {
-    const recoveryResult = await verifyAndConsumeRecoveryCode(
-      cleanCode,
-      auth.twoFactorRecoveryCodes,
-    );
-    if (recoveryResult.isValid) {
-      isCodeValid = true;
-      // Burn the matched recovery code
-      auth.twoFactorRecoveryCodes.splice(recoveryResult.matchedIndex, 1);
-      await auth.save();
-      logger.info(`[2FA] Used recovery code burned for user ${auth._id}`);
-    }
-  }
+  const isCodeValid = verify2FACode(cleanCode, auth.twoFactorSecret);
 
   if (!isCodeValid) {
     if (redisClient) {
       await redisClient.incr(attemptKey, 300).catch(() => 1);
     }
+    await AuditLogService.logAuthEvent({
+      action: "LOGIN_FAILED",
+      status: "FAILED",
+      authId: auth._id,
+      role: auth.role,
+      ipAddress: data.ipAddress || payload.ipAddress,
+      userAgent: data.userAgent || payload.userAgent,
+      reason: "Invalid authenticator code",
+    });
     throw new AppError(
       StatusCodes.UNAUTHORIZED,
-      "Invalid authenticator or recovery code.",
+      "Invalid authenticator code.",
     );
   }
 
@@ -481,35 +639,52 @@ const verify2FALogin = async (data: { tempToken: string; code: string }) => {
   }
 
   await AuthRepository.updateById(auth._id.toString(), { lastLogin: new Date() });
-  const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role);
-  return await normalizeAuthResponse(auth, user, tokens);
-};
+  const stationId = user.stationId
+    ? (user.stationId._id?.toString() || user.stationId.toString())
+    : undefined;
+  const sessionInfo = await DeviceSessionService.registerSession({
+    userId: user._id.toString(),
+    authId: auth._id.toString(),
+    stationId,
+    deviceId: data.deviceId || payload.deviceId,
+    deviceName: data.deviceName || payload.deviceName,
+    ipAddress: data.ipAddress || payload.ipAddress,
+    userAgent: data.userAgent || payload.userAgent,
+  });
 
-const skip2FASetup = async (tempToken: string) => {
-  const payload = await verify2FATempToken(tempToken);
-  const auth = await Auth.findById(payload.authId);
-  if (!auth) {
-    throw new AppError(StatusCodes.NOT_FOUND, "Account not found.");
-  }
+  const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role, sessionInfo.sessionId);
 
-  const user = await UserRepository.findByAuthId(auth._id.toString());
-  if (!user) {
-    throw new AppError(StatusCodes.NOT_FOUND, "User profile not found.");
-  }
+  await AuditLogService.logAuthEvent({
+    action: "LOGIN_SUCCESS",
+    status: "SUCCESS",
+    userId: user._id,
+    authId: auth._id,
+    usernameOrPhone: auth.username || auth.phone,
+    role: auth.role,
+    ipAddress: data.ipAddress || payload.ipAddress,
+    userAgent: data.userAgent || payload.userAgent,
+    metadata: { method: "2FA", sessionId: sessionInfo.sessionId },
+  });
 
-  await AuthRepository.updateById(auth._id.toString(), { lastLogin: new Date() });
-  const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role);
-  return await normalizeAuthResponse(auth, user, tokens);
+  return await normalizeAuthResponse(auth, user, tokens, sessionInfo);
 };
 
 const setup2FAEnable = async (
-  data: { tempToken?: string; code: string; recoveryCodes?: string[] },
+  data: {
+    tempToken?: string;
+    code: string;
+    deviceId?: string;
+    deviceName?: string;
+    ipAddress?: string;
+    userAgent?: string;
+  },
   authenticatedAuthId?: string,
 ) => {
   let authId = authenticatedAuthId;
+  let payload: any = null;
 
   if (data.tempToken) {
-    const payload = await verify2FATempToken(data.tempToken);
+    payload = await verify2FATempToken(data.tempToken);
     authId = payload.authId;
   }
 
@@ -517,7 +692,7 @@ const setup2FAEnable = async (
     throw new AppError(StatusCodes.UNAUTHORIZED, "Authentication required.");
   }
 
-  const auth = await Auth.findById(authId);
+  const auth = await Auth.findById(authId).select("+twoFactorTempSecret");
   if (!auth) {
     throw new AppError(StatusCodes.NOT_FOUND, "Account not found.");
   }
@@ -531,23 +706,26 @@ const setup2FAEnable = async (
 
   const isCodeValid = verify2FACode(data.code, auth.twoFactorTempSecret);
   if (!isCodeValid) {
+    await AuditLogService.logAuthEvent({
+      action: "2FA_ENABLED",
+      status: "FAILED",
+      authId: auth._id,
+      role: auth.role,
+      ipAddress: data.ipAddress || payload?.ipAddress,
+      userAgent: data.userAgent || payload?.userAgent,
+      reason: "Invalid 6-digit verification code",
+    });
     throw new AppError(
       StatusCodes.BAD_REQUEST,
       "Invalid 6-digit code. Please verify the code on your authenticator app and try again.",
     );
   }
 
-  // Generate and hash recovery codes if not supplied or fresh
-  const plainRecoveryCodes = data.recoveryCodes && data.recoveryCodes.length > 0
-    ? data.recoveryCodes
-    : generateRecoveryCodes(8);
-  const hashedRecoveryCodes = await hashRecoveryCodes(plainRecoveryCodes);
-
   // Enable 2FA permanently
   auth.twoFactorEnabled = true;
   auth.twoFactorSecret = auth.twoFactorTempSecret;
   auth.twoFactorTempSecret = undefined;
-  auth.twoFactorRecoveryCodes = hashedRecoveryCodes;
+  auth.twoFactorResetRequired = false;
   auth.lastLogin = new Date();
   await auth.save();
 
@@ -556,13 +734,35 @@ const setup2FAEnable = async (
     throw new AppError(StatusCodes.NOT_FOUND, "User profile not found.");
   }
 
-  const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role);
-  const response = await normalizeAuthResponse(auth, user, tokens);
+  const stationId = user.stationId
+    ? (user.stationId._id?.toString() || user.stationId.toString())
+    : undefined;
+  const sessionInfo = await DeviceSessionService.registerSession({
+    userId: user._id.toString(),
+    authId: auth._id.toString(),
+    stationId,
+    deviceId: data.deviceId || payload?.deviceId,
+    deviceName: data.deviceName || payload?.deviceName,
+    ipAddress: data.ipAddress || payload?.ipAddress,
+    userAgent: data.userAgent || payload?.userAgent,
+  });
 
-  return {
-    ...response,
-    recoveryCodes: plainRecoveryCodes,
-  };
+  const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role, sessionInfo.sessionId);
+
+  await AuditLogService.logAuthEvent({
+    action: "2FA_ENABLED",
+    status: "SUCCESS",
+    userId: user._id,
+    authId: auth._id,
+    usernameOrPhone: auth.username || auth.phone,
+    role: auth.role,
+    ipAddress: data.ipAddress || payload?.ipAddress,
+    userAgent: data.userAgent || payload?.userAgent,
+  });
+
+  const response = await normalizeAuthResponse(auth, user, tokens, sessionInfo);
+
+  return response;
 };
 
 const init2FASetup = async (authId: string) => {
@@ -581,50 +781,67 @@ const init2FASetup = async (authId: string) => {
   return {
     secret: setup.secret,
     qrCode: setup.qrCodeDataUrl,
-    recoveryCodes: setup.recoveryCodes,
   };
 };
 
 const disable2FA = async (
   authId: string,
-  data: { password?: string; code?: string },
+  data: { password?: string; code?: string; ipAddress?: string; userAgent?: string },
 ) => {
   if (!data.password || !data.code) {
     throw new AppError(StatusCodes.BAD_REQUEST, "Password and 6-digit code are required.");
   }
 
-  const auth = await Auth.findById(authId);
+  const auth = await Auth.findById(authId).select("+password +twoFactorSecret");
   if (!auth || !auth.password) {
     throw new AppError(StatusCodes.NOT_FOUND, "Account not found.");
   }
 
   const isPasswordValid = await bcrypt.compare(data.password, auth.password);
   if (!isPasswordValid) {
+    await AuditLogService.logAuthEvent({
+      action: "2FA_DISABLED",
+      status: "FAILED",
+      authId: auth._id,
+      role: auth.role,
+      ipAddress: data.ipAddress,
+      userAgent: data.userAgent,
+      reason: "Current password is incorrect",
+    });
     throw new AppError(StatusCodes.UNAUTHORIZED, "Current password is incorrect.");
   }
 
   if (auth.twoFactorSecret) {
     const cleanCode = data.code.trim();
-    let isCodeValid = verify2FACode(cleanCode, auth.twoFactorSecret);
-    if (!isCodeValid && auth.twoFactorRecoveryCodes && auth.twoFactorRecoveryCodes.length > 0) {
-      const recoveryResult = await verifyAndConsumeRecoveryCode(
-        cleanCode,
-        auth.twoFactorRecoveryCodes,
-      );
-      if (recoveryResult.isValid) {
-        isCodeValid = true;
-      }
-    }
+    const isCodeValid = verify2FACode(cleanCode, auth.twoFactorSecret);
     if (!isCodeValid) {
-      throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid 6-digit code or recovery code.");
+      await AuditLogService.logAuthEvent({
+        action: "2FA_DISABLED",
+        status: "FAILED",
+        authId: auth._id,
+        role: auth.role,
+        ipAddress: data.ipAddress,
+        userAgent: data.userAgent,
+        reason: "Invalid 6-digit code",
+      });
+      throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid 6-digit code.");
     }
   }
 
   auth.twoFactorEnabled = false;
   auth.twoFactorSecret = undefined;
   auth.twoFactorTempSecret = undefined;
-  auth.twoFactorRecoveryCodes = [];
+  auth.twoFactorResetRequired = false;
   await auth.save();
+
+  await AuditLogService.logAuthEvent({
+    action: "2FA_DISABLED",
+    status: "SUCCESS",
+    authId: auth._id,
+    role: auth.role,
+    ipAddress: data.ipAddress,
+    userAgent: data.userAgent,
+  });
 
   return { message: "Two-Factor Authentication has been disabled successfully." };
 };
@@ -642,6 +859,33 @@ const refresh = async (refreshToken: string) => {
 
   if (payload.type !== "refresh") {
     throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid token type.");
+  }
+
+  // Check if session has been revoked remotely OR hit absolute max lifetime
+  if (payload.sid) {
+    try {
+      const { default: redisClient } = await import("../../redis/redisClient");
+      const isActiveSession = await redisClient.get(`session:active:${payload.sid}`);
+      if (!isActiveSession) {
+        throw new AppError(StatusCodes.UNAUTHORIZED, "Session has expired or was revoked remotely.");
+      }
+
+      const startedAt = await redisClient.get(`session:started:${payload.sid}`);
+      if (startedAt) {
+        const absoluteDays = Number(process.env.SESSION_ABSOLUTE_MAX_DAYS || 30);
+        const ageMs = Date.now() - Number(startedAt);
+        if (ageMs > absoluteDays * 24 * 60 * 60 * 1000) {
+          await redisClient.del(`session:active:${payload.sid}`);
+          await redisClient.del(`session:started:${payload.sid}`);
+          throw new AppError(
+            StatusCodes.UNAUTHORIZED,
+            "Session reached its maximum lifetime. Please sign in again.",
+          );
+        }
+      }
+    } catch (err: any) {
+      if (err instanceof AppError) throw err;
+    }
   }
 
   // Check if token has been revoked or is within concurrent grace window
@@ -675,7 +919,7 @@ const refresh = async (refreshToken: string) => {
     throw new AppError(StatusCodes.NOT_FOUND, "User profile not found.");
   }
 
-  const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role);
+  const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role, payload.sid);
   const tokenResult = { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken };
 
   try {
@@ -688,7 +932,13 @@ const refresh = async (refreshToken: string) => {
 
 const changePassword = async (
   authId: string,
-  data: { currentPassword?: string; newPassword?: string },
+  data: {
+    currentPassword?: string;
+    newPassword?: string;
+    ipAddress?: string;
+    userAgent?: string;
+    userId?: string;
+  },
 ) => {
   if (!data.currentPassword || !data.newPassword) {
     throw new AppError(StatusCodes.BAD_REQUEST, "Current password and new password are required");
@@ -701,11 +951,32 @@ const changePassword = async (
 
   const isPasswordValid = await bcrypt.compare(data.currentPassword, authAccount.password);
   if (!isPasswordValid) {
+    await AuditLogService.logAuthEvent({
+      action: "PASSWORD_CHANGED",
+      status: "FAILED",
+      authId: authAccount._id,
+      userId: data.userId as any,
+      role: authAccount.role,
+      ipAddress: data.ipAddress,
+      userAgent: data.userAgent,
+      reason: "Current password is incorrect",
+    });
     throw new AppError(StatusCodes.UNAUTHORIZED, "Current password is incorrect");
   }
 
-  const newHashedPassword = await bcrypt.hash(data.newPassword, 10);
+  const saltRounds = Number(config.bcrypt_salt_rounds) || 10;
+  const newHashedPassword = await bcrypt.hash(data.newPassword, saltRounds);
   await AuthRepository.updatePassword(authId, newHashedPassword);
+
+  await AuditLogService.logAuthEvent({
+    action: "PASSWORD_CHANGED",
+    status: "SUCCESS",
+    authId: authAccount._id,
+    userId: data.userId as any,
+    role: authAccount.role,
+    ipAddress: data.ipAddress,
+    userAgent: data.userAgent,
+  });
 
   return { message: "Password updated successfully" };
 };
@@ -715,7 +986,6 @@ export const AuthService = {
   verifyOtp,
   login,
   verify2FALogin,
-  skip2FASetup,
   setup2FAEnable,
   init2FASetup,
   disable2FA,

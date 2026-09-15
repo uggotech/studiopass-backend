@@ -11,6 +11,10 @@ const adminRoles = [
   UserRole.STATION_ADMIN,
 ];
 
+// Executive Control Center APIs — Super / Partner / Station Admin only.
+// Media Station & Presenter use their own operational home dashboards
+// (show / message / call APIs), not these endpoints.
+
 router.get("/stats", auth(...adminRoles), DashboardController.getStats);
 router.get("/message-activity", auth(...adminRoles), DashboardController.getMessageActivity);
 router.get("/revenue-activity", auth(...adminRoles), DashboardController.getRevenueActivity);

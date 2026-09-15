@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { Challenge } from "./challenge.model";
 
 const create = (data: Record<string, unknown>) => {
@@ -60,12 +61,35 @@ const countActiveByStation = (stationId: string) => {
   return Challenge.countDocuments({ station: stationId, status: "active" });
 };
 
+/** Batch active-challenge counts for many stations in one aggregation (avoids N+1). */
+const countActiveByStations = (stationIds: string[]) => {
+  if (!stationIds.length) return Promise.resolve([] as { _id: string; count: number }[]);
+  return Challenge.aggregate<{ _id: string; count: number }>([
+    {
+      $match: {
+        station: {
+          $in: stationIds.map((id) => {
+            try {
+              return new mongoose.Types.ObjectId(id);
+            } catch {
+              return id;
+            }
+          }),
+        },
+        status: "active",
+      },
+    },
+    { $group: { _id: { $toString: "$station" }, count: { $sum: 1 } } },
+  ]);
+};
+
 export const ChallengeRepository = {
   create,
   findById,
   findByStation,
   countByStation,
   countActiveByStation,
+  countActiveByStations,
   findAll,
   count,
   updateById,

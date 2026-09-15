@@ -16,20 +16,31 @@ const ALLOWED_MIME_TYPES = new Set([
   "video/mp4",
   "video/quicktime",
   "video/webm",
+  "video/x-m4v",
+  "audio/m4a",
+  "audio/x-m4a",
+  "audio/mp4",
+  "audio/aac",
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/wav",
+  "audio/ogg",
+  "audio/webm",
 ]);
 
 const MULTER_MAX_FILE_SIZE = 150 * 1024 * 1024; // 150MB
 const MESSAGE_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const GENERAL_MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 const VIDEO_MAX_FILE_SIZE = 150 * 1024 * 1024; // 150MB
+const AUDIO_MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
 
 const storage = multer.memoryStorage();
 
 const fileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
   const ext = file.originalname.toLowerCase().substring(file.originalname.lastIndexOf("."));
-  const allowedExts = [".jpg", ".jpeg", ".png", ".webp", ".svg", ".mp4", ".mov", ".webm"];
+  const allowedExts = [".jpg", ".jpeg", ".png", ".webp", ".svg", ".mp4", ".mov", ".webm", ".m4v", ".m4a", ".aac", ".mp3", ".wav", ".ogg"];
   if (!ALLOWED_MIME_TYPES.has(file.mimetype) && !allowedExts.includes(ext)) {
-    cb(new AppError(StatusCodes.BAD_REQUEST, "Only image and video files (.jpg, .png, .webp, .mp4, .mov) are supported"));
+    cb(new AppError(StatusCodes.BAD_REQUEST, "Only image, video, and audio files (.jpg, .png, .webp, .mp4, .mov, .m4v, .webm, .m4a, .mp3, .wav, .aac, .ogg) are supported"));
     return;
   }
   cb(null, true);
@@ -46,6 +57,7 @@ const upload = multer({
   { name: "avatar", maxCount: 1 },
   { name: "optionImage", maxCount: 10 },
   { name: "video", maxCount: 1 },
+  { name: "audio", maxCount: 1 },
 ]);
 
 const processAndUpload = async (req: Request, _res: Response, next: NextFunction) => {
@@ -68,20 +80,75 @@ const processAndUpload = async (req: Request, _res: Response, next: NextFunction
           if (fieldName === "video" && file.size > VIDEO_MAX_FILE_SIZE) {
             return next(new AppError(StatusCodes.BAD_REQUEST, "Video file size must not exceed 150MB"));
           }
-          if (fieldName !== "image" && fieldName !== "video" && file.size > GENERAL_MAX_FILE_SIZE) {
+          if (fieldName === "audio" && file.size > AUDIO_MAX_FILE_SIZE) {
+            return next(new AppError(StatusCodes.BAD_REQUEST, "Audio file size must not exceed 25MB"));
+          }
+          if (fieldName !== "image" && fieldName !== "video" && fieldName !== "audio" && file.size > GENERAL_MAX_FILE_SIZE) {
             return next(new AppError(StatusCodes.BAD_REQUEST, "File size must not exceed 20MB"));
           }
           const fileName = generateUploadFileName({ originalName: file.originalname });
 
           if (fieldName === "video") {
+            // Always emit standard MP4 after server-side transcode/compress
+            const startSec = Number((req.body as any)?.trimStartSec ?? (req.body as any)?.startSec ?? 0);
+            let processStatusVideo: ((buf: Buffer, opts: { startSec?: number }) => Promise<Buffer>) | null = null;
+            let logVideoProcessError: ((m: string, e: unknown) => void) | null = null;
+            try {
+              const mod = await import("../shared/video/processStatusVideo");
+              processStatusVideo = mod.processStatusVideo;
+              logVideoProcessError = mod.logVideoProcessError;
+            } catch (importErr) {
+              logger.error("[processAndUpload] video processor module unavailable", {
+                error: importErr instanceof Error ? importErr.message : String(importErr),
+              });
+            }
+
+            try {
+              if (!processStatusVideo) {
+                throw new Error("processStatusVideo unavailable");
+              }
+              const processed = await processStatusVideo(file.buffer, {
+                startSec: Number.isFinite(startSec) ? startSec : 0,
+              });
+              const filePath = await uploadFile(processed, `${fileName}.mp4`, "video/mp4");
+              console.log("[processAndUpload] uploaded processed video:", filePath);
+              if (!req.body) req.body = {};
+              req.body.video = filePath;
+            } catch (processErr) {
+              if (logVideoProcessError) {
+                logVideoProcessError("Status video processing failed", processErr);
+              } else {
+                logger.error("[processAndUpload] Status video processing failed", {
+                  error: processErr instanceof Error ? processErr.message : String(processErr),
+                });
+              }
+              // Fallback: store original if ffmpeg unavailable (still works, less optimized)
+              const rawExt = file.originalname.includes(".")
+                ? file.originalname.substring(file.originalname.lastIndexOf(".")).toLowerCase()
+                : ".mp4";
+              const videoExt = [".mov", ".webm", ".mp4", ".m4v"].includes(rawExt) ? rawExt : ".mp4";
+              const filePath = await uploadFile(
+                file.buffer,
+                `${fileName}${videoExt}`,
+                file.mimetype || "video/mp4",
+              );
+              console.log("[processAndUpload] uploaded raw video fallback:", filePath);
+              if (!req.body) req.body = {};
+              req.body.video = filePath;
+            }
+            continue;
+          }
+
+          if (fieldName === "audio") {
             const rawExt = file.originalname.includes(".")
               ? file.originalname.substring(file.originalname.lastIndexOf(".")).toLowerCase()
-              : ".mp4";
-            const videoExt = [".mov", ".webm", ".mp4"].includes(rawExt) ? rawExt : ".mp4";
-            const filePath = await uploadFile(file.buffer, `${fileName}${videoExt}`, file.mimetype || "video/mp4");
-            console.log("[processAndUpload] uploaded video:", filePath);
+              : ".m4a";
+            const audioExt = [".m4a", ".aac", ".mp3", ".wav", ".ogg"].includes(rawExt) ? rawExt : ".m4a";
+            const audioMime = file.mimetype && file.mimetype.startsWith("audio/") ? file.mimetype : "audio/m4a";
+            const filePath = await uploadFile(file.buffer, `${fileName}${audioExt}`, audioMime);
+            console.log("[processAndUpload] uploaded audio:", filePath);
             if (!req.body) req.body = {};
-            req.body.video = filePath;
+            req.body.audio = filePath;
             continue;
           }
 

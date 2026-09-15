@@ -26,6 +26,19 @@ const auth =
 
       const verifyUser = verifyJwtToken(token, config.jwt.jwt_secret as Secret);
 
+      // Verify active session state in Redis if session ID is attached
+      if (verifyUser?.sid) {
+        try {
+          const { default: redisClient } = await import("../redis/redisClient");
+          const isActiveSession = await redisClient.get(`session:active:${verifyUser.sid}`);
+          if (!isActiveSession) {
+            throw new AppError(StatusCodes.UNAUTHORIZED, "Session has expired or was revoked remotely");
+          }
+        } catch (err: any) {
+          if (err instanceof AppError) throw err;
+        }
+      }
+
       // Try cache first, then fallback to DB
       let user = await UserCache.getProfile(verifyUser.userId);
       if (!user) {
@@ -48,9 +61,24 @@ const auth =
       }
 
       // Check auth account status (active/inactive/suspended)
+      // Short Redis cache — avoids +1 Mongo Auth.findById on every request
       const authId = user.auth ? (user.auth._id?.toString() || user.auth.toString()) : "";
-      const authAccount = await AuthRepository.findById(authId);
-      if (!authAccount || authAccount.status !== "active") {
+      let authStatus: string | null = null;
+      try {
+        const { default: redisClient } = await import("../redis/redisClient");
+        authStatus = await redisClient.get(`auth:status:${authId}`);
+      } catch {}
+
+      if (!authStatus) {
+        const authAccount = await AuthRepository.findById(authId);
+        authStatus = authAccount?.status || "inactive";
+        try {
+          const { default: redisClient } = await import("../redis/redisClient");
+          await redisClient.set(`auth:status:${authId}`, authStatus, 120);
+        } catch {}
+      }
+
+      if (!authId || authStatus !== "active") {
         throw new AppError(StatusCodes.UNAUTHORIZED, "Your account is deactivated");
       }
 

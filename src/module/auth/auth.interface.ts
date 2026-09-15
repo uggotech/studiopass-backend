@@ -29,7 +29,7 @@ export interface TAuth {
   twoFactorEnabled?: boolean;
   twoFactorSecret?: string;
   twoFactorTempSecret?: string;
-  twoFactorRecoveryCodes?: string[];
+  twoFactorResetRequired?: boolean;
 
   createdAt: Date;
   updatedAt: Date;

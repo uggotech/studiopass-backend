@@ -10,6 +10,7 @@ const userSchema = new Schema<TUser>(
       unique: true,
     },
     fullName: { type: String, trim: true },
+    username: { type: String, trim: true, sparse: true },
     avatar: { type: String },
     email: { type: String, lowercase: true, trim: true },
     phone: { type: String, trim: true },

@@ -46,6 +46,19 @@ export function initSocket(server: http.Server): Server {
         return next(new Error("Invalid or blocked account"));
       }
 
+      // Reject sockets for revoked/expired sessions
+      if (payload.sid) {
+        try {
+          const { default: redisClient } = await import("../redis/redisClient");
+          const isActiveSession = await redisClient.get(`session:active:${payload.sid}`);
+          if (!isActiveSession) {
+            return next(new Error("Session revoked or expired"));
+          }
+        } catch {
+          // Redis unavailable — allow connection (fail open for live ops)
+        }
+      }
+
       (socket as any).userId = user._id.toString();
       (socket as any).userRole = user.role;
       (socket as any).stationId = user.stationId?.toString() || null;
@@ -87,16 +100,20 @@ export function initSocket(server: http.Server): Server {
         logger.error(`[Call] Failed to set operator online: ${err.message}`),
       );
     }
-    // Fix 7: Authorization — users can only join their own station room
+    // Authorization: staff can only join their own station room; listeners can join station room for public show/poll events
     socket.on("join-station", (stationId: string) => {
       const userRole = (socket as any).userRole;
       const userStationId = (socket as any).stationId as string | null;
 
-      // super_admin can join any station; others only their own
-      if (userRole !== "super_admin" && userStationId !== stationId) {
-        logger.warn(`Socket ${socket.id} denied join to station:${stationId} (not their station)`);
-        socket.emit("error", { message: "You can only join your own station room" });
-        return;
+      // Staff roles: verify ownership and join private staff room
+      if (["media_station", "presenter", "station_admin"].includes(userRole)) {
+        if (userStationId !== stationId) {
+          logger.warn(`Socket ${socket.id} denied staff join to station:${stationId} (not their station)`);
+          socket.emit("error", { message: "You can only join your own station room" });
+          return;
+        }
+        socket.join(`station-staff:${stationId}`);
+        logger.info(`Staff socket ${socket.id} joined station-staff:${stationId}`);
       }
 
       socket.join(`station:${stationId}`);
@@ -110,6 +127,7 @@ export function initSocket(server: http.Server): Server {
 
     socket.on("leave-station", (stationId: string) => {
       socket.leave(`station:${stationId}`);
+      socket.leave(`station-staff:${stationId}`);
       logger.info(`Socket ${socket.id} left station:${stationId}`);
     });
 

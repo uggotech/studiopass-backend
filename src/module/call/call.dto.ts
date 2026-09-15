@@ -49,6 +49,8 @@ const getHistory = z.object({
 const getStationCalls = z.object({
   query: z.object({
     stationId: z.string().regex(objectIdRegex, "Invalid station ID format"),
+    showId: z.string().optional(),
+    todayOnly: z.union([z.boolean(), z.enum(["true", "false"])]).optional(),
     status: z.string().optional(),
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(20),

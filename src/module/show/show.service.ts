@@ -7,6 +7,8 @@ import { User } from "../user/user.model";
 import { UserRepository } from "../user/user.repository";
 import { TShow } from "./show.interface";
 import { UserRole } from "../../shared/roles";
+import Message from "../message/message.model";
+import Call from "../call/call.model";
 
 function computeShowStatus(show: TShow, timezone: string): "Active" | "Scheduled" | "Inactive" {
   if (!show.isActive) return "Inactive";
@@ -239,31 +241,74 @@ const getShowsByStation = async (stationId: string) => {
 };
 
 const getActiveShow = async (stationId: string, timezone: string = "UTC") => {
+  const cacheKey = `show:active:${stationId}`;
+  try {
+    const { default: redisClient } = await import("../../redis/redisClient");
+    const cached = await redisClient.get(cacheKey);
+    if (cached) {
+      // Cached shape: no timeRemainingMinutes — compute fresh on every read
+      const parsed = JSON.parse(cached);
+      if (parsed == null) return null;
+      if (parsed.isChannel == true) return parsed;
+      const remaining = computeTimeRemaining(
+        parsed.endTime,
+        timezone,
+        parsed.startTime,
+      );
+      return { ...parsed, timeRemainingMinutes: remaining };
+    }
+  } catch {}
+
   const station = await StationRepository.findById(stationId);
   if (station && station.category === "channel") {
-    return {
+    const payload = {
       id: "channel_247",
       name: station.name,
       isChannel: true,
       timeRemainingMinutes: 0,
     };
+    try {
+      const { default: redisClient } = await import("../../redis/redisClient");
+      await redisClient.set(cacheKey, JSON.stringify(payload), 30);
+    } catch {}
+    return payload;
   }
 
   const show = await ShowRepository.findActiveShowForStation(stationId, timezone);
   if (!show) {
+    try {
+      const { default: redisClient } = await import("../../redis/redisClient");
+      // Short null-TTL so a show that starts by clock appears quickly
+      await redisClient.set(cacheKey, "null", 5);
+    } catch {}
     return null;
   }
   const timeRemainingMinutes = computeTimeRemaining(show.endTime, timezone, show.startTime);
-  return {
+  // Cache only schedule fields (no remaining minutes — those go stale)
+  const cacheable = {
     id: show._id,
     name: show.name,
     days: show.days,
     startTime: show.startTime,
     endTime: show.endTime,
-    timeRemainingMinutes,
     isChannel: false,
   };
+  try {
+    const { default: redisClient } = await import("../../redis/redisClient");
+    await redisClient.set(cacheKey, JSON.stringify(cacheable), 30);
+  } catch {}
+  return {
+    ...cacheable,
+    timeRemainingMinutes,
+  };
 };
+
+async function invalidateActiveShowCache(stationId: string) {
+  try {
+    const { default: redisClient } = await import("../../redis/redisClient");
+    await redisClient.del(`show:active:${stationId}`);
+  } catch {}
+}
 
 function parseTimeToMinutes(time: string): number {
   const parts = time.split(":");
@@ -518,6 +563,12 @@ const createShow = async (data: {
     isActive: true,
   });
 
+  await invalidateActiveShowCache(data.stationId);
+  try {
+    const { StationCache } = await import("../station/station.cacheManage");
+    StationCache.invalidateStation(data.stationId);
+  } catch {}
+
   return {
     id: show._id,
     name: show.name,
@@ -634,7 +685,163 @@ const updateShow = async (
   }
 
   const updated = await ShowRepository.updateById(showId, updateData as any);
+  if (updated?.station) {
+    await invalidateActiveShowCache(updated.station.toString());
+    try {
+      const { StationCache } = await import("../station/station.cacheManage");
+      StationCache.invalidateStation(updated.station.toString());
+    } catch {}
+  }
   return getShowById(updated!._id.toString());
+};
+
+export function getShowStartTimestamp(startTime: string, endTime: string, timezone: string): Date {
+  const now = new Date();
+
+  const dateFmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+  });
+  const parts = dateFmt.formatToParts(now);
+  const getPart = (t: string) => Number(parts.find((p) => p.type === t)?.value) || 0;
+  const year = getPart("year");
+  const month = getPart("month");
+  let day = getPart("day");
+  const currentHour = getPart("hour");
+  const currentMin = getPart("minute");
+  const currentTime = `${String(currentHour).padStart(2, "0")}:${String(currentMin).padStart(2, "0")}`;
+
+  const [startH, startM] = startTime.split(":").map(Number);
+  const isOvernight = startTime > endTime;
+  if (isOvernight && currentTime < endTime) {
+    day -= 1;
+  }
+
+  const sampleUtc = new Date(Date.UTC(year, month - 1, day, startH, startM, 0));
+  const tzDate = new Date(sampleUtc.toLocaleString("en-US", { timeZone: timezone }));
+  const offsetMs = tzDate.getTime() - sampleUtc.getTime();
+  return new Date(sampleUtc.getTime() - offsetMs);
+}
+
+const getLiveStats = async (stationId: string) => {
+  const station = await StationRepository.findById(stationId);
+  if (!station) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
+  }
+
+  let timezone = "UTC";
+  if (station.country) {
+    const countryId = (station.country as any)?._id || station.country;
+    const country = await Country.findById(countryId).lean();
+    if (country?.timezone) timezone = country.timezone;
+  }
+
+  const activeShow = await ShowRepository.findActiveShowForStation(stationId, timezone);
+  if (!activeShow) {
+    return {
+      activeShow: null,
+      stats: {
+        incomingMessages: 0,
+        calls: 0,
+        waitingCalls: 0,
+        successfulInteractions: 0,
+        uncutCalls: 0,
+      },
+      activeCall: null,
+    };
+  }
+
+  const showStart = getShowStartTimestamp(activeShow.startTime, activeShow.endTime, timezone);
+
+  const [
+    incomingMessages,
+    totalCalls,
+    waitingCalls,
+    completedCalls,
+    repliedMessages,
+    liveActiveCall,
+  ] = await Promise.all([
+    // Incoming listener messages received during this show today
+    Message.countDocuments({
+      station: stationId,
+      show: activeShow._id,
+      senderType: "user",
+      isDeleted: { $ne: true },
+      createdAt: { $gte: showStart },
+    }),
+    // Total calls placed for this show today
+    Call.countDocuments({
+      station: stationId,
+      show: activeShow._id,
+      startedAt: { $gte: showStart },
+    }),
+    // Waiting calls currently in queue
+    Call.countDocuments({
+      station: stationId,
+      show: activeShow._id,
+      status: "queued",
+      startedAt: { $gte: showStart },
+    }),
+    // Calls answered or completed
+    Call.countDocuments({
+      station: stationId,
+      show: activeShow._id,
+      status: { $in: ["answered", "completed"] },
+      startedAt: { $gte: showStart },
+    }),
+    // Listener threads/messages replied during this show today
+    Message.countDocuments({
+      station: stationId,
+      show: activeShow._id,
+      isReplied: true,
+      senderType: "user",
+      createdAt: { $gte: showStart },
+    }),
+    // Currently live on-speaker call
+    Call.findOne({
+      station: stationId,
+      show: activeShow._id,
+      status: "answered",
+    })
+      .populate("startedBy", "fullName phone avatar")
+      .lean(),
+  ]);
+
+  const uncutCalls = completedCalls;
+  const successfulInteractions = completedCalls + repliedMessages;
+
+  return {
+    activeShow: {
+      id: activeShow._id,
+      name: activeShow.name,
+      startTime: activeShow.startTime,
+      endTime: activeShow.endTime,
+      days: activeShow.days,
+      presenter: activeShow.presenter,
+    },
+    stats: {
+      incomingMessages,
+      calls: totalCalls,
+      waitingCalls,
+      successfulInteractions,
+      uncutCalls,
+    },
+    activeCall: liveActiveCall
+      ? {
+          id: liveActiveCall._id,
+          callerName: (liveActiveCall.startedBy as any)?.fullName || "Live Caller",
+          callerPhone: (liveActiveCall.startedBy as any)?.phone || "",
+          callerAvatar: (liveActiveCall.startedBy as any)?.avatar || null,
+          startedAt: liveActiveCall.startedAt,
+          answeredAt: liveActiveCall.answeredAt,
+        }
+      : null,
+  };
 };
 
 export const ShowService = {
@@ -642,6 +849,8 @@ export const ShowService = {
   getShowById,
   getShowsByStation,
   getActiveShow,
+  getLiveStats,
+  getShowStartTimestamp,
   getMyShows,
   createShow,
   updateShow,

@@ -54,16 +54,38 @@ const messageSchema = new Schema<IMessage>(
       type: String,
       required: [
         function (this: any) {
-          return !this.imageUrl;
+          return !this.imageUrl && !this.audioUrl && !this.videoUrl;
         },
-        "Message content is required when no image is attached",
+        "Message content is required when no media attachment is provided",
       ],
       maxlength: [1600, "Message content cannot exceed 1600 characters"],
       trim: true,
       default: "",
     },
+    mediaType: {
+      type: String,
+      enum: ["text", "image", "video", "audio", "sticker"],
+      default: "text",
+    },
     imageUrl: {
       type: String,
+    },
+    videoUrl: {
+      type: String,
+    },
+    audioUrl: {
+      type: String,
+    },
+    stickerUrl: {
+      type: String,
+    },
+    audioDuration: {
+      type: Number,
+      min: [0, "Audio duration cannot be negative"],
+    },
+    waveform: {
+      type: [Number],
+      default: undefined,
     },
     status: {
       type: String,
@@ -111,6 +133,22 @@ const messageSchema = new Schema<IMessage>(
       default: false,
       index: true,
     },
+    isEdited: {
+      type: Boolean,
+      default: false,
+    },
+    editedAt: {
+      type: Date,
+    },
+    deletedFor: {
+      type: [{ type: Schema.Types.ObjectId, ref: "User" }],
+      default: undefined,
+    },
+    deletedForEveryone: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
   },
   {
     timestamps: true,
@@ -120,6 +158,8 @@ const messageSchema = new Schema<IMessage>(
 // Compound indexes for common query patterns
 messageSchema.index({ station: 1, status: 1, createdAt: -1 });
 messageSchema.index({ station: 1, msisdn: 1, createdAt: 1 });
+messageSchema.index({ station: 1, msisdn: 1, isDeleted: 1, createdAt: -1 });
+messageSchema.index({ msisdn: 1, isDeleted: 1, createdAt: -1 });
 messageSchema.index({ station: 1, show: 1, createdAt: -1 });
 messageSchema.index({ station: 1, senderType: 1, isDeleted: 1, createdAt: -1 });
 messageSchema.index({ status: 1, createdAt: -1 });

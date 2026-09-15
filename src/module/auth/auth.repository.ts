@@ -7,7 +7,7 @@ const findByPhone = (phone: string): Promise<TAuth | null> => {
 };
 
 const findByUsername = (username: string) => {
-  return Auth.findOne({ username });
+  return Auth.findOne({ username }).select("+password +twoFactorSecret");
 };
 
 const usernameExists = (username: string) => {
@@ -19,7 +19,7 @@ const findById = (id: string): Promise<TAuth | null> => {
 };
 
 const findByIdWithPassword = (id: string) => {
-  return Auth.findById(id).lean();
+  return Auth.findById(id).select("+password").lean();
 };
 
 const create = (data: Partial<TAuth>, session?: mongoose.ClientSession): Promise<TAuth> => {

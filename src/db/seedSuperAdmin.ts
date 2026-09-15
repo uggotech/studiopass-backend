@@ -14,12 +14,14 @@ const seedSuperAdmin = async () => {
   // Check if super admin username auth exists
   const existing = await Auth.findOne({ username: SUPER_ADMIN_USERNAME }).select("_id username phone");
 
+  const saltRounds = Number(config.bcrypt_salt_rounds) || 10;
+
   if (existing) {
     // Ensure password is set (fixes records created before password field was added)
     const needsPassword = !(await Auth.findOne({ _id: existing._id, password: { $exists: true, $type: "string" } }).select("_id"));
     const updateFields: Record<string, unknown> = { role: UserRole.SUPER_ADMIN, status: "active" };
     if (needsPassword) {
-      updateFields.password = await bcrypt.hash(SUPER_ADMIN_PASSWORD, 10);
+      updateFields.password = await bcrypt.hash(SUPER_ADMIN_PASSWORD, saltRounds);
     }
     await Auth.updateOne({ _id: existing._id }, { $set: updateFields });
 
@@ -45,7 +47,7 @@ const seedSuperAdmin = async () => {
   // Migrate: if phone-only super admin exists, add username+password
   const phoneAdmin = await Auth.findOne({ phone: SUPER_ADMIN_PHONE, role: UserRole.SUPER_ADMIN }).select("_id phone username");
   if (phoneAdmin) {
-    const hashedPassword = await bcrypt.hash(SUPER_ADMIN_PASSWORD, 10);
+    const hashedPassword = await bcrypt.hash(SUPER_ADMIN_PASSWORD, saltRounds);
     await Auth.updateOne(
       { _id: phoneAdmin._id },
       { $set: { username: SUPER_ADMIN_USERNAME, password: hashedPassword, loginProvider: LoginProvider.USERNAME } },
@@ -55,7 +57,7 @@ const seedSuperAdmin = async () => {
   }
 
   // Create super admin with username + password (dashboard login)
-  const hashedPassword = await bcrypt.hash(SUPER_ADMIN_PASSWORD, 10);
+  const hashedPassword = await bcrypt.hash(SUPER_ADMIN_PASSWORD, saltRounds);
 
   const authDoc = await Auth.create({
     username: SUPER_ADMIN_USERNAME,

@@ -25,6 +25,15 @@ const invalidateProfile = (userId: string) => {
   cacheService.deleteCache(KEYS.profileByAuth(userId));
 };
 
+/** Clear cached auth status so deactivate/reactivate takes effect immediately. */
+const invalidateAuthStatus = async (authId: string) => {
+  if (!authId) return;
+  try {
+    const { default: redisClient } = await import("../../redis/redisClient");
+    await redisClient.del(`auth:status:${authId}`);
+  } catch {}
+};
+
 const invalidateAllUserProfiles = () => {
   cacheService.invalidateByPattern(KEYS.pattern());
 };
@@ -33,6 +42,7 @@ export const UserCache = {
   getProfile,
   setProfile,
   invalidateProfile,
+  invalidateAuthStatus,
   invalidateAllUserProfiles,
   KEYS,
   TTL,

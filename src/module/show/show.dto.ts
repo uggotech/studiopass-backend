@@ -35,7 +35,14 @@ const updateShow = z.object({
   }),
 });
 
+const getLiveStats = z.object({
+  params: z.object({
+    stationId: z.string().min(1, "Station ID is required"),
+  }),
+});
+
 export const ShowDto = {
   createShow,
   updateShow,
+  getLiveStats,
 };

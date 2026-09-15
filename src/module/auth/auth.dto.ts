@@ -51,6 +51,8 @@ const login = z.object({
   body: z.object({
     username: z.string().min(1, "Username is required"),
     password: z.string().min(1, "Password is required"),
+    deviceId: z.string().optional(),
+    deviceName: z.string().optional(),
   }),
 });
 
@@ -70,7 +72,9 @@ const changePassword = z.object({
 const verify2FALogin = z.object({
   body: z.object({
     tempToken: z.string().min(1, "Temporary token is required"),
-    code: z.string().min(1, "Verification or recovery code is required"),
+    code: z.string().length(6, "Verification code must be exactly 6 digits"),
+    deviceId: z.string().optional(),
+    deviceName: z.string().optional(),
   }),
 });
 
@@ -78,12 +82,8 @@ const setup2FAEnable = z.object({
   body: z.object({
     tempToken: z.string().optional(),
     code: z.string().min(1, "6-digit verification code is required"),
-  }),
-});
-
-const skip2FASetup = z.object({
-  body: z.object({
-    tempToken: z.string().min(1, "Temporary token is required"),
+    deviceId: z.string().optional(),
+    deviceName: z.string().optional(),
   }),
 });
 
@@ -102,6 +102,5 @@ export const AuthDto = {
   changePassword,
   verify2FALogin,
   setup2FAEnable,
-  skip2FASetup,
   disable2FA,
 };

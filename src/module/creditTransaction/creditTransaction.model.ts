@@ -32,5 +32,6 @@ creditTransactionSchema.index({ station: 1, type: 1, isFree: 1 });
 creditTransactionSchema.index({ station: 1, createdAt: -1, type: 1, isFree: 1 });
 creditTransactionSchema.index({ type: 1, paymentProvider: 1 });
 creditTransactionSchema.index({ country: 1, type: 1 });
+creditTransactionSchema.index({ resourceId: 1, type: 1 });
 
 export const CreditTransaction = model<TCreditTransaction>("CreditTransaction", creditTransactionSchema);

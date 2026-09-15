@@ -26,8 +26,23 @@ const verifyOtp = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const getClientIp = (req: Request): string => {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string") {
+    const first = forwarded.split(",")[0];
+    if (first) return first.trim();
+  }
+  return req.ip || req.socket.remoteAddress || "Unknown IP";
+};
+
 const login = catchAsync(async (req: Request, res: Response) => {
-  const result = await AuthService.login(req.body);
+  const ipAddress = getClientIp(req);
+  const userAgent = req.headers["user-agent"] || "";
+  const result = await AuthService.login({
+    ...req.body,
+    ipAddress,
+    userAgent,
+  });
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
@@ -51,7 +66,14 @@ const refresh = catchAsync(async (req: Request, res: Response) => {
 const changePassword = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
   const authId = user.auth ? user.auth.toString() : user._id.toString();
-  const result = await AuthService.changePassword(authId, req.body);
+  const ipAddress = getClientIp(req);
+  const userAgent = req.headers["user-agent"] || "";
+  const result = await AuthService.changePassword(authId, {
+    ...req.body,
+    ipAddress,
+    userAgent,
+    userId: user._id?.toString(),
+  });
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
@@ -62,7 +84,13 @@ const changePassword = catchAsync(async (req: Request, res: Response) => {
 });
 
 const verify2FALogin = catchAsync(async (req: Request, res: Response) => {
-  const result = await AuthService.verify2FALogin(req.body);
+  const ipAddress = getClientIp(req);
+  const userAgent = req.headers["user-agent"] || "";
+  const result = await AuthService.verify2FALogin({
+    ...req.body,
+    ipAddress,
+    userAgent,
+  });
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
@@ -75,23 +103,21 @@ const verify2FALogin = catchAsync(async (req: Request, res: Response) => {
 const setup2FAEnable = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
   const authenticatedAuthId = user?.auth ? user.auth.toString() : user?._id?.toString();
-  const result = await AuthService.setup2FAEnable(req.body, authenticatedAuthId);
+  const ipAddress = getClientIp(req);
+  const userAgent = req.headers["user-agent"] || "";
+  const result = await AuthService.setup2FAEnable(
+    {
+      ...req.body,
+      ipAddress,
+      userAgent,
+    },
+    authenticatedAuthId
+  );
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
     message: "Two-Factor authentication configured and enabled successfully",
-    data: result,
-  });
-});
-
-const skip2FASetup = catchAsync(async (req: Request, res: Response) => {
-  const result = await AuthService.skip2FASetup(req.body.tempToken);
-
-  sendResponse(res, {
-    statusCode: StatusCodes.OK,
-    success: true,
-    message: "2FA setup skipped. Logged in successfully",
     data: result,
   });
 });
@@ -112,7 +138,13 @@ const init2FASetup = catchAsync(async (req: Request, res: Response) => {
 const disable2FA = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
   const authId = user.auth?._id?.toString() || user.auth?.toString() || user._id?.toString();
-  const result = await AuthService.disable2FA(authId, req.body);
+  const ipAddress = getClientIp(req);
+  const userAgent = req.headers["user-agent"] || "";
+  const result = await AuthService.disable2FA(authId, {
+    ...req.body,
+    ipAddress,
+    userAgent,
+  });
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
@@ -122,15 +154,41 @@ const disable2FA = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const logout = catchAsync(async (req: Request, res: Response) => {
+  const sessionId = (req.user as any)?.sid as string | undefined;
+  const userId = req.user!._id.toString();
+
+  if (sessionId) {
+    const { DeviceSessionService } = await import("../device-session/device-session.service");
+    await DeviceSessionService.logoutOwnSession(sessionId, userId);
+  }
+
+  // Also blacklist current refresh token if provided
+  const refreshToken = (req.body as any)?.refreshToken as string | undefined;
+  if (refreshToken) {
+    try {
+      const { default: redisClient } = await import("../../redis/redisClient");
+      await redisClient.set(`revoked_token:${refreshToken}`, "1", 7 * 24 * 3600);
+    } catch {}
+  }
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Logged out successfully",
+    data: null,
+  });
+});
+
 export const AuthController = {
   initiate,
   verifyOtp,
   login,
   verify2FALogin,
   setup2FAEnable,
-  skip2FASetup,
   init2FASetup,
   disable2FA,
   refresh,
   changePassword,
+  logout,
 };

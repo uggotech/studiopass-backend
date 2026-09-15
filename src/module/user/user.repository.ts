@@ -46,6 +46,10 @@ const findAllByRole = async (
         { path: "partner", select: "name" },
       ],
     })
+    .populate({
+      path: "auth",
+      select: "username",
+    })
     .populate("partnerId", "name")
     .sort({ createdAt: -1 })
     .skip(options.skip)

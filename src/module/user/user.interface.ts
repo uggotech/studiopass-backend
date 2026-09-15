@@ -12,6 +12,7 @@ export interface TUser {
   email?: string;
 
   // Denormalized from Auth for fast reads
+  username?: string;
   phone?: string;
   phoneCountryCode?: string;
   countryName?: string;

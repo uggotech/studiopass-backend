@@ -22,6 +22,10 @@ import { ChannelPollRoutes } from "../module/channelPoll/channelPoll.route";
 import { PrizeTypeRoutes } from "../module/prizeType/prizeType.route";
 import { DisbursementRoutes } from "../module/disbursement/disbursement.route";
 import { SupportRoutes } from "../module/support/support.route";
+import { DeviceSessionRoutes } from "../module/device-session/device-session.route";
+import { StickerRoutes } from "../module/sticker/sticker.route";
+import { SettingsRoutes } from "../module/settings/settings.route";
+import { AuditLogRoutes } from "../module/auditLog/auditLog.route";
 
 const router: Router = express.Router();
 
@@ -49,6 +53,10 @@ const apiRoutes = [
   { path: "/prize-type", route: PrizeTypeRoutes },
   { path: "/disbursement", route: DisbursementRoutes },
   { path: "/support", route: SupportRoutes },
+  { path: "/device-sessions", route: DeviceSessionRoutes },
+  { path: "/sticker", route: StickerRoutes },
+  { path: "/settings", route: SettingsRoutes },
+  { path: "/audit-logs", route: AuditLogRoutes },
 ];
 
 apiRoutes.forEach((route) => router.use(route.path, route.route));

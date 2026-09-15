@@ -368,7 +368,15 @@ const createCustomerCareUser = catchAsync(async (req: Request, res: Response) =>
 
 const resetUser2FA = catchAsync(async (req: Request, res: Response) => {
   const targetUserId = String(req.params.id);
-  const result = await UserService.resetUser2FA(targetUserId);
+  const adminUser = req.user as any;
+  const adminAuthId = adminUser?.auth?._id?.toString() || adminUser?.auth?.toString() || adminUser?._id?.toString();
+  const ipAddress = req.ip || req.socket.remoteAddress || "";
+  const userAgent = req.headers["user-agent"] || "";
+  const result = await UserService.resetUser2FA(targetUserId, {
+    authId: adminAuthId,
+    ipAddress,
+    userAgent,
+  });
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,

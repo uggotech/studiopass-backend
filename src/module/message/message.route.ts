@@ -48,6 +48,30 @@ router.post(
 );
 
 router.post(
+  "/upload-audio",
+  auth(UserRole.USER),
+  processAndUpload,
+  validateRequest(MessageDto.uploadAudio),
+  async (req, res) => {
+    const audioUrl = (req.body as any).audio;
+    if (!audioUrl) {
+      sendResponse(res, {
+        success: false,
+        statusCode: StatusCodes.BAD_REQUEST,
+        message: "No audio uploaded",
+      });
+      return;
+    }
+    sendResponse(res, {
+      success: true,
+      statusCode: StatusCodes.OK,
+      message: "Audio uploaded successfully",
+      data: { audioUrl },
+    });
+  },
+);
+
+router.post(
   "/reply",
   auth(UserRole.MEDIA_STATION, UserRole.PRESENTER, UserRole.STATION_ADMIN),
   strictLimiter,
@@ -127,6 +151,45 @@ router.delete(
   "/:id",
   auth(UserRole.MEDIA_STATION, UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
   MessageController.deleteMessage,
+);
+
+router.patch(
+  "/:id/edit",
+  auth(
+    UserRole.USER,
+    UserRole.MEDIA_STATION,
+    UserRole.PRESENTER,
+    UserRole.STATION_ADMIN,
+    UserRole.SUPER_ADMIN,
+  ),
+  validateRequest(MessageDto.editMessage),
+  MessageController.editMessage,
+);
+
+router.patch(
+  "/:id/delete-for-me",
+  auth(
+    UserRole.USER,
+    UserRole.MEDIA_STATION,
+    UserRole.PRESENTER,
+    UserRole.STATION_ADMIN,
+    UserRole.SUPER_ADMIN,
+  ),
+  validateRequest(MessageDto.deleteForMe),
+  MessageController.deleteForMe,
+);
+
+router.patch(
+  "/:id/delete-for-everyone",
+  auth(
+    UserRole.USER,
+    UserRole.MEDIA_STATION,
+    UserRole.PRESENTER,
+    UserRole.STATION_ADMIN,
+    UserRole.SUPER_ADMIN,
+  ),
+  validateRequest(MessageDto.deleteForEveryone),
+  MessageController.deleteForEveryone,
 );
 
 router.patch(

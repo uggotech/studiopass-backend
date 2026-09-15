@@ -10,6 +10,30 @@ import config from "../config";
 import { errorLogger } from "../logger/logger";
 import { TErrorSources } from "../types/error";
 
+const SENSITIVE_KEY_PATTERN =
+  /password|currentpassword|newpassword|adminpassword|token|refreshtoken|otp|twofactorsecret|twofactortempsecret|twofactorrecoverycodes|code|secret|authorization/i;
+
+const sanitizeLogPayload = (data: any): any => {
+  if (data === null || data === undefined) return data;
+  if (typeof data !== "object") return data;
+
+  if (Array.isArray(data)) {
+    return data.map(sanitizeLogPayload);
+  }
+
+  const sanitized: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (SENSITIVE_KEY_PATTERN.test(key)) {
+      sanitized[key] = "[REDACTED]";
+    } else if (typeof value === "object" && value !== null) {
+      sanitized[key] = sanitizeLogPayload(value);
+    } else {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
+};
+
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const globalErrorHandler: ErrorRequestHandler = (err, req, res, _next): any => {
   let statusCode = 500;
@@ -84,11 +108,11 @@ const globalErrorHandler: ErrorRequestHandler = (err, req, res, _next): any => {
   errorLogger.error(`${req.method} ${req.originalUrl} → ${message}`, {
     errorSources,
     stack: err?.stack,
-    // Only in development
+    // Only in development (with sensitive fields sanitized)
     ...(config.node_env === "development" && {
-      body: req.body,
-      params: req.params,
-      query: req.query,
+      body: sanitizeLogPayload(req.body),
+      params: sanitizeLogPayload(req.params),
+      query: sanitizeLogPayload(req.query),
     }),
   });
   //ultimate return

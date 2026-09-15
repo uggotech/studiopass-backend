@@ -277,8 +277,9 @@ const createStatus = async (data: {
   createdBy: string;
   content: string;
   media?: string;
-  mediaType?: "image" | "video";
+  mediaType?: "image" | "video" | "sticker";
   thumbnail?: string;
+  stickerUrl?: string;
   expiresAt?: string;
   callerRole?: string;
   userPartnerId?: string;
@@ -302,7 +303,7 @@ const createStatus = async (data: {
 
   // Media MIME/extension validation for station status updates
   if (data.media) {
-    const allowedExtensions = [".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".webm"];
+    const allowedExtensions = [".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".webm", ".m4v", ".svg"];
     const rawExt = data.media.includes(".")
       ? data.media.substring(data.media.lastIndexOf("."))
       : "";
@@ -327,6 +328,7 @@ const createStatus = async (data: {
     media: data.media,
     mediaType: data.mediaType,
     thumbnail: data.thumbnail,
+    stickerUrl: data.stickerUrl,
     expiresAt,
     viewCount: 0,
     likeCount: 0,

@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { StatusCodes } from "http-status-codes";
 import bcrypt from "bcryptjs";
 import AppError from "../../errors/AppError";
+import config from "../../config";
 import { StationRepository } from "./station.repository";
 
 const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -229,7 +230,8 @@ const createStationWithAdmin = async (data: {
     const station = Array.isArray(stations) ? stations[0] : stations;
 
     // Create auth for station admin
-    const hashedPassword = await bcrypt.hash(data.adminPassword, 10);
+    const saltRounds = Number(config.bcrypt_salt_rounds) || 10;
+    const hashedPassword = await bcrypt.hash(data.adminPassword, saltRounds);
     const authDocs = await AuthRepository.create({
       username: data.adminUsername,
       password: hashedPassword,
@@ -330,38 +332,6 @@ const reactivateStation = async (id: string) => {
 
 // ─── App Users: Public station listing with follow status ────────────────────
 
-const getPublicStations = async (query: Record<string, unknown>, userId?: string) => {
-  const filter: Record<string, unknown> = { isActive: true };
-
-  if (query.category) {
-    filter.category = query.category;
-  }
-
-  if (query.country) {
-    filter.country = query.country;
-  }
-
-  if (query.search) {
-    const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
-    filter.$or = [
-      { name: searchRegex },
-      { stationCode: searchRegex },
-    ];
-  }
-
-  const page = Math.max(1, Number(query.page) || 1);
-  const limit = Math.max(1, Math.min(100, Number(query.limit) || 20));
-  const skip = (page - 1) * limit;
-
-  const [stations, total] = await Promise.all([
-    StationRepository.findAll(filter, { skip, limit }),
-    StationRepository.count(filter),
-  ]);
-
-  // Get user's follow status for these stations via FollowService
-  const stationIds = stations.map((s) => s._id);
-  const followedMap = await FollowService.getFollowStatus(userId, stationIds);
-
 const getCurrentShowForStation = (
   shows: Array<{ _id: any; name: string; days: string[]; startTime: string; endTime: string }>,
   timezone: string,
@@ -402,10 +372,116 @@ const getCurrentShowForStation = (
   return null;
 };
 
-  // Normalize with limited fields + isFollowing + hasActiveChallenge + currentShowName
-  const normalizedStations = await Promise.all(
-    stations.map(async (s) => {
-      const activeChallengeCount = await ChallengeRepository.countActiveByStation(s._id.toString());
+const getPublicStations = async (query: Record<string, unknown>, userId?: string) => {
+  const filter: Record<string, unknown> = { isActive: true };
+
+  if (query.category) {
+    filter.category = query.category;
+  }
+
+  if (query.country) {
+    filter.country = query.country;
+  }
+
+  if (query.search) {
+    const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
+    filter.$or = [
+      { name: searchRegex },
+      { stationCode: searchRegex },
+    ];
+  }
+
+  const page = Math.max(1, Number(query.page) || 1);
+  const limit = Math.max(1, Math.min(100, Number(query.limit) || 20));
+  const skip = (page - 1) * limit;
+
+  // Shared cache (no user in key) — follow status merged on every request
+  const cacheKey = `public:shared:${JSON.stringify({
+    category: query.category || null,
+    country: query.country || null,
+    search: query.search || null,
+    page,
+    limit,
+  })}`;
+
+  let cachedStations: any[] | null = null;
+  let cachedMeta: any = null;
+  try {
+    const cached = await StationCache.getStationList(cacheKey);
+    if (cached && Array.isArray(cached.stations)) {
+      cachedStations = cached.stations;
+      cachedMeta = cached.meta;
+    }
+  } catch {}
+
+  let normalizedStations: any[];
+  let meta: any;
+
+  if (cachedStations && cachedMeta) {
+    // Live follow + follower counts so follow button is never stale
+    const ids = cachedStations.map((s: any) => String(s.id ?? s._id));
+    const [followedMap, followerCounts] = await Promise.all([
+      FollowService.getFollowStatus(
+        userId,
+        ids.map((id) => {
+          try {
+            return new mongoose.Types.ObjectId(id);
+          } catch {
+            return id as any;
+          }
+        }),
+      ),
+      StationRepository.findManyByIds(ids).then((docs) => {
+        const m = new Map<string, number>();
+        for (const d of docs) {
+          m.set(d._id.toString(), d.followersCount ?? 0);
+        }
+        return m;
+      }),
+    ]);
+    normalizedStations = cachedStations.map((s: any) => {
+      const sid = String(s.id ?? s._id);
+      return {
+        ...s,
+        isFollowing: followedMap.has(sid),
+        followersCount: followerCounts.get(sid) ?? s.followersCount ?? 0,
+      };
+    });
+    meta = cachedMeta;
+  } else {
+    const [stations, total] = await Promise.all([
+      StationRepository.findAll(filter, { skip, limit }),
+      StationRepository.count(filter),
+    ]);
+
+    const stationIdStrs = stations.map((s) => s._id.toString());
+
+    // Batch follow + challenges + shows (was N+1 per station)
+    const [followedMap, challengeCounts, allShows] = await Promise.all([
+      FollowService.getFollowStatus(userId, stations.map((s) => s._id)),
+      ChallengeRepository.countActiveByStations(stationIdStrs),
+      stationIdStrs.some((id) => {
+        const s = stations.find((st) => st._id.toString() === id);
+        const cat = s?.category as string;
+        return cat === "radio" || cat === "tv";
+      })
+        ? ShowRepository.findByStations(stationIdStrs)
+        : Promise.resolve([] as any[]),
+    ]);
+
+    const challengeCountMap = new Map(
+      challengeCounts.map((c) => [String(c._id), c.count]),
+    );
+    const showsByStation = new Map<string, any[]>();
+    for (const show of allShows as any[]) {
+      const sid = String(show.station);
+      if (!showsByStation.has(sid)) showsByStation.set(sid, []);
+      showsByStation.get(sid)!.push(show);
+    }
+
+    normalizedStations = stations.map((s) => {
+      const sid = s._id.toString();
+      const activeChallengeCount = challengeCountMap.get(sid) || 0;
       const isRadioOrTv = (s.category as string) === "radio" || (s.category as string) === "tv";
       let isLive = Boolean(s.isLive);
       let currentShowName: string | null = null;
@@ -413,7 +489,7 @@ const getCurrentShowForStation = (
       if (isRadioOrTv) {
         const country = s.country as any;
         const timezone = country?.timezone || "UTC";
-        const shows = await ShowRepository.findByStation(s._id.toString());
+        const shows = showsByStation.get(sid) || [];
         const currentShow = getCurrentShowForStation(shows as any, timezone);
         if (currentShow) {
           isLive = true;
@@ -437,17 +513,28 @@ const getCurrentShowForStation = (
         currentShowName,
         isVerified: s.isVerified,
         followersCount: s.followersCount,
-        isFollowing: followedMap.has(s._id.toString()),
+        isFollowing: followedMap.has(sid),
         hasActiveChallenge: activeChallengeCount > 0,
         activeChallengeCount,
       };
-    }),
-  );
+    });
 
-  return {
+    meta = { page, limit, total, totalPage: Math.ceil(total / limit) };
+
+    try {
+      await StationCache.setStationList(cacheKey, {
+        stations: normalizedStations,
+        meta,
+      });
+    } catch {}
+  }
+
+  const result = {
     stations: normalizedStations,
-    meta: { page, limit, total, totalPage: Math.ceil(total / limit) },
+    meta,
   };
+
+  return result;
 };
 
 export const StationService = {
