@@ -1,4 +1,4 @@
-# pnpm 12 settings (package.json pnpm field is no longer read)
+dangerouslyAllowAllBuilds: true
 onlyBuiltDependencies:
   - sharp
   - '@img/sharp-libvips-linuxmusl-x64'
