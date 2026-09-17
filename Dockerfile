@@ -5,7 +5,9 @@ WORKDIR /app
 
 COPY package.json pnpm-lock.yaml* package-lock.json* ./
 
-RUN corepack enable && pnpm install --frozen-lockfile --config.dangerouslyAllowAllBuilds=true
+RUN corepack enable \
+  && printf 'dangerously-allow-all-builds=true\n' > .npmrc \
+  && pnpm install --frozen-lockfile
 
 COPY tsconfig.json ./
 COPY src ./src
@@ -21,7 +23,9 @@ RUN apk add --no-cache tini
 
 COPY package.json pnpm-lock.yaml* package-lock.json* ./
 
-RUN corepack enable && pnpm install --prod --config.dangerouslyAllowAllBuilds=true
+RUN corepack enable \
+  && printf 'dangerously-allow-all-builds=true\n' > .npmrc \
+  && pnpm install --prod
 
 RUN npm install tsconfig-paths
 
