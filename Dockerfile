@@ -21,7 +21,7 @@ RUN apk add --no-cache tini
 
 COPY package.json pnpm-lock.yaml* package-lock.json* ./
 
-RUN corepack enable && pnpm install --omit=dev --config.dangerouslyAllowAllBuilds=true
+RUN corepack enable && pnpm install --prod --config.dangerouslyAllowAllBuilds=true
 
 RUN npm install tsconfig-paths
 
