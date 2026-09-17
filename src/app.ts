@@ -35,7 +35,12 @@ app.use(helmetConfig);
 // ============ 3. CORS (before body parsing!) ============
 const allowedOrigins =
   config.node_env === "production"
-    ? ["https://domain.com"]
+    ? [
+        "https://studiopass.africa",
+        "https://www.studiopass.africa",
+        "https://ng3.studiopass.africa",
+        "https://media.studiopass.africa",
+      ]
     : [
         "http://localhost:3000",
         "http://localhost:3001",
