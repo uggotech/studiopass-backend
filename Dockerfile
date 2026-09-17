@@ -25,9 +25,8 @@ COPY package.json pnpm-lock.yaml* package-lock.json* pnpm-workspace.yaml* ./
 
 RUN corepack enable \
   && printf 'dangerouslyAllowAllBuilds=true\ndangerously-allow-all-builds=true\n' > .npmrc \
-  && pnpm install --prod
-
-RUN npm install tsconfig-paths
+  && pnpm install --prod \
+  && pnpm add tsconfig-paths
 
 COPY --from=builder /app/dist ./dist
 RUN echo '{"compilerOptions":{"baseUrl":".","paths":{"config/*":["./dist/config/*"],"shared/*":["./dist/shared/*"],"module/*":["./dist/module/*"],"errors/*":["./dist/errors/*"],"logger/*":["./dist/logger/*"],"redis/*":["./dist/redis/*"],"jwt/*":["./dist/jwt/*"],"mail/*":["./dist/mail/*"],"types/*":["./dist/types/*"],"Builder/*":["./dist/Builder/*"],"db/*":["./dist/db/*"],"config":["./dist/config"],"shared":["./dist/shared"],"module":["./dist/module"],"errors":["./dist/errors"],"logger":["./dist/logger"],"redis":["./dist/redis"],"jwt":["./dist/jwt"],"mail":["./dist/mail"],"types":["./dist/types"],"Builder":["./dist/Builder"],"db":["./dist/db"]}}}' > tsconfig.json
