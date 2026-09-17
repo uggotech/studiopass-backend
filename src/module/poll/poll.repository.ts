@@ -7,20 +7,41 @@ const create = (data: Record<string, unknown>) => {
   return doc.save().then((d) => d.toObject());
 };
 
-const findById = (id: string) => {
-  return Poll.findById(id).lean();
+const findById = async (id: string, userId?: string) => {
+  const poll = await Poll.findById(id)
+    .populate("station", "name stationCode")
+    .populate("show", "name")
+    .populate("createdBy", "fullName")
+    .lean();
+  if (!poll || !userId) return poll;
+
+  const vote = await PollVote.findOne({ poll: id, user: userId }).lean();
+  return { ...poll, isVotedByMe: !!vote };
 };
 
-const findByStation = (stationId: string, skip: number, limit: number, status?: string) => {
+const findByStation = async (stationId: string, skip: number, limit: number, status?: string, userId?: string) => {
   const filter: Record<string, unknown> = { station: stationId };
   if (status) filter.status = status;
-  return Poll.find(filter)
+  const polls = await Poll.find(filter)
     .populate("createdBy", "fullName")
     .populate("show", "name")
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit)
     .lean();
+
+  if (!userId || polls.length === 0) return polls;
+
+  const pollIds = polls.map((p: any) => p._id);
+  const votes = await PollVote.find({ poll: { $in: pollIds }, user: userId })
+    .select("poll")
+    .lean();
+  const votedPollIds = new Set(votes.map((v: any) => v.poll.toString()));
+
+  return polls.map((p: any) => ({
+    ...p,
+    isVotedByMe: votedPollIds.has(p._id.toString()),
+  }));
 };
 
 const countByStation = (stationId: string, status?: string) => {
@@ -29,8 +50,8 @@ const countByStation = (stationId: string, status?: string) => {
   return Poll.countDocuments(filter);
 };
 
-const findAll = (filter: Record<string, unknown>, opts: { skip: number; limit: number }) => {
-  return Poll.find(filter)
+const findAll = async (filter: Record<string, unknown>, opts: { skip: number; limit: number }, userId?: string) => {
+  const polls = await Poll.find(filter)
     .populate("createdBy", "fullName")
     .populate("show", "name")
     .populate("station", "name stationCode")
@@ -38,6 +59,19 @@ const findAll = (filter: Record<string, unknown>, opts: { skip: number; limit: n
     .skip(opts.skip)
     .limit(opts.limit)
     .lean();
+
+  if (!userId || polls.length === 0) return polls;
+
+  const pollIds = polls.map((p: any) => p._id);
+  const votes = await PollVote.find({ poll: { $in: pollIds }, user: userId })
+    .select("poll")
+    .lean();
+  const votedPollIds = new Set(votes.map((v: any) => v.poll.toString()));
+
+  return polls.map((p: any) => ({
+    ...p,
+    isVotedByMe: votedPollIds.has(p._id.toString()),
+  }));
 };
 
 const count = (filter: Record<string, unknown>) => {
@@ -45,7 +79,7 @@ const count = (filter: Record<string, unknown>) => {
 };
 
 const updateById = (id: string, update: Record<string, unknown>) => {
-  return Poll.findByIdAndUpdate(id, update, { new: true }).lean();
+  return Poll.findByIdAndUpdate(id, update, { returnDocument: "after" }).lean();
 };
 
 const deleteById = (id: string) => {
@@ -72,7 +106,7 @@ const vote = async (pollId: string, optionIndex: number, userId: string) => {
       {
         $inc: { totalVotes: 1, [`options.${optionIndex}.votes`]: 1 },
       },
-      { new: true, session },
+      { returnDocument: "after", session },
     ).lean();
 
     await session.commitTransaction();

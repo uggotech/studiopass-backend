@@ -35,7 +35,7 @@ export const SupportRepository = {
     return SupportConversation.findByIdAndUpdate(
       id,
       { status, ...updateFields },
-      { new: true },
+      { returnDocument: "after" },
     )
       .populate("userId", "fullName avatar email phone countryId countryName createdAt")
       .populate("assignedAgentId", "fullName email avatar")

@@ -59,10 +59,13 @@ const deductCredits = async (
   const result = await CreditRepository.decrementBalance(userId, amount, session);
 
   if (!result || !result.updated) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "Insufficient credits. Top up to send messages.",
-    );
+    const insufficientMsg =
+      resourceType === "challenge"
+        ? "Insufficient credits to join this challenge. Please top up and try again."
+        : resourceType === "poll"
+          ? "Insufficient credits to vote in this poll. Please top up and try again."
+          : "Insufficient credits. Top up to send messages.";
+    throw new AppError(StatusCodes.BAD_REQUEST, insufficientMsg);
   }
 
   const { updated, isFreeDeduction } = result;

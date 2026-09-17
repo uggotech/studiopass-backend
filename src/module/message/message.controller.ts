@@ -117,12 +117,34 @@ const getThread = catchAsync(async (req, res) => {
     resolvedMsisdn = await resolveMsisdn(inputMsisdn, resolvedStationId);
   }
 
+  // Presenter: conversation history is scoped to the currently running show only
+  let presenterShowId: string | undefined;
+  if (userRole === "presenter") {
+    presenterShowId =
+      (await MessageService.getPresenterActiveShowId(req.user!._id.toString())) || undefined;
+    if (!presenterShowId) {
+      sendResponse(res, {
+        success: true,
+        statusCode: StatusCodes.OK,
+        message: "No show on air",
+        data: {
+          messages: [],
+          stationTimezone: null,
+          activeShow: null,
+          meta: { page: Number(page), limit: Number(limit), total: 0, totalPage: 0 },
+        },
+      });
+      return;
+    }
+  }
+
   const result = await MessageService.getUserThread(
     resolvedStationId,
     resolvedMsisdn,
     Number(page),
     Number(limit),
     userRole === "user" ? req.user!._id.toString() : undefined,
+    presenterShowId,
   );
 
   // msisdnMasker middleware handles masking in the response automatically
@@ -160,7 +182,7 @@ const getThreads = catchAsync(async (req, res) => {
     return;
   }
 
-  // Presenter: only see threads from their assigned shows
+  // Presenter: only threads from the currently running assigned show (strict isolation)
   if (userRole === "presenter") {
     const presenterStationId = req.user!.stationId?.toString();
     if (!presenterStationId) {
@@ -177,6 +199,9 @@ const getThreads = catchAsync(async (req, res) => {
     sendResponse(res, {
       success: true,
       statusCode: StatusCodes.OK,
+      message: result.activeShow
+        ? "Threads fetched successfully"
+        : "No show on air",
       data: result.threads,
       meta: result.meta,
     });

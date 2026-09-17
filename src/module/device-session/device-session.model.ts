@@ -6,7 +6,7 @@ const deviceSessionSchema = new Schema<IDeviceSession>(
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     authId: { type: Schema.Types.ObjectId, ref: "Auth", required: true },
     stationId: { type: Schema.Types.ObjectId, ref: "Station" },
-    sessionId: { type: String, required: true, unique: true, index: true },
+    sessionId: { type: String, required: true, unique: true },
     deviceId: { type: String, required: true, index: true },
     deviceName: { type: String, default: "Studio Terminal" },
     browser: { type: String, default: "Unknown Browser" },

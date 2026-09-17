@@ -42,7 +42,16 @@ const count = (filter: Record<string, unknown>) => {
 };
 
 const updateById = (id: string, update: Record<string, unknown>) => {
-  return Challenge.findByIdAndUpdate(id, update, { new: true }).lean();
+  return Challenge.findByIdAndUpdate(id, update, { returnDocument: "after" }).lean();
+};
+
+/** Atomic conditional update — only updates if current status matches condition. Returns null if no match. */
+const updateByIdConditional = (id: string, update: Record<string, unknown>) => {
+  return Challenge.findOneAndUpdate(
+    { _id: id, status: { $nin: ["completed", "cancelled"] } },
+    update,
+    { returnDocument: "after" },
+  ).lean();
 };
 
 const deleteById = (id: string) => {
@@ -53,7 +62,7 @@ const incrementParticipants = (id: string, count: number = 1) => {
   return Challenge.findByIdAndUpdate(
     id,
     { $inc: { totalParticipants: count } },
-    { new: true },
+    { returnDocument: "after" },
   ).lean();
 };
 
@@ -83,6 +92,24 @@ const countActiveByStations = (stationIds: string[]) => {
   ]);
 };
 
+const getStats = (filter: Record<string, unknown> = {}) => {
+  return Challenge.aggregate([
+    { $match: filter },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: 1 },
+        active: { $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] } },
+        completed: { $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] } },
+        scheduled: { $sum: { $cond: [{ $eq: ["$status", "scheduled"] }, 1, 0] } },
+        draft: { $sum: { $cond: [{ $eq: ["$status", "draft"] }, 1, 0] } },
+        cancelled: { $sum: { $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0] } },
+        totalParticipants: { $sum: "$totalParticipants" },
+      },
+    },
+  ]);
+};
+
 export const ChallengeRepository = {
   create,
   findById,
@@ -90,9 +117,11 @@ export const ChallengeRepository = {
   countByStation,
   countActiveByStation,
   countActiveByStations,
+  getStats,
   findAll,
   count,
   updateById,
+  updateByIdConditional,
   deleteById,
   incrementParticipants,
 };

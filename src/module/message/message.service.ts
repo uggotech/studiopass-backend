@@ -348,6 +348,8 @@ const sendStationReply = async (
         title: `New reply from ${station?.name || "Station"}`,
         body: notifBody,
         data: {
+          kind: "station_reply",
+          route: `/chat/${stationId}`,
           stationId,
           messageId: message._id.toString(),
           showName: (populatedMessage?.show as any)?.name || null,
@@ -367,11 +369,16 @@ const getUserThread = async (
   page: number,
   limit: number,
   viewerUserId?: string,
+  showId?: string,
 ) => {
   const skip = (page - 1) * limit;
+  const messageFilter: Record<string, unknown> = { station: stationId, msisdn };
+  if (showId) {
+    messageFilter.show = showId;
+  }
   const [messages, total, stationTimezone] = await Promise.all([
-    MessageRepository.findThread(stationId, msisdn, skip, limit, viewerUserId),
-    Message.countDocuments({ station: stationId, msisdn }).lean(),
+    MessageRepository.findThread(stationId, msisdn, skip, limit, viewerUserId, showId),
+    Message.countDocuments(messageFilter).lean(),
     getStationTimezone(stationId),
   ]);
 
@@ -429,6 +436,11 @@ const getStationThreads = async (
   };
 };
 
+/**
+ * Presenter threads: strict currently-running-show only.
+ * No todayOnly, no show-start time window — filter by active show ID only.
+ * When no show is on air, returns empty (UI shows "No show on air").
+ */
 const getPresenterThreads = async (
   stationId: string,
   presenterId: string,
@@ -436,15 +448,41 @@ const getPresenterThreads = async (
   limit: number,
 ) => {
   const skip = (page - 1) * limit;
-  const [threads, total, stationTimezone] = await Promise.all([
-    MessageRepository.findThreadsByPresenter(stationId, presenterId, skip, limit),
-    MessageRepository.countThreadsByPresenter(stationId, presenterId),
-    getStationTimezone(stationId),
+
+  const { ShowService } = await import("../show/show.service");
+  const myShows = await ShowService.getMyShows(presenterId);
+  const activeShow = myShows.currentShow || null;
+  const stationTimezone = await getStationTimezone(stationId);
+
+  if (!activeShow?.id) {
+    return {
+      threads: [],
+      stationTimezone,
+      activeShow: null,
+      meta: {
+        page,
+        limit,
+        totalPage: 0,
+        total: 0,
+      },
+    };
+  }
+
+  const activeShowId = activeShow.id.toString();
+  const [threads, total] = await Promise.all([
+    MessageRepository.findThreadsByPresenter(stationId, presenterId, skip, limit, activeShowId),
+    MessageRepository.countThreadsByPresenter(stationId, presenterId, activeShowId),
   ]);
 
   return {
     threads,
     stationTimezone,
+    activeShow: {
+      id: activeShowId,
+      name: activeShow.name,
+      startTime: activeShow.startTime,
+      endTime: activeShow.endTime,
+    },
     meta: {
       page,
       limit,
@@ -452,6 +490,16 @@ const getPresenterThreads = async (
       total,
     },
   };
+};
+
+/**
+ * Resolve the presenter's currently Active show id (or null when off-air).
+ */
+const getPresenterActiveShowId = async (presenterId: string): Promise<string | null> => {
+  const { ShowService } = await import("../show/show.service");
+  const myShows = await ShowService.getMyShows(presenterId);
+  const id = myShows.currentShow?.id;
+  return id ? id.toString() : null;
 };
 
 const getUserThreads = async (
@@ -997,6 +1045,7 @@ export const MessageService = {
   getUserThread,
   getStationThreads,
   getPresenterThreads,
+  getPresenterActiveShowId,
   getUserThreads,
   findMessageForAuth,
   getMessageById,

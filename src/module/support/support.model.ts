@@ -57,7 +57,7 @@ const supportConversationSchema = new Schema<ISupportConversation>(
 supportConversationSchema.index({ userId: 1, status: 1 });
 supportConversationSchema.index({ countryId: 1, status: 1 });
 supportConversationSchema.index({ assignedAgentId: 1, status: 1 });
-supportConversationSchema.index({ ticketId: 1 });
+// ticketId unique index comes from field unique: true — do not redeclare
 
 const supportMessageSchema = new Schema<ISupportMessage>(
   {
@@ -73,7 +73,7 @@ const supportMessageSchema = new Schema<ISupportMessage>(
     },
     senderRole: {
       type: String,
-      enum: ["user", "customer_care", "super_admin"],
+      enum: ["user", "customer_care", "super_admin", "partner_admin"],
       required: true,
     },
     senderName: {

@@ -3,11 +3,16 @@ import { Partner } from "../partner/partner.model";
 import { Station } from "../station/station.model";
 import { Show } from "../show/show.model";
 import { User } from "../user/user.model";
+import { Auth } from "../auth/auth.model";
 import Message from "../message/message.model";
 import Call from "../call/call.model";
+import { Follow } from "../follow/follow.model";
 import { Status } from "../status/status.model";
 import { CreditTransaction } from "../creditTransaction/creditTransaction.model";
 import ListenerStatement from "../listenerStatement/listenerStatement.model";
+import { ChallengeParticipation } from "../challengeParticipation/challengeParticipation.model";
+import { Challenge } from "../challenge/challenge.model";
+import { DashboardCache } from "./dashboard.cacheManage";
 
 /**
  * Resolve station IDs or filter criteria based on scope (stationId, partnerId, country).
@@ -160,7 +165,7 @@ const sumCreditsForPeriod = async (
       const partnerStations = await Station.find({ partner: scope.partnerId }).select("country").lean();
       const countryIds = [...new Set(partnerStations.map((s: any) => s.country?.toString()).filter(Boolean))];
       if (countryIds.length > 0) {
-        matchFilter.country = { $in: countryIds };
+        matchFilter.country = { $in: countryIds.map((c) => new mongoose.Types.ObjectId(c)) };
       }
     }
 
@@ -197,6 +202,16 @@ const getStats = async (
   timezone?: string,
 ) => {
   const role = scope?.role;
+
+  // ─── Cache check ───────────────────────────────────────────────
+  const cacheScopeId =
+    (role === "station_admin" || role === "media_station" || role === "presenter") ? scope?.stationId
+    : (role === "partner_admin" || role === "customer_care") ? scope?.partnerId
+    : "global";
+  const cacheRole = role || "super_admin";
+
+  const cached = await DashboardCache.getStats(cacheRole, cacheScopeId || "global");
+  if (cached) return cached;
 
   // Build filters based on role scope
   const partnerFilter: Record<string, unknown> = {};
@@ -283,6 +298,64 @@ const getStats = async (
     showFilter.station = new mongoose.Types.ObjectId(scope.stationId);
   }
 
+  // ─── Build listener count promises (role-scoped) ───────────────
+  const deductionTypes = ["message_deduction", "call_deduction", "poll_deduction", "challenge_deduction"];
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+  // Shared partner country lookup (avoid duplicate queries)
+  const partnerCountryPromise = (role === "partner_admin" || role === "customer_care") && scope?.partnerId
+    ? Partner.findById(scope.partnerId).select("country").lean()
+    : Promise.resolve(null);
+
+  let listenerCountPromise: Promise<number>;
+  let activeListenersPromise: Promise<number>;
+
+  if ((role === "station_admin" || role === "media_station" || role === "presenter") && scope?.stationId) {
+    // Station-scoped: count users from Message, Call, Follow, CreditTransaction
+    const sid = new mongoose.Types.ObjectId(scope.stationId);
+
+    listenerCountPromise = Promise.all([
+      Message.distinct("user", { station: sid, senderType: "user", isDeleted: { $ne: true } }),
+      Call.distinct("startedBy", { station: sid }),
+      Follow.distinct("user", { station: sid }),
+      CreditTransaction.distinct("user", { station: sid, type: { $in: deductionTypes } }),
+    ]).then(([msg, call, follow, credit]) => {
+      return new Set([...msg, ...call, ...follow, ...credit].filter(Boolean)).size;
+    }).catch(() => 0);
+
+    // Active: same sources but with 7-day time filter
+    activeListenersPromise = Promise.all([
+      Message.distinct("user", { station: sid, senderType: "user", isDeleted: { $ne: true }, createdAt: { $gte: sevenDaysAgo } }),
+      Call.distinct("startedBy", { station: sid, startedAt: { $gte: sevenDaysAgo } }),
+      Follow.distinct("user", { station: sid }),
+      CreditTransaction.distinct("user", { station: sid, type: { $in: deductionTypes }, createdAt: { $gte: sevenDaysAgo } }),
+    ]).then(([msg, call, follow, credit]) => {
+      return new Set([...msg, ...call, ...follow, ...credit].filter(Boolean)).size;
+    }).catch(() => 0);
+
+  } else if ((role === "partner_admin" || role === "customer_care") && scope?.partnerId) {
+    // Partner-country scoped
+    listenerCountPromise = partnerCountryPromise.then(async (partner) => {
+      if (!partner?.country) return 0;
+      return User.countDocuments({ countryId: partner.country, role: "user" });
+    }).catch(() => 0);
+
+    activeListenersPromise = partnerCountryPromise.then(async (partner) => {
+      if (!partner?.country) return 0;
+      const countryUsers = await User.find({ countryId: partner.country, role: "user" }).select("_id").lean();
+      if (countryUsers.length === 0) return 0;
+      return Auth.countDocuments({
+        _id: { $in: countryUsers.map((u) => u._id) },
+        lastLogin: { $gte: sevenDaysAgo },
+      });
+    }).catch(() => 0);
+
+  } else {
+    // Super admin or unscoped: count all listeners
+    listenerCountPromise = User.countDocuments({ role: "user" }).catch(() => 0);
+    activeListenersPromise = Auth.countDocuments({ role: "user", lastLogin: { $gte: sevenDaysAgo } }).catch(() => 0);
+  }
+
   // ─── Core stats queries ───────────────────────────────────────────────
   const [
     totalPartners,
@@ -290,16 +363,19 @@ const getStats = async (
     totalStations,
     activeStations,
     totalUsers,
+    totalListeners,
     totalMessages,
     totalCalls,
     activeShows,
     revenueResult,
+    activeListeners,
   ] = await Promise.all([
     Partner.countDocuments(partnerFilter).catch(() => 0),
     Partner.countDocuments({ ...partnerFilter, isActive: true }).catch(() => 0),
     Station.countDocuments(stationFilter).catch(() => 0),
     Station.countDocuments({ ...stationFilter, isActive: true }).catch(() => 0),
     User.countDocuments(userFilter).catch(() => 0),
+    listenerCountPromise,
     Message.countDocuments({ ...messageFilter, senderType: "user", isDeleted: { $ne: true } }).catch(() => 0),
     Call.countDocuments(callFilter).catch(() => 0),
     Show.countDocuments(showFilter).catch(() => 0),
@@ -307,28 +383,8 @@ const getStats = async (
       { $match: { ...messageFilter, isFree: { $ne: true } } },
       { $group: { _id: null, total: { $sum: "$amount" } } },
     ]).catch(() => []),
+    activeListenersPromise,
   ]);
-
-  // ─── Active Listeners (distinct users who messaged in last 7 days) ──
-  let activeListeners = 0;
-  try {
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const activeListenerFilter: Record<string, any> = {
-      senderType: "user",
-      isDeleted: { $ne: true },
-      createdAt: { $gte: sevenDaysAgo },
-    };
-    if (messageFilter.station) activeListenerFilter.station = messageFilter.station;
-
-    const activeListenerResult = await Message.aggregate([
-      { $match: activeListenerFilter },
-      { $group: { _id: { $ifNull: ["$user", "$msisdn"] } } },
-      { $count: "total" },
-    ]);
-    activeListeners = aggNum(activeListenerResult, "total");
-  } catch (err) {
-    console.error("[Dashboard] Failed to calculate activeListeners:", err);
-  }
 
   // ─── Hourly Transactions (today's credit transactions by hour) ──────
   let hourlyTransactions: { hour: number; collections: number; disbursements: number }[] = [];
@@ -346,7 +402,9 @@ const getStats = async (
     } else if (scope?.partnerId && mongoose.Types.ObjectId.isValid(scope.partnerId)) {
       const partnerStations = await Station.find({ partner: scope.partnerId }).select("country").lean();
       const countryIds = [...new Set(partnerStations.map((s: any) => s.country?.toString()).filter(Boolean))];
-      if (countryIds.length > 0) hourlyMatchFilter.country = { $in: countryIds };
+      if (countryIds.length > 0) {
+        hourlyMatchFilter.country = { $in: countryIds.map((c) => new mongoose.Types.ObjectId(c)) };
+      }
     }
 
     const hourlyResult = await CreditTransaction.aggregate([
@@ -445,7 +503,9 @@ const getStats = async (
     } else if (scope?.partnerId && mongoose.Types.ObjectId.isValid(scope.partnerId)) {
       const partnerStations = await Station.find({ partner: scope.partnerId }).select("country").lean();
       const countryIds = [...new Set(partnerStations.map((s: any) => s.country?.toString()).filter(Boolean))];
-      if (countryIds.length > 0) dailyMatchFilter.country = { $in: countryIds };
+      if (countryIds.length > 0) {
+        dailyMatchFilter.country = { $in: countryIds.map((c) => new mongoose.Types.ObjectId(c)) };
+      }
     }
 
     const [collectionsResult, disbursementsResult] = await Promise.all([
@@ -483,12 +543,13 @@ const getStats = async (
     console.error("[Dashboard] Failed to calculate dailyCollections/disbursements:", err);
   }
 
-  return {
+  const result = {
     totalPartners,
     activePartners,
     totalStations,
     activeStations,
     totalUsers,
+    totalListeners,
     totalMessages,
     totalCalls,
     activeShows,
@@ -499,6 +560,11 @@ const getStats = async (
     dailyCollections,
     dailyDisbursements,
   };
+
+  // Cache the result (120s TTL)
+  await DashboardCache.setStats(cacheRole, cacheScopeId || "global", result);
+
+  return result;
 };
 
 const getMessageActivity = async (
@@ -659,7 +725,7 @@ const getStationOverview = async (scope?: { partnerId?: string; stationId?: stri
   if (scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)) {
     filter._id = new mongoose.Types.ObjectId(scope.stationId);
   } else if (scope?.partnerId && mongoose.Types.ObjectId.isValid(scope.partnerId)) {
-    filter.partner = scope.partnerId;
+    filter.partner = new mongoose.Types.ObjectId(scope.partnerId);
   } else if (scope?.country && mongoose.Types.ObjectId.isValid(scope.country)) {
     filter.country = new mongoose.Types.ObjectId(scope.country);
   }
@@ -668,24 +734,36 @@ const getStationOverview = async (scope?: { partnerId?: string; stationId?: stri
   const dateMatchCall = resolveDateRangeFilter(scope?.dateRange, "startedAt");
   const now = new Date();
 
+  // Diagnostic logging
+  try {
+    const rawStatuses = await Status.find({}).select("_id station content viewCount expiresAt createdAt").lean();
+    console.log("================== [DASHBOARD DIAGNOSTIC] ==================");
+    console.log("[getStationOverview] Scope:", JSON.stringify(scope));
+    console.log("[getStationOverview] Station Filter:", JSON.stringify(filter));
+    console.log("[getStationOverview] Status.collection.name:", Status.collection.name);
+    console.log("[getStationOverview] Total Statuses in DB:", rawStatuses.length);
+    rawStatuses.forEach((st, i) => {
+      console.log(`  [Status #${i + 1}] ID: ${st._id}, Station: ${st.station} (Type: ${typeof st.station}, IsObjectId: ${st.station instanceof mongoose.Types.ObjectId}), ViewCount: ${st.viewCount}, ExpiresAt: ${st.expiresAt}, IsExpired: ${st.expiresAt ? new Date(st.expiresAt) <= now : 'N/A'}`);
+    });
+  } catch (err) {
+    console.error("[getStationOverview] Diagnostic error:", err);
+  }
+
   // Use aggregation to get stations + counts in a single pipeline (no N+1)
   const overview = await Station.aggregate([
     { $match: filter },
     { $limit: 20 },
     {
       $lookup: {
-        from: "shows",
-        let: { stationId: "$_id" },
-        pipeline: [
-          { $match: { $expr: { $eq: ["$station", "$$stationId"] }, isActive: true } },
-          { $count: "count" },
-        ],
-        as: "showsResult",
+        from: Show.collection.name,
+        localField: "_id",
+        foreignField: "station",
+        as: "showsDocs",
       },
     },
     {
       $lookup: {
-        from: "messages",
+        from: Message.collection.name,
         let: { stationId: "$_id" },
         pipeline: [
           {
@@ -715,7 +793,7 @@ const getStationOverview = async (scope?: { partnerId?: string; stationId?: stri
     },
     {
       $lookup: {
-        from: "calls",
+        from: Call.collection.name,
         let: { stationId: "$_id" },
         pipeline: [
           {
@@ -742,30 +820,37 @@ const getStationOverview = async (scope?: { partnerId?: string; stationId?: stri
     },
     {
       $lookup: {
-        from: "statuses",
-        let: { stationId: "$_id" },
-        pipeline: [
-          {
-            $match: {
-              $expr: {
-                $and: [
-                  { $eq: ["$station", "$$stationId"] },
-                  { $gt: ["$expiresAt", now] },
-                ],
-              },
-            },
-          },
-          { $count: "count" },
-        ],
-        as: "campaignsResult",
+        from: Status.collection.name,
+        localField: "_id",
+        foreignField: "station",
+        as: "campaignsDocs",
       },
     },
     {
       $addFields: {
         msgStats: { $arrayElemAt: ["$messagesResult", 0] },
         callStats: { $arrayElemAt: ["$callsResult", 0] },
-        campStats: { $arrayElemAt: ["$campaignsResult", 0] },
-        activeShowsCount: { $ifNull: [{ $arrayElemAt: ["$showsResult.count", 0] }, 0] },
+        activeShowsCount: {
+          $size: {
+            $filter: {
+              input: { $ifNull: ["$showsDocs", []] },
+              as: "sh",
+              cond: { $eq: ["$$sh.isActive", true] },
+            },
+          },
+        },
+        activeCampaigns: {
+          $size: {
+            $filter: {
+              input: { $ifNull: ["$campaignsDocs", []] },
+              as: "c",
+              cond: { $gt: ["$$c.expiresAt", now] },
+            },
+          },
+        },
+        totalCampaignViews: {
+          $sum: "$campaignsDocs.viewCount",
+        },
       },
     },
     {
@@ -781,26 +866,30 @@ const getStationOverview = async (scope?: { partnerId?: string; stationId?: stri
         answeredCalls: { $ifNull: ["$callStats.answered", 0] },
         missedCalls: { $ifNull: ["$callStats.missed", 0] },
         activeListeners: { $size: { $ifNull: ["$msgStats.uniqueSenders", []] } },
-        activeCampaigns: { $ifNull: ["$campStats.count", 0] },
+        campaignViews: "$totalCampaignViews",
         status: { $cond: ["$isActive", "Active", "Inactive"] },
       },
     },
     {
       $project: {
-        showsResult: 0,
+        showsDocs: 0,
         messagesResult: 0,
         callsResult: 0,
-        campaignsResult: 0,
+        campaignsDocs: 0,
         msgStats: 0,
         callStats: 0,
-        campStats: 0,
-        activeShowsCount: 0,
         _id: 0,
         name: 0,
         isActive: 0,
       },
     },
   ]);
+
+  console.log("[getStationOverview] Overview Result Stations Count:", overview.length);
+  overview.forEach((s: any) => {
+    console.log(`  -> Station: ${s.stationName} (ID: ${s.stationId}), ActiveCampaigns: ${s.activeCampaigns}, TotalCampaignViews: ${s.totalCampaignViews}`);
+  });
+  console.log("============================================================");
 
   return overview;
 };
@@ -823,12 +912,76 @@ const getRecentActivity = async (
     .limit(limit)
     .lean();
 
-  return messages.map((m) => ({
+  const messageRows = messages.map((m) => ({
     type: "message",
     description: `New message from ${(m as any).msisdn} at ${(m as any).station?.name || "Unknown"}`,
     timestamp: m.createdAt,
     user: (m as any).msisdn,
   }));
+
+  // Challenge joins (station/partner scoped via challenge.station)
+  const challengeFilter: Record<string, unknown> = {};
+  if (scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)) {
+    challengeFilter.station = new mongoose.Types.ObjectId(scope.stationId);
+  } else if (scope?.partnerId) {
+    const stationIds = await resolvePartnerStationIds(scope.partnerId);
+    challengeFilter.station = { $in: stationIds };
+  }
+
+  let challengeRows: {
+    type: string;
+    description: string;
+    timestamp: unknown;
+    user: string;
+  }[] = [];
+  try {
+    const challengeIds = Object.keys(challengeFilter).length
+      ? (await Challenge.find(challengeFilter).select("_id title station").lean()).map((c: any) => c._id)
+      : null;
+
+    const partFilter: Record<string, unknown> = {};
+    if (challengeIds !== null) {
+      if (challengeIds.length === 0) {
+        challengeRows = [];
+      } else {
+        partFilter.challenge = { $in: challengeIds };
+      }
+    }
+
+    if (challengeIds === null || challengeIds.length > 0) {
+      const parts = await ChallengeParticipation.find(partFilter)
+        .populate("challenge", "title station")
+        .populate({
+          path: "challenge",
+          populate: { path: "station", select: "name" },
+        })
+        .populate("user", "phone msisdn fullName")
+        .sort({ submittedAt: -1 })
+        .limit(limit)
+        .lean();
+
+      challengeRows = parts.map((p: any) => {
+        const userLabel = p.user?.phone || p.user?.msisdn || p.user?.fullName || "Listener";
+        const stationName = p.challenge?.station?.name || "Unknown";
+        return {
+          type: "challenge",
+          description: `${userLabel} joined challenge "${p.challenge?.title || "Challenge"}" at ${stationName}`,
+          timestamp: p.submittedAt || p.createdAt,
+          user: userLabel,
+        };
+      });
+    }
+  } catch {
+    challengeRows = [];
+  }
+
+  return [...messageRows, ...challengeRows]
+    .sort((a, b) => {
+      const ta = a.timestamp ? new Date(a.timestamp as any).getTime() : 0;
+      const tb = b.timestamp ? new Date(b.timestamp as any).getTime() : 0;
+      return tb - ta;
+    })
+    .slice(0, limit);
 };
 
 const getTopStations = async (
@@ -965,7 +1118,7 @@ const getCreditStats = async (scope?: { partnerId?: string; stationId?: string }
     const partnerStations = await Station.find({ partner: scope.partnerId }).select("country").lean();
     const countryIds = [...new Set(partnerStations.map((s) => s.country?.toString()).filter(Boolean))];
     if (countryIds.length > 0) {
-      userFilter.country = { $in: countryIds };
+      userFilter.country = { $in: countryIds.map((c) => new mongoose.Types.ObjectId(c)) };
     }
   }
 
@@ -1011,8 +1164,22 @@ const getCreditStats = async (scope?: { partnerId?: string; stationId?: string }
 
 const getCountryRevenue = async (scope?: { partnerId?: string; stationId?: string; country?: string }) => {
   const matchFilter: Record<string, unknown> = { isFree: { $ne: true } };
+  const scopeFilter = await resolveScopeStationFilter(scope);
+  Object.assign(matchFilter, scopeFilter);
+
   if (scope?.country && mongoose.Types.ObjectId.isValid(scope.country)) {
     matchFilter.country = new mongoose.Types.ObjectId(scope.country);
+  }
+
+  const stationMatch: Record<string, unknown> = {
+    $expr: { $eq: ["$country", "$$countryId"] },
+    isActive: true,
+  };
+  if (scope?.partnerId && mongoose.Types.ObjectId.isValid(scope.partnerId)) {
+    stationMatch.partner = new mongoose.Types.ObjectId(scope.partnerId);
+  }
+  if (scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)) {
+    stationMatch._id = new mongoose.Types.ObjectId(scope.stationId);
   }
 
   const result = await ListenerStatement.aggregate([
@@ -1031,7 +1198,7 @@ const getCountryRevenue = async (scope?: { partnerId?: string; stationId?: strin
         from: "stations",
         let: { countryId: "$_id" },
         pipeline: [
-          { $match: { $expr: { $eq: ["$country", "$$countryId"] }, isActive: true } },
+          { $match: stationMatch },
           { $count: "count" },
         ],
         as: "stationsResult",

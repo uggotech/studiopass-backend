@@ -9,8 +9,17 @@ const findById = (id: string): Promise<TUser | null> => {
 
 const findByIdWithStation = (id: string): Promise<TUser | null> => {
   return User.findById(id)
-    .populate("stationId", "name stationCode category logo coverImage description website")
-    .populate("partnerId", "name")
+    .populate({
+      path: "stationId",
+      select:
+        "name stationCode category logo coverImage description website country channelType",
+      populate: { path: "country", select: "name code timezone" },
+    })
+    .populate({
+      path: "partnerId",
+      select: "name country",
+      populate: { path: "country", select: "name code timezone" },
+    })
     .lean();
 };
 
@@ -30,7 +39,7 @@ const create = (data: Partial<TUser>, session?: mongoose.ClientSession): Promise
 };
 
 const updateById = (id: string, data: Partial<TUser>): Promise<TUser | null> => {
-  return User.findByIdAndUpdate(id, data, { new: true }).lean();
+  return User.findByIdAndUpdate(id, data, { returnDocument: "after" }).lean();
 };
 
 const findAllByRole = async (

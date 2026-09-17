@@ -54,7 +54,7 @@ const messageSchema = new Schema<IMessage>(
       type: String,
       required: [
         function (this: any) {
-          return !this.imageUrl && !this.audioUrl && !this.videoUrl;
+          return !this.imageUrl && !this.audioUrl && !this.videoUrl && !this.stickerUrl;
         },
         "Message content is required when no media attachment is provided",
       ],

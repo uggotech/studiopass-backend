@@ -1,7 +1,7 @@
 import { Types } from "mongoose";
 
 export type TicketStatus = "OPEN" | "ASSIGNED" | "CLOSED";
-export type SenderRole = "user" | "customer_care" | "super_admin";
+export type SenderRole = "user" | "customer_care" | "super_admin" | "partner_admin";
 
 export interface ISupportConversation {
   _id: Types.ObjectId;

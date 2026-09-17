@@ -8,7 +8,14 @@ const create = (data: Record<string, unknown>) => {
 };
 
 const findById = (id: string) => {
-  return ChannelPoll.findById(id).lean();
+  return ChannelPoll.findById(id)
+    .populate("station", "name stationCode")
+    .populate({
+      path: "station",
+      populate: { path: "country", select: "name code timezone currency" },
+    })
+    .populate("createdBy", "fullName")
+    .lean();
 };
 
 const findByStation = (stationId: string, skip: number, limit: number, status?: string) => {
@@ -43,7 +50,7 @@ const count = (filter: Record<string, unknown>) => {
 };
 
 const updateById = (id: string, update: Record<string, unknown>) => {
-  return ChannelPoll.findByIdAndUpdate(id, update, { new: true }).lean();
+  return ChannelPoll.findByIdAndUpdate(id, update, { returnDocument: "after" }).lean();
 };
 
 const deleteById = (id: string) => {
@@ -52,12 +59,14 @@ const deleteById = (id: string) => {
 
 // ─── Vote operations ─────────────────────────────────────────────────────────
 
-const vote = async (pollId: string, categoryIndex: number, nomineeIndex: number, userId: string) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    // Try to create the vote record (unique index enforces one-vote-per-category-per-user)
+const vote = async (
+  pollId: string,
+  categoryIndex: number,
+  nomineeIndex: number,
+  userId: string,
+  session?: mongoose.ClientSession,
+) => {
+  const run = async (s: mongoose.ClientSession | undefined) => {
     await ChannelPollVote.create(
       [
         {
@@ -67,27 +76,35 @@ const vote = async (pollId: string, categoryIndex: number, nomineeIndex: number,
           user: userId,
         },
       ],
-      { session },
+      s ? { session: s } : {},
     );
 
-    // Increment poll total votes
-    const updated = await ChannelPoll.findByIdAndUpdate(
+    return ChannelPoll.findByIdAndUpdate(
       pollId,
       { $inc: { totalVotes: 1 } },
-      { new: true, session },
+      { returnDocument: "after", ...(s ? { session: s } : {}) },
     ).lean();
+  };
 
-    await session.commitTransaction();
+  if (session) {
+    // Caller owns the transaction (credits + vote together)
+    return run(session);
+  }
+
+  const ownSession = await mongoose.startSession();
+  ownSession.startTransaction();
+  try {
+    const updated = await run(ownSession);
+    await ownSession.commitTransaction();
     return updated;
   } catch (error: any) {
-    await session.abortTransaction();
-    // Duplicate key error = user already voted in this category
+    await ownSession.abortTransaction();
     if (error?.code === 11000) {
       return { alreadyVoted: true };
     }
     throw error;
   } finally {
-    session.endSession();
+    ownSession.endSession();
   }
 };
 

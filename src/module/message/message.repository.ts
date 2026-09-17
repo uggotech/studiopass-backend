@@ -25,6 +25,7 @@ const findThread = (
   skip: number,
   limit: number,
   viewerUserId?: string,
+  showId?: string,
 ) => {
   const filter: Record<string, unknown> = {
     station: stationId,
@@ -34,6 +35,10 @@ const findThread = (
   // Hide messages the viewer deleted for themselves only
   if (viewerUserId) {
     filter.deletedFor = { $ne: new mongoose.Types.ObjectId(viewerUserId) };
+  }
+  // Presenter (and similar): scope conversation to a single show when provided
+  if (showId) {
+    filter.show = new mongoose.Types.ObjectId(showId);
   }
 
   return Message.find(filter)
@@ -75,6 +80,7 @@ const findThreadsByStation = (
         lastMessage: { $first: "$content" },
         lastImageUrl: { $first: "$imageUrl" },
         lastAudioUrl: { $first: "$audioUrl" },
+        lastStickerUrl: { $first: "$stickerUrl" },
         lastMediaType: { $first: "$mediaType" },
         lastTime: { $first: "$createdAt" },
         count: { $sum: 1 },
@@ -148,7 +154,7 @@ const findThreadsByStation = (
         isActive: {
           $let: {
             vars: { first: { $arrayElemAt: ["$stationDoc", 0] } },
-            in: "$first.isActive",
+            in: "$$first.isActive",
           },
         },
         listenerName: {
@@ -190,7 +196,18 @@ const findThreadsByStation = (
                       ],
                     },
                     "📷 Photo",
-                    "",
+                    {
+                      $cond: [
+                        {
+                          $or: [
+                            { $eq: ["$lastMediaType", "sticker"] },
+                            { $and: [{ $ne: ["$lastStickerUrl", null] }, { $ne: ["$lastStickerUrl", ""] }] },
+                          ],
+                        },
+                        "Sticker",
+                        "",
+                      ],
+                    },
                   ],
                 },
               ],
@@ -265,6 +282,7 @@ const findThreadsByPresenter = (
   presenterId: string,
   skip: number,
   limit: number,
+  showId?: string,
 ) => {
   return Message.aggregate([
     {
@@ -272,6 +290,8 @@ const findThreadsByPresenter = (
         station: new mongoose.Types.ObjectId(stationId),
         senderType: "user",
         isDeleted: { $ne: true },
+        // Strict running-show isolation: only messages tagged with the active show
+        ...(showId ? { show: new mongoose.Types.ObjectId(showId) } : {}),
       },
     },
     // Lookup show to filter by presenter
@@ -289,6 +309,9 @@ const findThreadsByPresenter = (
     {
       $match: {
         "showDoc.presenter": new mongoose.Types.ObjectId(presenterId),
+        ...(showId
+          ? { "showDoc._id": new mongoose.Types.ObjectId(showId) }
+          : {}),
       },
     },
     { $sort: { createdAt: -1 } },
@@ -298,6 +321,7 @@ const findThreadsByPresenter = (
         lastMessage: { $first: "$content" },
         lastImageUrl: { $first: "$imageUrl" },
         lastAudioUrl: { $first: "$audioUrl" },
+        lastStickerUrl: { $first: "$stickerUrl" },
         lastMediaType: { $first: "$mediaType" },
         lastTime: { $first: "$createdAt" },
         count: { $sum: 1 },
@@ -305,6 +329,7 @@ const findThreadsByPresenter = (
           $sum: { $cond: [{ $eq: ["$isReplied", false] }, 1, 0] },
         },
         showName: { $first: "$showDoc.name" },
+        showId: { $first: "$show" },
       },
     },
     // Lookup user by phone number to get listener name and avatar
@@ -366,7 +391,18 @@ const findThreadsByPresenter = (
                       ],
                     },
                     "📷 Photo",
-                    "",
+                    {
+                      $cond: [
+                        {
+                          $or: [
+                            { $eq: ["$lastMediaType", "sticker"] },
+                            { $and: [{ $ne: ["$lastStickerUrl", null] }, { $ne: ["$lastStickerUrl", ""] }] },
+                          ],
+                        },
+                        "Sticker",
+                        "",
+                      ],
+                    },
                   ],
                 },
               ],
@@ -383,13 +419,18 @@ const findThreadsByPresenter = (
   ]);
 };
 
-const countThreadsByPresenter = (stationId: string, presenterId: string) => {
+const countThreadsByPresenter = (
+  stationId: string,
+  presenterId: string,
+  showId?: string,
+) => {
   return Message.aggregate([
     {
       $match: {
         station: new mongoose.Types.ObjectId(stationId),
         senderType: "user",
         isDeleted: { $ne: true },
+        ...(showId ? { show: new mongoose.Types.ObjectId(showId) } : {}),
       },
     },
     {
@@ -406,6 +447,9 @@ const countThreadsByPresenter = (stationId: string, presenterId: string) => {
     {
       $match: {
         "showDoc.presenter": new mongoose.Types.ObjectId(presenterId),
+        ...(showId
+          ? { "showDoc._id": new mongoose.Types.ObjectId(showId) }
+          : {}),
       },
     },
     { $group: { _id: "$msisdn" } },
@@ -417,7 +461,7 @@ const approveMessage = (messageId: string, approvedBy: string) => {
   return Message.findByIdAndUpdate(
     messageId,
     { status: "approved", approvedBy, approvedAt: new Date() },
-    { new: true },
+    { returnDocument: "after" },
   ).lean();
 };
 
@@ -425,7 +469,7 @@ const rejectMessage = (messageId: string, rejectionReason: string) => {
   return Message.findByIdAndUpdate(
     messageId,
     { status: "rejected", rejectionReason },
-    { new: true },
+    { returnDocument: "after" },
   ).lean();
 };
 
@@ -433,7 +477,7 @@ const sendToOutput = (messageId: string) => {
   return Message.findByIdAndUpdate(
     messageId,
     { status: "sent_to_output", sentToOutputAt: new Date() },
-    { new: true },
+    { returnDocument: "after" },
   ).lean();
 };
 
@@ -441,7 +485,7 @@ const deleteMessage = (messageId: string) => {
   return Message.findByIdAndUpdate(
     messageId,
     { isDeleted: true },
-    { new: true },
+    { returnDocument: "after" },
   );
 };
 
@@ -453,7 +497,7 @@ const editMessageContent = (messageId: string, content: string) => {
       isEdited: true,
       editedAt: new Date(),
     },
-    { new: true },
+    { returnDocument: "after" },
   )
     .populate("show", "name")
     .populate("senderUser", "fullName")
@@ -467,7 +511,7 @@ const deleteMessageForUser = (messageId: string, userId: string) => {
   return Message.findByIdAndUpdate(
     messageId,
     { $addToSet: { deletedFor: new mongoose.Types.ObjectId(userId) } },
-    { new: true },
+    { returnDocument: "after" },
   ).lean();
 };
 
@@ -475,7 +519,7 @@ const deleteMessageForEveryone = (messageId: string) => {
   return Message.findByIdAndUpdate(
     messageId,
     { deletedForEveryone: true },
-    { new: true },
+    { returnDocument: "after" },
   )
     .populate("show", "name")
     .populate("senderUser", "fullName")
@@ -489,7 +533,7 @@ const markAsRead = (messageId: string) => {
   return Message.findByIdAndUpdate(
     messageId,
     { isRead: true, readAt: new Date() },
-    { new: true },
+    { returnDocument: "after" },
   ).lean();
 };
 
@@ -578,7 +622,7 @@ const findThreadsByUserPhone = (
         isActive: {
           $let: {
             vars: { first: { $arrayElemAt: ["$stationDoc", 0] } },
-            in: "$first.isActive",
+            in: "$$first.isActive",
           },
         },
         showName: {
@@ -673,6 +717,9 @@ export const MessageRepository = {
   rejectMessage,
   sendToOutput,
   deleteMessage,
+  editMessageContent,
+  deleteMessageForUser,
+  deleteMessageForEveryone,
   markAsRead,
   findAllMessages,
   countAllMessages,

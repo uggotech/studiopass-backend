@@ -29,9 +29,12 @@ export interface TChallenge {
   description: string;
   instructions?: string;
   startDate: Date;
-  startTime: string; // "14:00" (HH:mm)
+  startTime: string; // "14:00" (HH:mm) — display label in station local time
   endDate: Date;
-  endTime: string; // "16:00" (HH:mm)
+  endTime: string; // "16:00" (HH:mm) — display label in station local time
+  /** Exact UTC instants (channel-poll model). Preferred for lifecycle. */
+  startsAt?: Date;
+  endsAt?: Date;
   questions: TChallengeQuestion[];
   status: ChallengeStatus;
   billingMode: BillingMode;

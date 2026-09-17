@@ -26,7 +26,7 @@ const markAsRead = (id: string, userId: string) => {
   return Notification.findOneAndUpdate(
     { _id: id, user: userId },
     { isRead: true, readAt: new Date() },
-    { new: true },
+    { returnDocument: "after" },
   ).lean();
 };
 

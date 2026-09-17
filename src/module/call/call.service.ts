@@ -45,7 +45,7 @@ const refundIfQueued = async (
         creditsUsed: { $gt: 0 },
       },
       { $set: { creditsUsed: 0 } },
-      { new: false },
+      { returnDocument: "before" },
     );
 
     if (!updatedCall) {
@@ -256,7 +256,7 @@ const startQueueTimeout = (callId: string, userId: string, stationId: string): v
       const result = await Call.findOneAndUpdate(
         { _id: callId, status: "queued" },
         { $set: { status: "missed", endedAt: new Date() } },
-        { new: true },
+        { returnDocument: "after" },
       );
 
       if (result) {
@@ -302,7 +302,7 @@ const startJoinTimeout = (
       const result = await Call.findOneAndUpdate(
         { _id: callId, status: "answered" },
         { $set: { status: "missed", endedAt: new Date() } },
-        { new: true },
+        { returnDocument: "after" },
       );
 
       if (result) {
@@ -516,7 +516,7 @@ const acceptCall = async (callId: string, operatorId: string) => {
         answeredAt: new Date(),
       },
     },
-    { new: true },
+    { returnDocument: "after" },
   );
 
   if (!result) {
@@ -635,7 +635,7 @@ const endCall = async (callId: string, userId: string, webrtcDuration?: number) 
         },
       },
     ],
-    { new: true, updatePipeline: true },
+    { returnDocument: "after", updatePipeline: true },
   );
 
   if (!result) {
@@ -710,7 +710,7 @@ const cancelCall = async (callId: string, userId: string) => {
   const result = await Call.findOneAndUpdate(
     { _id: callId, startedBy: userId, status: "queued" },
     { $set: { status: "cancelled", endedAt: new Date() } },
-    { new: true },
+    { returnDocument: "after" },
   );
 
   if (!result) {
@@ -751,7 +751,7 @@ const rejectCall = async (callId: string, operatorId: string, reason?: string) =
         endedAt: new Date(),
       },
     },
-    { new: true },
+    { returnDocument: "after" },
   );
 
   if (!result) {
@@ -804,7 +804,7 @@ const getCallHistory = async (
 
   const [calls, total] = await Promise.all([
     Call.find({ startedBy: userId })
-      .populate("station", "name stationCode category logo country")
+      .populate("station", "name stationCode category logo country isActive isVerified")
       .populate("show", "name")
       .populate("handledBy", "fullName")
       .sort({ createdAt: -1 })
@@ -964,7 +964,7 @@ const cleanupStaleCalls = async (): Promise<void> => {
         const updated = await Call.findOneAndUpdate(
           { _id: call._id, status: "queued" },
           { $set: { status: "missed", endedAt: now } },
-          { new: true },
+          { returnDocument: "after" },
         );
         if (updated && call.creditsUsed > 0) {
           await refundIfQueued(call._id.toString(), call.startedBy.toString(), call.creditsUsed, call.station.toString());
@@ -1001,7 +1001,7 @@ const cleanupStaleCalls = async (): Promise<void> => {
         const updated = await Call.findOneAndUpdate(
           { _id: call._id, status: "answered" },
           { $set: { status: "completed", endedAt: now, duration } },
-          { new: true },
+          { returnDocument: "after" },
         );
         if (updated) {
           if (call.handledBy) {
@@ -1063,7 +1063,7 @@ const reregisterTimeouts = async (): Promise<void> => {
             const result = await Call.findOneAndUpdate(
               { _id: call._id, status: "queued" },
               { $set: { status: "missed", endedAt: new Date() } },
-              { new: true },
+              { returnDocument: "after" },
             );
             if (result) {
               if (result.creditsUsed > 0) {
@@ -1114,7 +1114,7 @@ const reregisterTimeouts = async (): Promise<void> => {
             const result = await Call.findOneAndUpdate(
               { _id: call._id, status: "answered" },
               { $set: { status: "missed", endedAt: new Date() } },
-              { new: true },
+              { returnDocument: "after" },
             );
             if (result) {
               await refundIfQueued(call._id.toString(), call.startedBy.toString(), result.creditsUsed, call.station.toString());

@@ -38,6 +38,7 @@ const getDefaultStats = () => ({
   totalStations: 0,
   activeStations: 0,
   totalUsers: 0,
+  totalListeners: 0,
   totalMessages: 0,
   totalCalls: 0,
   activeShows: 0,

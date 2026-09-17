@@ -119,7 +119,12 @@ const createDisbursementsForChallenge = async (challengeId: string): Promise<voi
         title: winnerTitle,
         body: winnerMessage,
         type: "system",
-        data: { challengeId, type: "challenge_winner" },
+        data: {
+          challengeId: String(challengeId),
+          kind: "challenge_result",
+          type: "challenge_winner",
+          route: `/challenge-result/${challengeId}`,
+        },
       });
     }
 
@@ -130,7 +135,12 @@ const createDisbursementsForChallenge = async (challengeId: string): Promise<voi
         title: "Challenge Completed",
         body: `Thank you for participating in ${challenge.title}. Unfortunately, you were not among the winners this time. Keep participating in future challenges!`,
         type: "system",
-        data: { challengeId, type: "challenge_result" },
+        data: {
+          challengeId: String(challengeId),
+          kind: "challenge_result",
+          type: "challenge_result",
+          route: `/challenge-result/${challengeId}`,
+        },
       });
     }
     await session.commitTransaction();

@@ -73,7 +73,8 @@ export const SupportController = {
     const id = req.params.id as string;
     const page = Number(req.query.page) || 1;
     const limit = Number(req.query.limit) || 100;
-    const result = await SupportService.getConversationMessages(id, page, limit);
+    const viewer = req.user as any;
+    const result = await SupportService.getConversationMessages(id, page, limit, viewer);
 
     sendResponse(res, {
       statusCode: StatusCodes.OK,
@@ -98,8 +99,8 @@ export const SupportController = {
 
   closeTicket: catchAsync(async (req: Request, res: Response) => {
     const id = req.params.id as string;
-    const userId = (req.user as any)._id.toString();
-    const result = await SupportService.closeTicket(id, userId);
+    const closer = req.user as any;
+    const result = await SupportService.closeTicket(id, closer);
 
     sendResponse(res, {
       statusCode: StatusCodes.OK,

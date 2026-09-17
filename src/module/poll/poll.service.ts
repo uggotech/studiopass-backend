@@ -11,10 +11,19 @@ const createPoll = async (
   createdBy: string,
   showId?: string,
   expiresAt?: string,
+  userRole?: string,
+  userPartnerId?: string,
 ) => {
-  const station = await StationRepository.findById(stationId);
+  const station: any = await StationRepository.findById(stationId);
   if (!station) {
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
+  }
+
+  if (userRole === "partner_admin" && userPartnerId) {
+    const stationPartnerId = station.partner?._id || station.partner?.id || station.partner;
+    if (stationPartnerId?.toString() !== userPartnerId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "Unauthorized to create polls for stations outside your country partner.");
+    }
   }
 
   const formattedOptions = options.map((opt) => {
@@ -41,10 +50,10 @@ const createPoll = async (
   return poll;
 };
 
-const getStationPolls = async (stationId: string, page: number, limit: number, status?: string) => {
+const getStationPolls = async (stationId: string, page: number, limit: number, status?: string, userId?: string) => {
   const skip = (page - 1) * limit;
   const [polls, total] = await Promise.all([
-    PollRepository.findByStation(stationId, skip, limit, status),
+    PollRepository.findByStation(stationId, skip, limit, status, userId),
     PollRepository.countByStation(stationId, status),
   ]);
 
@@ -63,7 +72,7 @@ const getStationPolls = async (stationId: string, page: number, limit: number, s
   };
 };
 
-const getAllPolls = async (query: Record<string, unknown>, scope?: { partnerId?: string; stationId?: string; role?: string }) => {
+const getAllPolls = async (query: Record<string, unknown>, scope?: { partnerId?: string; stationId?: string; role?: string }, userId?: string) => {
   const filter: Record<string, unknown> = {};
 
   if (query.station) {
@@ -87,7 +96,7 @@ const getAllPolls = async (query: Record<string, unknown>, scope?: { partnerId?:
   const skip = (page - 1) * limit;
 
   const [polls, total] = await Promise.all([
-    PollRepository.findAll(filter, { skip, limit }),
+    PollRepository.findAll(filter, { skip, limit }, userId),
     PollRepository.count(filter),
   ]);
 
@@ -106,8 +115,8 @@ const getAllPolls = async (query: Record<string, unknown>, scope?: { partnerId?:
   };
 };
 
-const getPollById = async (id: string) => {
-  const poll = await PollRepository.findById(id);
+const getPollById = async (id: string, userId?: string) => {
+  const poll = await PollRepository.findById(id, userId);
   if (!poll) {
     throw new AppError(StatusCodes.NOT_FOUND, "Poll not found");
   }
@@ -140,7 +149,8 @@ const votePoll = async (pollId: string, optionIndex: number, userId: string) => 
     emitToStation((poll as any).station.toString(), "poll-updated", { poll: updated });
   } catch {}
 
-  return updated;
+  // Return updated poll with isVotedByMe = true
+  return { ...updated, isVotedByMe: true };
 };
 
 const updatePoll = async (id: string, updates: { question?: string; status?: string }) => {

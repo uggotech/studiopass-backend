@@ -30,11 +30,11 @@ const create = (data: Partial<TAuth>, session?: mongoose.ClientSession): Promise
 };
 
 const updateById = (id: string, data: Partial<TAuth>): Promise<TAuth | null> => {
-  return Auth.findByIdAndUpdate(id, data, { new: true }).lean();
+  return Auth.findByIdAndUpdate(id, data, { returnDocument: "after" }).lean();
 };
 
 const updatePassword = (id: string, passwordHash: string) => {
-  return Auth.findByIdAndUpdate(id, { password: passwordHash }, { new: true }).lean();
+  return Auth.findByIdAndUpdate(id, { password: passwordHash }, { returnDocument: "after" }).lean();
 };
 
 export const AuthRepository = {

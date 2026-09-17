@@ -33,7 +33,11 @@ const updateStatus = (
   id: string,
   data: { status: string; txRef?: string; failureReason?: string; processedAt?: Date },
 ): Promise<TDisbursement | null> => {
-  return Disbursement.findByIdAndUpdate(id, data, { new: true }).lean() as unknown as Promise<TDisbursement | null>;
+  return Disbursement.findByIdAndUpdate(id, data, { returnDocument: "after" }).lean() as unknown as Promise<TDisbursement | null>;
+};
+
+const deleteByChallenge = (challengeId: string) => {
+  return Disbursement.deleteMany({ challenge: challengeId });
 };
 
 export const DisbursementRepository = {
@@ -42,4 +46,5 @@ export const DisbursementRepository = {
   count,
   findById,
   updateStatus,
+  deleteByChallenge,
 };

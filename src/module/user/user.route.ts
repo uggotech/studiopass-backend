@@ -114,11 +114,18 @@ router.get(
   UserController.getAllListeners,
 );
 
-// Super admin + partner admin + station admin + presenter: list top fans
+// Super admin + partner admin + station admin + media station + presenter: list top fans
 router.get(
   "/top-fans",
-  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.PRESENTER),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION, UserRole.PRESENTER),
   UserController.getTopFans,
+);
+
+// Must be before /:id — fan detail for dashboard Top Fans
+router.get(
+  "/top-fans/:id",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION, UserRole.PRESENTER),
+  UserController.getTopFanById,
 );
 
 // Super admin + partner admin + station admin: get single listener (CRM)

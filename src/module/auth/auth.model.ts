@@ -4,7 +4,8 @@ import { TAuth } from "./auth.interface";
 const authSchema = new Schema<TAuth>(
   {
     // Dashboard fields
-    username: { type: String, trim: true, sparse: true },
+    // username unique partial index is defined below via schema.index()
+    username: { type: String, trim: true },
     password: { type: String, select: false },
 
     // App fields

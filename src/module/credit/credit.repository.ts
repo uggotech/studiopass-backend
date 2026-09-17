@@ -7,7 +7,9 @@ const getBalance = async (userId: string) => {
 };
 
 const incrementBalance = async (userId: string, amount: number, isFree: boolean = true, session?: mongoose.ClientSession) => {
-  const opts = session ? { session, new: true, upsert: true } : { new: true, upsert: true };
+  const opts: mongoose.QueryOptions = session
+    ? { session, returnDocument: "after", upsert: true }
+    : { returnDocument: "after", upsert: true };
   const incFields: Record<string, number> = { balance: amount };
   if (isFree) {
     incFields.freeBalance = amount;
@@ -22,7 +24,9 @@ const incrementBalance = async (userId: string, amount: number, isFree: boolean 
 };
 
 const decrementBalance = async (userId: string, amount: number, session?: mongoose.ClientSession) => {
-  const opts = session ? { session, new: true } : { new: true };
+  const opts: mongoose.QueryOptions = session
+    ? { session, returnDocument: "after" }
+    : { returnDocument: "after" };
 
   // Look up current balance to determine free vs paid credit source
   const current = await CreditBalance.findOne({ user: userId }).lean();

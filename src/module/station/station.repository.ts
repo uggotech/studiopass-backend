@@ -58,7 +58,7 @@ const create = (data: Partial<TStation>, session?: mongoose.ClientSession): Prom
 };
 
 const updateById = (id: string, data: Partial<TStation>): Promise<TStation | null> => {
-  return Station.findByIdAndUpdate(id, data, { new: true })
+  return Station.findByIdAndUpdate(id, data, { returnDocument: "after" })
     .populate("country", "name code phoneCode currency currencySymbol timezone")
     .populate("partner", "name")
     .lean();

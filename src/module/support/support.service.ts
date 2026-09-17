@@ -18,6 +18,52 @@ const generateTicketId = (): string => {
   return `TKT-${dateStr}-${randomStr}`;
 };
 
+const AGENT_ROLES = ["customer_care", "super_admin", "partner_admin"] as const;
+
+/** Ref may be ObjectId or a populated doc; always compare the hex id string. */
+const resolveRefId = (ref: unknown): string => {
+  if (ref == null) return "";
+  if (typeof ref === "object") {
+    const id = (ref as { _id?: unknown })._id;
+    return id == null ? "" : String(id);
+  }
+  return String(ref);
+};
+
+const canAgentAccessConversation = (
+  conversation: ISupportConversation,
+  agentId: string,
+  role: string,
+): boolean => {
+  if (role === "super_admin") return true;
+  if (conversation.status === "OPEN") return true;
+  return resolveRefId(conversation.assignedAgentId) === agentId;
+};
+
+const assertConversationAccess = (
+  conversation: ISupportConversation,
+  user: { _id: Types.ObjectId | string; role: string },
+): void => {
+  const userId = user._id.toString();
+  const role = user.role;
+
+  if (role === "user") {
+    if (resolveRefId(conversation.userId) !== userId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only access your own support conversation.");
+    }
+    return;
+  }
+
+  if ((AGENT_ROLES as readonly string[]).includes(role)) {
+    if (!canAgentAccessConversation(conversation, userId, role)) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only access tickets in your queue or assigned to you.");
+    }
+    return;
+  }
+
+  throw new AppError(StatusCodes.FORBIDDEN, "Not authorized to access support conversations.");
+};
+
 export const SupportService = {
   async createConversation(userId: string, initialMessage: string): Promise<{ conversation: ISupportConversation; firstMessage: ISupportMessage }> {
     const user = await User.findById(userId).lean();
@@ -188,10 +234,19 @@ export const SupportService = {
     };
   },
 
-  async getConversationMessages(conversationId: string, page = 1, limit = 100) {
+  async getConversationMessages(
+    conversationId: string,
+    page = 1,
+    limit = 100,
+    viewer?: { _id: Types.ObjectId | string; role: string },
+  ) {
     const conversation = await SupportRepository.findById(conversationId);
     if (!conversation) {
       throw new AppError(StatusCodes.NOT_FOUND, "Conversation not found");
+    }
+
+    if (viewer) {
+      assertConversationAccess(conversation, viewer);
     }
 
     const messages = await SupportRepository.findMessagesByConversationId(conversationId, page, limit);
@@ -232,11 +287,16 @@ export const SupportService = {
     return updated;
   },
 
-  async closeTicket(conversationId: string, closedByUserId: string) {
+  async closeTicket(
+    conversationId: string,
+    closedBy: { _id: Types.ObjectId | string; role: string },
+  ) {
     const conversation = await SupportRepository.findById(conversationId);
     if (!conversation) {
       throw new AppError(StatusCodes.NOT_FOUND, "Conversation not found");
     }
+
+    assertConversationAccess(conversation, closedBy);
 
     if (conversation.status === "CLOSED") {
       return conversation;
@@ -244,7 +304,7 @@ export const SupportService = {
 
     const updated = await SupportRepository.updateConversationStatus(conversationId, "CLOSED", {
       closedAt: new Date(),
-      closedBy: new Types.ObjectId(closedByUserId),
+      closedBy: new Types.ObjectId(closedBy._id),
     });
 
     try {
@@ -273,11 +333,13 @@ export const SupportService = {
       throw new AppError(StatusCodes.NOT_FOUND, "Conversation not found");
     }
 
+    assertConversationAccess(conversation, sender);
+
     if (conversation.status === "CLOSED") {
       throw new AppError(StatusCodes.BAD_REQUEST, "Cannot send message to a closed ticket");
     }
 
-    const isAgent = ["customer_care", "super_admin", "partner_admin"].includes(sender.role);
+    const isAgent = (AGENT_ROLES as readonly string[]).includes(sender.role);
     const senderRole = isAgent ? (sender.role as any) : "user";
 
     const supportMsg = await SupportRepository.createMessage({
@@ -325,6 +387,8 @@ export const SupportService = {
           title: "Customer Support Reply",
           body: messageText.length > 80 ? `${messageText.slice(0, 80)}...` : messageText,
           data: {
+            kind: "support_reply",
+            route: "/support-chat",
             conversationId,
             ticketId: conversation.ticketId,
           },

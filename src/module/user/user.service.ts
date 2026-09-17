@@ -323,22 +323,107 @@ const getAllMediaStationUsers = async (query: Record<string, unknown>, scope?: {
   };
 };
 
+/**
+ * Resolve IANA timezone from a country id or populated country doc.
+ * Returns null when unknown — never invent "UTC" when lookup failed.
+ */
+async function resolveTimezoneFromCountryId(countryRef: unknown): Promise<string | null> {
+  if (!countryRef) return null;
+
+  if (typeof countryRef === "object" && countryRef !== null) {
+    if ("timezone" in (countryRef as any) && (countryRef as any).timezone) {
+      return (countryRef as any).timezone as string;
+    }
+    const id = (countryRef as any)._id ?? (countryRef as any).id;
+    if (!id) return null;
+    try {
+      const country = await Country.findById(id).select("timezone").lean();
+      return (country as any)?.timezone || null;
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const country = await Country.findById(countryRef).select("timezone").lean();
+    return (country as any)?.timezone || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prefer station country (station-scoped roles), then partner country, then user country.
+ */
+async function resolveDashboardTimezone(
+  user: any,
+  station: any,
+  partner?: any,
+): Promise<string | null> {
+  // 1) Station → country → timezone (media_station, presenter, station_admin)
+  const stationCountry = station?.country ?? null;
+  if (stationCountry) {
+    const tz =
+      typeof stationCountry === "object" && stationCountry.timezone
+        ? stationCountry.timezone
+        : await resolveTimezoneFromCountryId(stationCountry);
+    if (tz) return tz;
+  }
+
+  // 2) Station id present but country not populated — reload station.country
+  const stationId = station?._id || user?.stationId;
+  if (stationId && !stationCountry) {
+    try {
+      const { Station } = await import("../station/station.model");
+      const stationDoc = await Station.findById(stationId).select("country").lean();
+      const tz = await resolveTimezoneFromCountryId((stationDoc as any)?.country);
+      if (tz) return tz;
+    } catch {
+      // ignore
+    }
+  }
+
+  // 3) Partner → country (partner_admin, customer_care)
+  const partnerCountry = partner?.country ?? null;
+  if (partnerCountry) {
+    const tz =
+      typeof partnerCountry === "object" && partnerCountry.timezone
+        ? partnerCountry.timezone
+        : await resolveTimezoneFromCountryId(partnerCountry);
+    if (tz) return tz;
+  }
+
+  const partnerId = partner?._id || user?.partnerId;
+  if (partnerId && !partnerCountry) {
+    try {
+      const { Partner } = await import("../partner/partner.model");
+      const partnerDoc = await Partner.findById(partnerId).select("country").lean();
+      const tz = await resolveTimezoneFromCountryId((partnerDoc as any)?.country);
+      if (tz) return tz;
+    } catch {
+      // ignore
+    }
+  }
+
+  // 4) User.countryId (app users / customer care fallback)
+  if (user?.countryId) {
+    const tz = await resolveTimezoneFromCountryId(user.countryId);
+    if (tz) return tz;
+  }
+
+  return null;
+}
+
 const getMyProfile = async (userId: string) => {
   const user = await UserRepository.findByIdWithStation(userId);
   if (!user) {
     throw new AppError(StatusCodes.NOT_FOUND, "User not found");
   }
   const station: any = (user.stationId && typeof user.stationId === "object" && "name" in user.stationId) ? user.stationId : null;
+  const partner: any = (user.partnerId && typeof user.partnerId === "object" && "name" in user.partnerId) ? user.partnerId : null;
 
-  let timezone = "UTC";
-  if (user.countryId) {
-    const country = await Country.findById(user.countryId).select("timezone").lean();
-    if (country?.timezone) timezone = country.timezone;
-  } else if (station?.country) {
-    const countryId = (station.country as any)?._id || station.country;
-    const country = await Country.findById(countryId).select("timezone").lean();
-    if (country?.timezone) timezone = country.timezone;
-  }
+  // null when unresolved — frontend merges with login/Redux timezone
+  const timezone = await resolveDashboardTimezone(user, station, partner);
 
   let twoFactorEnabled = false;
   if (user.auth) {
@@ -372,6 +457,15 @@ const getMyProfile = async (userId: string) => {
           channelType: station.channelType || null,
           logo: station.logo || null,
           coverImage: station.coverImage || null,
+          country: station.country
+            ? typeof station.country === "object"
+              ? {
+                  id: (station.country as any)._id?.toString?.() ?? null,
+                  name: (station.country as any).name ?? null,
+                  timezone: (station.country as any).timezone ?? null,
+                }
+              : station.country.toString()
+            : null,
         }
       : null,
     profileCompleted: user.profileCompleted,
@@ -912,52 +1006,227 @@ const getAllCustomerCareUsers = async (
   };
 };
 
-const getTopFans = async (_scope?: { stationId?: string }) => {
-  const users = await User.find({ role: UserRole.USER })
+/**
+ * Top fans — real engagement data.
+ * When scope.stationId is set (media station / station staff), only that station's
+ * messages + calls are counted. Call user field is `startedBy`, not `user`.
+ */
+const buildTopFanFromUser = (
+  u: any,
+  messages: number,
+  calls: number,
+  rank: number,
+  extra?: Record<string, unknown>,
+) => ({
+  id: u._id.toString(),
+  name: u.fullName || "Anonymous Fan",
+  phone: u.phone || "N/A",
+  status: u.isBlocked ? "Inactive" : "Active",
+  messages,
+  calls,
+  polls: Math.floor(messages / 3),
+  score: messages * 2 + calls * 5,
+  joinedDate: u.createdAt ? new Date(u.createdAt).toISOString().split("T")[0] : "2026-01-01",
+  lastActive: u.updatedAt ? new Date(u.updatedAt).toISOString() : new Date().toISOString(),
+  rank,
+  ...extra,
+});
+
+const getTopFans = async (scope?: { stationId?: string }) => {
+  const stationOid =
+    scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)
+      ? new mongoose.Types.ObjectId(scope.stationId)
+      : null;
+
+  const msgMatch: Record<string, unknown> = { senderType: "user", user: { $ne: null } };
+  const callMatch: Record<string, unknown> = { startedBy: { $ne: null } };
+  if (stationOid) {
+    msgMatch.station = stationOid;
+    callMatch.station = stationOid;
+  }
+
+  const [messageCounts, callCounts] = await Promise.all([
+    Message.aggregate([
+      { $match: msgMatch },
+      { $group: { _id: "$user", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 50 },
+    ]),
+    Call.aggregate([
+      { $match: callMatch },
+      { $group: { _id: "$startedBy", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 50 },
+    ]),
+  ]);
+
+  const msgMap = new Map(messageCounts.map((m: any) => [m._id?.toString(), m.count || 0]));
+  const callMap = new Map(callCounts.map((c: any) => [c._id?.toString(), c.count || 0]));
+  const userIds = [
+    ...new Set([
+      ...[...msgMap.keys()].filter(Boolean),
+      ...[...callMap.keys()].filter(Boolean),
+    ]),
+  ].map((id) => id as string);
+
+  // Station-scoped: only listeners with real activity at this station
+  if (stationOid) {
+    if (userIds.length === 0) return [];
+    const users = await User.find({
+      _id: { $in: userIds },
+      role: UserRole.USER,
+      isDeleted: { $ne: true },
+    }).lean();
+
+    return users
+      .map((u) => {
+        const key = u._id.toString();
+        return buildTopFanFromUser(u, msgMap.get(key) || 0, callMap.get(key) || 0, 0);
+      })
+      .sort((a, b) => b.score - a.score || b.messages - a.messages)
+      .map((fan, index) => ({ ...fan, rank: index + 1 }))
+      .slice(0, 20);
+  }
+
+  // Global (super/partner): rank by real activity first
+  if (userIds.length > 0) {
+    const users = await User.find({
+      _id: { $in: userIds },
+      role: UserRole.USER,
+      isDeleted: { $ne: true },
+    }).lean();
+
+    const ranked = users
+      .map((u) => {
+        const key = u._id.toString();
+        return buildTopFanFromUser(u, msgMap.get(key) || 0, callMap.get(key) || 0, 0);
+      })
+      .sort((a, b) => b.score - a.score || b.messages - a.messages)
+      .map((fan, index) => ({ ...fan, rank: index + 1 }))
+      .slice(0, 20);
+
+    if (ranked.length > 0) return ranked;
+  }
+
+  // Fallback global: recent listeners with zero engagement (still real users)
+  const users = await User.find({ role: UserRole.USER, isDeleted: { $ne: true } })
     .sort({ createdAt: -1 })
     .limit(20)
     .lean();
 
-  const userIds = users.map((u) => u._id);
+  return users.map((u, index) => buildTopFanFromUser(u, 0, 0, index + 1));
+};
 
-  const [messageCounts, callCounts] = await Promise.all([
-    Message.aggregate([
-      { $match: { user: { $in: userIds } } },
-      { $group: { _id: "$user", count: { $sum: 1 } } },
-    ]),
-    Call.aggregate([
-      { $match: { user: { $in: userIds } } },
-      { $group: { _id: "$user", count: { $sum: 1 } } },
-    ]),
+/**
+ * Single top-fan detail for dashboard (station-scoped for media station).
+ */
+const getTopFanById = async (fanUserId: string, scope?: { stationId?: string }) => {
+  if (!mongoose.Types.ObjectId.isValid(fanUserId)) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Invalid fan id");
+  }
+
+  const user = await User.findOne({
+    _id: fanUserId,
+    role: UserRole.USER,
+    isDeleted: { $ne: true },
+  }).lean();
+  if (!user) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Fan not found");
+  }
+
+  const stationOid =
+    scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)
+      ? new mongoose.Types.ObjectId(scope.stationId)
+      : null;
+
+  const msgFilter: Record<string, unknown> = { user: fanUserId, senderType: "user" };
+  const callFilter: Record<string, unknown> = { startedBy: fanUserId };
+  if (stationOid) {
+    msgFilter.station = stationOid;
+    callFilter.station = stationOid;
+  }
+
+  const [messages, calls, recentMessages, recentCalls] = await Promise.all([
+    Message.countDocuments(msgFilter),
+    Call.countDocuments(callFilter),
+    Message.find(msgFilter)
+      .sort({ createdAt: -1 })
+      .limit(8)
+      .populate("show", "name")
+      .lean(),
+    Call.find(callFilter)
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .populate("show", "name")
+      .lean(),
   ]);
 
-  const msgMap = new Map(messageCounts.map((m) => [m._id.toString(), m.count]));
-  const callMap = new Map(callCounts.map((c) => [c._id.toString(), c.count]));
+  // Rank among top fans for the same scope
+  const list = await getTopFans(scope);
+  const fromList = list.find((f) => f.id === user._id.toString());
+  const rank = fromList?.rank ?? 0;
+  const polls = fromList?.polls ?? Math.floor(messages / 3);
 
-  const topFans = users
-    .map((u) => {
-      const messages = msgMap.get(u._id.toString()) || 0;
-      const calls = callMap.get(u._id.toString()) || 0;
-      return {
-        id: u._id.toString(),
-        name: u.fullName || "Anonymous Fan",
-        phone: u.phone || "N/A",
-        status: u.isBlocked ? "Inactive" : "Active",
-        messages,
-        calls,
-        polls: Math.floor(messages / 3),
-        score: messages * 2 + calls * 5,
-        joinedDate: u.createdAt ? new Date(u.createdAt).toISOString().split("T")[0] : "2026-01-01",
-        lastActive: u.updatedAt ? new Date(u.updatedAt).toISOString() : new Date().toISOString(),
-      };
-    })
-    .sort((a, b) => b.score - a.score)
-    .map((fan, index) => ({
-      ...fan,
-      rank: index + 1,
-    }));
+  // Favourite show = most frequent show on this fan's messages
+  const showCounts = new Map<string, number>();
+  for (const m of recentMessages as any[]) {
+    const showName = m?.show?.name;
+    if (showName) showCounts.set(showName, (showCounts.get(showName) || 0) + 1);
+  }
+  // Prefer aggregate over recent sample when possible
+  const showAgg = await Message.aggregate([
+    { $match: msgFilter },
+    { $group: { _id: "$show", count: { $sum: 1 } } },
+    { $sort: { count: -1 } },
+    { $limit: 1 },
+  ]);
+  let favouriteShow = "General Program";
+  if (showAgg[0]?._id) {
+    const { Show } = await import("../show/show.model");
+    const showDoc = await Show.findById(showAgg[0]._id).select("name").lean();
+    favouriteShow = (showDoc as any)?.name || favouriteShow;
+  } else if (showCounts.size > 0) {
+    const topEntry = [...showCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (topEntry?.[0]) favouriteShow = topEntry[0];
+  }
 
-  return topFans;
+  const recentActivity: { action: string; time: string; icon: string }[] = [];
+  for (const m of recentMessages.slice(0, 5) as any[]) {
+    const showName = m?.show?.name ? ` · ${m.show.name}` : "";
+    const preview = (m.content || (m.mediaType && m.mediaType !== "text" ? `[${m.mediaType}]` : "Message")).slice(0, 40);
+    recentActivity.push({
+      action: `Sent message${showName}: ${preview}`,
+      time: m.createdAt ? new Date(m.createdAt).toISOString() : "",
+      icon: "message",
+    });
+  }
+  for (const c of recentCalls.slice(0, 3) as any[]) {
+    recentActivity.push({
+      action: `Call ${c.status || "placed"}`,
+      time: c.createdAt ? new Date(c.createdAt).toISOString() : "",
+      icon: "call",
+    });
+  }
+
+  return {
+    id: user._id.toString(),
+    name: user.fullName || "Anonymous Fan",
+    phone: user.phone || "N/A",
+    status: user.isBlocked ? "Inactive" : "Active",
+    messages,
+    calls,
+    polls,
+    rank,
+    score: messages * 2 + calls * 5,
+    favouriteShow,
+    joinedDate: user.createdAt
+      ? new Date(user.createdAt).toISOString().split("T")[0]
+      : "2026-01-01",
+    lastActive: user.updatedAt
+      ? new Date(user.updatedAt).toISOString()
+      : new Date().toISOString(),
+    recentActivity,
+  };
 };
 
 const createCustomerCareUser = async (data: {
@@ -1140,6 +1409,7 @@ export const UserService = {
   getListenerById,
   getListenerVotes,
   getTopFans,
+  getTopFanById,
   getMyProfile,
   updateMyProfile,
   updateMyPreferences,

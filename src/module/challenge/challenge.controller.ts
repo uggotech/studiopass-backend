@@ -2,6 +2,8 @@ import { StatusCodes } from "http-status-codes";
 import catchAsync from "../../shared/catchAsync";
 import sendResponse from "../../shared/sendResponse";
 import { ChallengeService } from "./challenge.service";
+import { ChallengeRepository } from "./challenge.repository";
+import { StationRepository } from "../station/station.repository";
 import AppError from "../../errors/AppError";
 
 const createChallenge = catchAsync(async (req, res) => {
@@ -58,6 +60,7 @@ const getAllChallenges = catchAsync(async (req, res) => {
     partnerId: req.user!.partnerId?.toString(),
     stationId: req.user!.stationId?.toString(),
     role: req.user!.role,
+    userId: req.user!._id.toString(),
   };
 
   const result = await ChallengeService.getAllChallenges(req.query as Record<string, unknown>, scope);
@@ -72,7 +75,7 @@ const getAllChallenges = catchAsync(async (req, res) => {
 
 const getChallengeById = catchAsync(async (req, res) => {
   const id = req.params.id as string;
-  const result = await ChallengeService.getChallengeById(id);
+  const result = await ChallengeService.getChallengeById(id, req.user!.role);
 
   sendResponse(res, {
     success: true,
@@ -109,8 +112,36 @@ const getChallengeResult = catchAsync(async (req, res) => {
   });
 });
 
+const getMyParticipations = catchAsync(async (req, res) => {
+  const userId = req.user!._id.toString();
+  const page = Number(req.query.page) || 1;
+  const limit = Number(req.query.limit) || 20;
+
+  const result = await ChallengeService.getMyParticipations(userId, page, limit);
+
+  sendResponse(res, {
+    success: true,
+    statusCode: StatusCodes.OK,
+    data: result.items,
+    meta: result.meta,
+  });
+});
+
 const updateChallenge = catchAsync(async (req, res) => {
   const id = req.params.id as string;
+  // Ownership check: ensure user can modify this challenge's station
+  const challenge = await ChallengeRepository.findById(id);
+  if (!challenge) throw new AppError(StatusCodes.NOT_FOUND, "Challenge not found");
+  if (req.user!.role !== "super_admin") {
+    const station: any = await StationRepository.findById(challenge.station.toString());
+    if (!station) throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
+    if (req.user!.role === "partner_admin" && station.partner?.toString() !== req.user!.partnerId?.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You do not have permission to modify this challenge.");
+    }
+    if (["station_admin", "media_station", "presenter"].includes(req.user!.role) && challenge.station.toString() !== req.user!.stationId?.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You do not have permission to modify this challenge.");
+    }
+  }
   const result = await ChallengeService.updateChallenge(id, req.body);
 
   sendResponse(res, {
@@ -123,6 +154,16 @@ const updateChallenge = catchAsync(async (req, res) => {
 
 const deleteChallenge = catchAsync(async (req, res) => {
   const id = req.params.id as string;
+  // Ownership check
+  const challenge = await ChallengeRepository.findById(id);
+  if (!challenge) throw new AppError(StatusCodes.NOT_FOUND, "Challenge not found");
+  if (req.user!.role !== "super_admin") {
+    const station: any = await StationRepository.findById(challenge.station.toString());
+    if (!station) throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
+    if (req.user!.role === "partner_admin" && station.partner?.toString() !== req.user!.partnerId?.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You do not have permission to delete this challenge.");
+    }
+  }
   await ChallengeService.deleteChallenge(id);
 
   sendResponse(res, {
@@ -148,12 +189,38 @@ const getAdminLeaderboard = catchAsync(async (req, res) => {
 
 const cancelChallenge = catchAsync(async (req, res) => {
   const id = req.params.id as string;
+  // Ownership check
+  const challenge = await ChallengeRepository.findById(id);
+  if (!challenge) throw new AppError(StatusCodes.NOT_FOUND, "Challenge not found");
+  if (req.user!.role !== "super_admin") {
+    const station: any = await StationRepository.findById(challenge.station.toString());
+    if (!station) throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
+    if (req.user!.role === "partner_admin" && station.partner?.toString() !== req.user!.partnerId?.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You do not have permission to cancel this challenge.");
+    }
+  }
   const result = await ChallengeService.cancelChallenge(id);
 
   sendResponse(res, {
     success: true,
     statusCode: StatusCodes.OK,
     message: "Challenge cancelled successfully",
+    data: result,
+  });
+});
+
+const getChallengeStats = catchAsync(async (req, res) => {
+  const scope = {
+    partnerId: req.user!.partnerId?.toString(),
+    stationId: req.user!.stationId?.toString(),
+    role: req.user!.role,
+  };
+
+  const result = await ChallengeService.getChallengeStats(scope);
+
+  sendResponse(res, {
+    success: true,
+    statusCode: StatusCodes.OK,
     data: result,
   });
 });
@@ -165,7 +232,9 @@ export const ChallengeController = {
   getChallengeById,
   participateInChallenge,
   getChallengeResult,
+  getMyParticipations,
   getAdminLeaderboard,
+  getChallengeStats,
   updateChallenge,
   cancelChallenge,
   deleteChallenge,

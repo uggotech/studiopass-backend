@@ -41,6 +41,9 @@ const challengeSchema = new Schema<TChallenge>(
     startTime: { type: String, required: true },
     endDate: { type: Date, required: true },
     endTime: { type: String, required: true },
+    // Exact UTC wall-clock instants (station country local → UTC). Preferred for status.
+    startsAt: { type: Date },
+    endsAt: { type: Date },
     questions: {
       type: [challengeQuestionSchema],
       required: true,
@@ -76,6 +79,7 @@ const challengeSchema = new Schema<TChallenge>(
 
 challengeSchema.index({ station: 1, status: 1 });
 challengeSchema.index({ station: 1, startDate: -1 });
+challengeSchema.index({ status: 1, startsAt: 1, endsAt: 1 });
 
 // ─── Model ───────────────────────────────────────────────────────────────────
 

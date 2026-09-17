@@ -49,7 +49,7 @@ const count = (filter: Record<string, unknown>) => {
 };
 
 const updateById = (id: string, update: Record<string, unknown>) => {
-  return Status.findByIdAndUpdate(id, update, { new: true }).lean();
+  return Status.findByIdAndUpdate(id, update, { returnDocument: "after" }).lean();
 };
 
 const deleteById = (id: string) => {
@@ -57,11 +57,11 @@ const deleteById = (id: string) => {
 };
 
 const incrementViewCount = (id: string) => {
-  return Status.findByIdAndUpdate(id, { $inc: { viewCount: 1 } }, { new: true }).lean();
+  return Status.findByIdAndUpdate(id, { $inc: { viewCount: 1 } }, { returnDocument: "after" }).lean();
 };
 
 const incrementLikeCount = (id: string) => {
-  return Status.findByIdAndUpdate(id, { $inc: { likeCount: 1 } }, { new: true }).lean();
+  return Status.findByIdAndUpdate(id, { $inc: { likeCount: 1 } }, { returnDocument: "after" }).lean();
 };
 
 const decrementLikeCount = (id: string) => {
@@ -76,7 +76,7 @@ const decrementLikeCount = (id: string) => {
         },
       },
     ],
-    { new: true },
+    { returnDocument: "after" },
   ).lean();
 };
 

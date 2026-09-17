@@ -17,7 +17,16 @@ const createPoll = catchAsync(async (req, res) => {
     }
   }
 
-  const result = await PollService.createPoll(stationId, question, options, createdBy, showId, expiresAt);
+  const result = await PollService.createPoll(
+    stationId,
+    question,
+    options,
+    createdBy,
+    showId,
+    expiresAt,
+    req.user?.role,
+    req.user?.partnerId?.toString(),
+  );
 
   sendResponse(res, {
     success: true,
@@ -28,23 +37,31 @@ const createPoll = catchAsync(async (req, res) => {
 });
 
 const getStationPolls = catchAsync(async (req, res) => {
-  const { stationId, page = 1, limit = 20, status } = req.query;
+  const { page = 1, limit = 20, status } = req.query;
 
   const userRole = req.user!.role;
-  let resolvedStationId = stationId as string | undefined;
+  const paramStationId = req.params.stationId;
+  const queryStationId = req.query.stationId as string | undefined;
 
-  if (userRole !== "super_admin") {
-    resolvedStationId = req.user!.stationId?.toString();
-    if (!resolvedStationId) {
-      throw new AppError(StatusCodes.FORBIDDEN, "No station associated with your account.");
-    }
+  let resolvedStationId = (paramStationId || queryStationId) as string | undefined;
+
+  if (userRole === "station_admin" || userRole === "media_station") {
+    resolvedStationId = req.user!.stationId?.toString() || resolvedStationId;
   }
 
+  if (!resolvedStationId) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Station ID is required.");
+  }
+
+  // Pass userId for isVotedByMe computation (only for app users)
+  const userId = userRole === "user" ? req.user!._id.toString() : undefined;
+
   const result = await PollService.getStationPolls(
-    resolvedStationId!,
+    resolvedStationId,
     Number(page),
     Number(limit),
     status as string,
+    userId,
   );
 
   sendResponse(res, {
@@ -62,7 +79,10 @@ const getAllPolls = catchAsync(async (req, res) => {
     role: req.user!.role,
   };
 
-  const result = await PollService.getAllPolls(req.query as Record<string, unknown>, scope);
+  // Pass userId for isVotedByMe computation (only for app users)
+  const userId = req.user!.role === "user" ? req.user!._id.toString() : undefined;
+
+  const result = await PollService.getAllPolls(req.query as Record<string, unknown>, scope, userId);
 
   sendResponse(res, {
     success: true,
@@ -74,7 +94,11 @@ const getAllPolls = catchAsync(async (req, res) => {
 
 const getPollById = catchAsync(async (req, res) => {
   const id = req.params.id as string;
-  const result = await PollService.getPollById(id);
+
+  // Pass userId for isVotedByMe computation (only for app users)
+  const userId = req.user!.role === "user" ? req.user!._id.toString() : undefined;
+
+  const result = await PollService.getPollById(id, userId);
 
   sendResponse(res, {
     success: true,

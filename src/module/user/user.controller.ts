@@ -355,6 +355,22 @@ const getTopFans = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const getTopFanById = catchAsync(async (req: Request, res: Response) => {
+  const authUser = req.user as any;
+  const scope = {
+    stationId: authUser?.stationId?.toString(),
+  };
+
+  const result = await UserService.getTopFanById(req.params.id as string, scope);
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Top fan fetched successfully",
+    data: result,
+  });
+});
+
 const createCustomerCareUser = catchAsync(async (req: Request, res: Response) => {
   const result = await UserService.createCustomerCareUser(req.body);
 
@@ -401,6 +417,7 @@ export const UserController = {
   getListenerById,
   getListenerVotes,
   getTopFans,
+  getTopFanById,
   getUserById,
   updateUserById,
   deactivateUser,

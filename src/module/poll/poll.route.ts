@@ -7,10 +7,10 @@ import validateRequest from "../../middlewares/validateRequest";
 
 const router = Router();
 
-// Create a poll (station admin, media station, super admin)
+// Create a poll (super admin, partner admin, station admin, media station)
 router.post(
   "/",
-  auth(UserRole.STATION_ADMIN, UserRole.MEDIA_STATION, UserRole.SUPER_ADMIN),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION),
   validateRequest(PollDto.createPoll),
   PollController.createPoll,
 );
@@ -26,7 +26,7 @@ router.get(
 // Get polls for a specific station
 router.get(
   "/station/:stationId",
-  auth(UserRole.STATION_ADMIN, UserRole.MEDIA_STATION, UserRole.SUPER_ADMIN, UserRole.USER),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION, UserRole.USER),
   PollController.getStationPolls,
 );
 
@@ -49,7 +49,7 @@ router.post(
 // Update poll
 router.patch(
   "/:id",
-  auth(UserRole.STATION_ADMIN, UserRole.MEDIA_STATION, UserRole.SUPER_ADMIN),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION),
   validateRequest(PollDto.updatePoll),
   PollController.updatePoll,
 );
@@ -57,7 +57,7 @@ router.patch(
 // Delete poll
 router.delete(
   "/:id",
-  auth(UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION),
   validateRequest(PollDto.deletePoll),
   PollController.deletePoll,
 );

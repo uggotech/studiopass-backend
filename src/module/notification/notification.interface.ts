@@ -10,7 +10,8 @@ export type NotificationDeliveryStatus = "pending" | "sent" | "failed";
  *   { stationId, announcementType?: "live" | "update" }
  *
  * reply:
- *   { stationId, messageId, showName }
+ *   station:  { kind: "station_reply", route: "/chat/:stationId", stationId, messageId, showName }
+ *   support:  { kind: "support_reply", route: "/support-chat", conversationId, ticketId }
  *
  * system:
  *   { action: string, [key: string]: any }

@@ -8,6 +8,7 @@ import { CallService } from "../module/call/call.service";
 import Call from "../module/call/call.model";
 
 import { ShowRepository } from "../module/show/show.repository";
+import { SupportConversation } from "../module/support/support.model";
 
 let io: Server | null = null;
 
@@ -20,6 +21,9 @@ const showTransitionLocks: Map<string, boolean> = new Map();
 // Track socket connections per user (limit to 5 per user)
 const userConnectionCount: Map<string, number> = new Map();
 const MAX_CONNECTIONS_PER_USER = 5;
+
+// Grace period timers for socket disconnects — prevents mobile blips from ending active calls
+const disconnectGraceTimers: Map<string, NodeJS.Timeout> = new Map();
 
 export function initSocket(server: http.Server): Server {
   io = new Server(server, {
@@ -74,6 +78,14 @@ export function initSocket(server: http.Server): Server {
     const userId = (socket as any).userId;
     const userRole = (socket as any).userRole;
     logger.info(`Socket connected: ${socket.id} (user: ${userId})`);
+
+    // Cancel pending disconnect grace timer — user reconnected in time
+    const pendingGrace = disconnectGraceTimers.get(userId);
+    if (pendingGrace) {
+      clearTimeout(pendingGrace);
+      disconnectGraceTimers.delete(userId);
+      logger.info(`[Call] Cancelled disconnect grace for ${userId} — socket reconnected`);
+    }
 
     // Connection limit per user — close oldest if exceeded
     const currentCount = userConnectionCount.get(userId) || 0;
@@ -180,9 +192,40 @@ export function initSocket(server: http.Server): Server {
       }
     });
 
-    socket.on("join-support-conversation", (conversationId: string) => {
-      socket.join(`conversation:${conversationId}`);
-      logger.info(`Socket ${socket.id} joined conversation:${conversationId}`);
+    socket.on("join-support-conversation", async (conversationId: string) => {
+      try {
+        if (!conversationId || !userId) {
+          socket.emit("error", { message: "Invalid support conversation" });
+          return;
+        }
+
+        const conversation = await SupportConversation.findById(conversationId)
+          .select("userId assignedAgentId status")
+          .lean();
+        if (!conversation) {
+          socket.emit("error", { message: "Support conversation not found" });
+          return;
+        }
+
+        const isOwner = conversation.userId?.toString() === userId;
+        const isAgent = ["customer_care", "super_admin", "partner_admin"].includes(userRole);
+        const isAssigned = conversation.assignedAgentId?.toString() === userId;
+        const canJoinAsAgent =
+          userRole === "super_admin" ||
+          conversation.status === "OPEN" ||
+          isAssigned;
+
+        if (!isOwner && !(isAgent && canJoinAsAgent)) {
+          socket.emit("error", { message: "Not authorized to join this support conversation" });
+          return;
+        }
+
+        socket.join(`conversation:${conversationId}`);
+        logger.info(`Socket ${socket.id} joined conversation:${conversationId}`);
+      } catch (err) {
+        logger.error(`[Socket] join-support-conversation error: ${err}`);
+        socket.emit("error", { message: "Failed to join support conversation" });
+      }
     });
 
     socket.on("leave-support-conversation", (conversationId: string) => {
@@ -214,74 +257,86 @@ export function initSocket(server: http.Server): Server {
         userConnectionCount.set(disconnectUserId, count - 1);
       }
 
-      // Clean up operator status (if operator)
+      const graceMs = config.calls.socket_disconnect_grace_ms;
+
       try {
+        // ─── Operator disconnect — grace period before ending call ────────
         if (["media_station", "presenter", "station_admin", "super_admin"].includes(disconnectUserRole)) {
           const activeCallId = await CallService.getOperatorOnCallId(disconnectUserId);
           if (activeCallId) {
-            await CallService.removeOperatorOnCall(disconnectUserId);
-
-            // Clear any pending timeouts for this call
+            // Don't remove operator on-call yet — grace period may cancel
             CallService.clearJoinTimeout(activeCallId);
             CallService.clearQueueTimeout(activeCallId);
 
-            // Read ORIGINAL status before updating (for refund + duration calculation)
-            const originalCall = await Call.findById(activeCallId)
-              .select("startedBy station creditsUsed status answeredAt")
-              .lean();
+            logger.info(`[Call] Operator ${disconnectUserId} disconnected — starting ${graceMs}ms grace for call ${activeCallId}`);
 
-            if (originalCall) {
-              // Calculate duration and status for answered calls
-              const newStatus = originalCall.status === "answered" ? "completed" : "missed";
-              const duration = (originalCall.status === "answered" && originalCall.answeredAt)
-                ? Math.floor((Date.now() - originalCall.answeredAt.getTime()) / 1000)
-                : 0;
+            const graceTimer = setTimeout(async () => {
+              disconnectGraceTimers.delete(disconnectUserId);
 
-              // Atomic update — only if call hasn't been ended by another operation
-              const updated = await Call.findOneAndUpdate(
-                {
-                  _id: activeCallId,
-                  status: { $nin: ["missed", "rejected", "cancelled", "completed"] },
-                },
-                { $set: { status: newStatus, endedAt: new Date(), duration } },
-                { new: true },
-              );
+              // Re-check: call may have been ended or user may have reconnected
+              const recheckCall = await Call.findById(activeCallId)
+                .select("status")
+                .lean();
+              if (!recheckCall || ["missed", "rejected", "cancelled", "completed"].includes(recheckCall.status)) {
+                logger.info(`[Call] Grace expired for operator ${disconnectUserId} but call ${activeCallId} already ended (${recheckCall?.status})`);
+                // Still clean up operator on-call if call ended
+                await CallService.removeOperatorOnCall(disconnectUserId);
+                return;
+              }
 
-              if (updated) {
-                // Refund if call was queued (use updated.answeredAt to avoid stale read race)
-                if (updated.status === "missed" && !updated.answeredAt && originalCall.creditsUsed > 0) {
-                  await CallService.refundIfQueued(
+              // Call still active after grace — end it
+              await CallService.removeOperatorOnCall(disconnectUserId);
+
+              const originalCall = await Call.findById(activeCallId)
+                .select("startedBy station creditsUsed status answeredAt")
+                .lean();
+
+              if (originalCall) {
+                const newStatus = originalCall.status === "answered" ? "completed" : "missed";
+                const duration = (originalCall.status === "answered" && originalCall.answeredAt)
+                  ? Math.floor((Date.now() - originalCall.answeredAt.getTime()) / 1000)
+                  : 0;
+
+                const updated = await Call.findOneAndUpdate(
+                  {
+                    _id: activeCallId,
+                    status: { $nin: ["missed", "rejected", "cancelled", "completed"] },
+                  },
+                  { $set: { status: newStatus, endedAt: new Date(), duration } },
+                  { returnDocument: "after" },
+                );
+
+                if (updated) {
+                  if (updated.status === "missed" && !updated.answeredAt && originalCall.creditsUsed > 0) {
+                    await CallService.refundIfQueued(
+                      activeCallId,
+                      originalCall.startedBy.toString(),
+                      originalCall.creditsUsed,
+                      originalCall.station.toString(),
+                    );
+                  }
+                  if (updated.status === "completed") {
+                    await CallService.createStatementIfNeeded(activeCallId);
+                  }
+                  CallService.emitCallEnded(
                     activeCallId,
-                    originalCall.startedBy.toString(),
-                    originalCall.creditsUsed,
                     originalCall.station.toString(),
+                    originalCall.startedBy.toString(),
+                    undefined,
+                    "operator_disconnected",
+                    "Operator disconnected.",
                   );
                 }
-
-                // Create listener statement for answered calls (non-critical)
-                if (updated.status === "completed") {
-                  await CallService.createStatementIfNeeded(activeCallId);
-                }
-
-                // Notify all parties
-                CallService.emitCallEnded(
-                  activeCallId,
-                  originalCall.station.toString(),
-                  originalCall.startedBy.toString(),
-                  undefined,
-                  "operator_disconnected",
-                  "Operator disconnected.",
-                );
-              } else {
-                logger.info(`[Call] Disconnect: call ${activeCallId} already ended by another operation`);
               }
-            }
 
-            logger.warn(`[Call] Operator ${disconnectUserId} disconnected during active call`);
+              logger.warn(`[Call] Operator ${disconnectUserId} grace expired — call ${activeCallId} ended`);
+            }, graceMs);
+
+            disconnectGraceTimers.set(disconnectUserId, graceTimer);
           }
         }
 
-        // Handle user disconnect — end active call where user is the caller
+        // ─── User (listener) disconnect — grace period before ending call ──
         if (disconnectUserRole === "user") {
           const activeCall = await Call.findOne({
             startedBy: disconnectUserId,
@@ -289,67 +344,74 @@ export function initSocket(server: http.Server): Server {
           }).select("_id station handledBy creditsUsed status answeredAt").lean();
 
           if (activeCall) {
-            // Calculate duration if answered
-            const newStatus = activeCall.status === "answered" ? "completed" : "missed";
-            const duration = (activeCall.status === "answered" && activeCall.answeredAt)
-              ? Math.floor((Date.now() - activeCall.answeredAt.getTime()) / 1000)
-              : 0;
+            logger.info(`[Call] User ${disconnectUserId} disconnected — starting ${graceMs}ms grace for call ${activeCall._id}`);
 
-            // Atomic update — only if call hasn't been ended by another operation
-            const updated = await Call.findOneAndUpdate(
-              {
-                _id: activeCall._id,
-                status: { $nin: ["missed", "rejected", "cancelled", "completed"] },
-              },
-              { $set: { status: newStatus, endedAt: new Date(), duration } },
-              { new: true },
-            );
+            const graceTimer = setTimeout(async () => {
+              disconnectGraceTimers.delete(disconnectUserId);
 
-            if (updated) {
-              // Refund if call was queued (use updated.answeredAt to avoid stale read race)
-              if (updated.status === "missed" && !updated.answeredAt && activeCall.creditsUsed > 0) {
-                await CallService.refundIfQueued(
-                  activeCall._id.toString(),
-                  disconnectUserId,
-                  activeCall.creditsUsed,
-                  activeCall.station.toString(),
-                );
+              // Re-check: call may have been ended or user may have reconnected
+              const recheckCall = await Call.findById(activeCall._id)
+                .select("status")
+                .lean();
+              if (!recheckCall || ["missed", "rejected", "cancelled", "completed"].includes(recheckCall.status)) {
+                logger.info(`[Call] Grace expired for user ${disconnectUserId} but call ${activeCall._id} already ended (${recheckCall?.status})`);
+                return;
               }
 
-              // Clean up operator on-call FIRST (critical — must run even if statement fails)
-              if (activeCall.handledBy) {
-                await CallService.removeOperatorOnCall(activeCall.handledBy.toString());
-              }
+              // Call still active after grace — end it
+              const newStatus = activeCall.status === "answered" ? "completed" : "missed";
+              const duration = (activeCall.status === "answered" && activeCall.answeredAt)
+                ? Math.floor((Date.now() - activeCall.answeredAt.getTime()) / 1000)
+                : 0;
 
-              // Create listener statement for completed calls (non-critical)
-              if (updated.status === "completed") {
-                await CallService.createStatementIfNeeded(activeCall._id.toString());
-              }
+              const updated = await Call.findOneAndUpdate(
+                {
+                  _id: activeCall._id,
+                  status: { $nin: ["missed", "rejected", "cancelled", "completed"] },
+                },
+                { $set: { status: newStatus, endedAt: new Date(), duration } },
+                { returnDocument: "after" },
+              );
 
-              // Notify operator if on call
-              if (activeCall.handledBy) {
+              if (updated) {
+                if (updated.status === "missed" && !updated.answeredAt && activeCall.creditsUsed > 0) {
+                  await CallService.refundIfQueued(
+                    activeCall._id.toString(),
+                    disconnectUserId,
+                    activeCall.creditsUsed,
+                    activeCall.station.toString(),
+                  );
+                }
+                if (activeCall.handledBy) {
+                  await CallService.removeOperatorOnCall(activeCall.handledBy.toString());
+                }
+                if (updated.status === "completed") {
+                  await CallService.createStatementIfNeeded(activeCall._id.toString());
+                }
+                if (activeCall.handledBy) {
+                  CallService.emitCallEnded(
+                    activeCall._id.toString(),
+                    activeCall.station.toString(),
+                    disconnectUserId,
+                    activeCall.handledBy.toString(),
+                    "user_disconnected",
+                    "User disconnected.",
+                  );
+                }
                 CallService.emitCallEnded(
                   activeCall._id.toString(),
                   activeCall.station.toString(),
                   disconnectUserId,
-                  activeCall.handledBy.toString(),
+                  activeCall.handledBy?.toString(),
                   "user_disconnected",
                   "User disconnected.",
                 );
               }
 
-              // Notify station room
-              CallService.emitCallEnded(
-                activeCall._id.toString(),
-                activeCall.station.toString(),
-                disconnectUserId,
-                activeCall.handledBy?.toString(),
-                "user_disconnected",
-                "User disconnected.",
-              );
-            }
+              logger.warn(`[Call] User ${disconnectUserId} grace expired — call ${activeCall._id} ended`);
+            }, graceMs);
 
-            logger.warn(`[Call] User ${disconnectUserId} disconnected during active call`);
+            disconnectGraceTimers.set(disconnectUserId, graceTimer);
           }
         }
 

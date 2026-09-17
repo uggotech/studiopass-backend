@@ -30,7 +30,7 @@ const create = (data: Partial<TCountry>): Promise<TCountry> => {
 };
 
 const updateById = (id: string, data: Partial<TCountry>): Promise<TCountry | null> => {
-  return Country.findByIdAndUpdate(id, data, { new: true }).lean();
+  return Country.findByIdAndUpdate(id, data, { returnDocument: "after" }).lean();
 };
 
 export const CountryRepository = {

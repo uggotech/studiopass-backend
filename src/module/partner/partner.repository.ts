@@ -33,7 +33,7 @@ const create = (data: Partial<TPartner>): Promise<TPartner> => {
 };
 
 const updateById = (id: string, data: Partial<TPartner>): Promise<TPartner | null> => {
-  return Partner.findByIdAndUpdate(id, data, { new: true })
+  return Partner.findByIdAndUpdate(id, data, { returnDocument: "after" })
     .populate("country", "name code phoneCode currency currencySymbol timezone")
     .lean();
 };

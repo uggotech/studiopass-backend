@@ -96,8 +96,40 @@ const updateChallenge = z.object({
     title: z.string().min(1).max(200).optional(),
     description: z.string().min(1).max(2000).optional(),
     instructions: z.string().max(2000).optional(),
-    status: z.enum(["draft", "active", "completed"]).optional(),
+    status: z.enum(["draft", "scheduled", "active", "completed"]).optional(),
     rewardText: z.string().max(500).optional(),
+    startDate: z.string().optional(),
+    startTime: z.string().regex(timeRegex, "Start time must be in HH:mm format").optional(),
+    endDate: z.string().optional(),
+    endTime: z.string().regex(timeRegex, "End time must be in HH:mm format").optional(),
+    questions: z
+      .array(
+        z.object({
+          text: z.string().min(1, "Question text is required"),
+          options: z
+            .array(
+              z.object({
+                label: z.string().min(1, "Option label is required"),
+                isCorrect: z.boolean(),
+              }),
+            )
+            .min(2, "At least 2 options required")
+            .max(10),
+          timeLimit: z.number().int().min(5).max(300).optional(),
+        }),
+      )
+      .min(1, "At least 1 question required")
+      .optional(),
+    billingMode: z.enum(["credits", "free"]).optional(),
+    creditCost: z.number().min(0).optional(),
+    prizeType: z.string().optional(),
+    prizeTypeKey: z.string().optional(),
+    prizeLabel: z.string().optional(),
+    prizeValue: z.string().optional(),
+    currency: z.string().optional(),
+    numberOfWinners: z.number().int().min(1).optional(),
+    sponsorName: z.string().optional(),
+    collectionInstructions: z.string().optional(),
   }),
 });
 

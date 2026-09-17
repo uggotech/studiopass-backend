@@ -16,7 +16,7 @@ const prizeTypeSchema = new Schema<TPrizeType>(
   { timestamps: true },
 );
 
-prizeTypeSchema.index({ key: 1 });
+// key unique index comes from field unique: true — do not redeclare
 prizeTypeSchema.index({ isActive: 1 });
 
 export const PrizeType = model<TPrizeType>("PrizeType", prizeTypeSchema);

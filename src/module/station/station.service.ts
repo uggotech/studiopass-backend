@@ -60,6 +60,10 @@ const getAllStations = async (query: Record<string, unknown>, scope?: { partnerI
     filter.category = query.category;
   }
 
+  if (query.channelType) {
+    filter.channelType = query.channelType;
+  }
+
   if (query.country) {
     filter.country = query.country;
   }
@@ -512,6 +516,7 @@ const getPublicStations = async (query: Record<string, unknown>, userId?: string
         isLive,
         currentShowName,
         isVerified: s.isVerified,
+        isActive: s.isActive,
         followersCount: s.followersCount,
         isFollowing: followedMap.has(sid),
         hasActiveChallenge: activeChallengeCount > 0,

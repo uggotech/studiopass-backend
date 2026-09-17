@@ -11,7 +11,7 @@ const upsertSecuritySettings = async (
   return Settings.findOneAndUpdate(
     { _id: "security" },
     { $set: data },
-    { upsert: true, new: true, runValidators: true },
+    { upsert: true, returnDocument: "after", runValidators: true },
   ).lean();
 };
 

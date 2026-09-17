@@ -51,7 +51,7 @@ const count = (filter: Record<string, unknown>): Promise<number> => {
 };
 
 const updatePresenter = (showId: string, presenterId: string | null): Promise<TShow | null> => {
-  return Show.findByIdAndUpdate(showId, { presenter: presenterId }, { new: true }).lean();
+  return Show.findByIdAndUpdate(showId, { presenter: presenterId }, { returnDocument: "after" }).lean();
 };
 
 const findActiveShowForStation = async (stationId: string, timezone: string): Promise<TShow | null> => {
@@ -302,7 +302,7 @@ const reactivateByStation = (stationId: string): Promise<{ modifiedCount: number
 };
 
 const updateById = (id: string, data: Partial<TShow>): Promise<TShow | null> => {
-  return Show.findByIdAndUpdate(id, data, { new: true }).lean();
+  return Show.findByIdAndUpdate(id, data, { returnDocument: "after" }).lean();
 };
 
 export const ShowRepository = {

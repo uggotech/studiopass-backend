@@ -788,62 +788,19 @@ const disable2FA = async (
   authId: string,
   data: { password?: string; code?: string; ipAddress?: string; userAgent?: string },
 ) => {
-  if (!data.password || !data.code) {
-    throw new AppError(StatusCodes.BAD_REQUEST, "Password and 6-digit code are required.");
-  }
-
-  const auth = await Auth.findById(authId).select("+password +twoFactorSecret");
-  if (!auth || !auth.password) {
-    throw new AppError(StatusCodes.NOT_FOUND, "Account not found.");
-  }
-
-  const isPasswordValid = await bcrypt.compare(data.password, auth.password);
-  if (!isPasswordValid) {
-    await AuditLogService.logAuthEvent({
-      action: "2FA_DISABLED",
-      status: "FAILED",
-      authId: auth._id,
-      role: auth.role,
-      ipAddress: data.ipAddress,
-      userAgent: data.userAgent,
-      reason: "Current password is incorrect",
-    });
-    throw new AppError(StatusCodes.UNAUTHORIZED, "Current password is incorrect.");
-  }
-
-  if (auth.twoFactorSecret) {
-    const cleanCode = data.code.trim();
-    const isCodeValid = verify2FACode(cleanCode, auth.twoFactorSecret);
-    if (!isCodeValid) {
-      await AuditLogService.logAuthEvent({
-        action: "2FA_DISABLED",
-        status: "FAILED",
-        authId: auth._id,
-        role: auth.role,
-        ipAddress: data.ipAddress,
-        userAgent: data.userAgent,
-        reason: "Invalid 6-digit code",
-      });
-      throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid 6-digit code.");
-    }
-  }
-
-  auth.twoFactorEnabled = false;
-  auth.twoFactorSecret = undefined;
-  auth.twoFactorTempSecret = undefined;
-  auth.twoFactorResetRequired = false;
-  await auth.save();
-
+  // Self-disable removed by policy: recovery is Super Admin reset only.
   await AuditLogService.logAuthEvent({
     action: "2FA_DISABLED",
-    status: "SUCCESS",
-    authId: auth._id,
-    role: auth.role,
+    status: "FAILED",
+    authId: authId as never,
     ipAddress: data.ipAddress,
     userAgent: data.userAgent,
+    reason: "Self-disable blocked — Super Admin 2FA reset required",
   });
-
-  return { message: "Two-Factor Authentication has been disabled successfully." };
+  throw new AppError(
+    StatusCodes.FORBIDDEN,
+    "Two-Factor Authentication cannot be disabled from your account. Contact a Super Admin for a 2FA reset if you lost access to your authenticator.",
+  );
 };
 
 // ─── Refresh Token ───────────────────────────────────────────────────────────

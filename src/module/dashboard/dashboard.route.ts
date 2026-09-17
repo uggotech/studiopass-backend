@@ -30,6 +30,6 @@ router.get("/top-stations", auth(...adminRoles), DashboardController.getTopStati
 router.get("/top-shows", auth(...adminRoles), DashboardController.getTopShows);
 router.get("/recent-users", auth(...adminRoles), DashboardController.getRecentUsers);
 router.get("/credit-stats", auth(...adminRoles), DashboardController.getCreditStats);
-router.get("/country-revenue", auth(UserRole.SUPER_ADMIN), DashboardController.getCountryRevenue);
+router.get("/country-revenue", auth(...adminRoles), DashboardController.getCountryRevenue);
 
 export const DashboardRoutes = router;

@@ -25,7 +25,7 @@ const toggleFollow = async (userId: string, stationId: string) => {
     const updated = await Station.findByIdAndUpdate(
       stationId,
       { $inc: { followersCount: -1 } },
-      { new: true },
+      { returnDocument: "after" },
     ).select("followersCount");
     following = false;
     followersCount = updated?.followersCount ?? 0;
@@ -47,7 +47,7 @@ const toggleFollow = async (userId: string, stationId: string) => {
     const updated = await Station.findByIdAndUpdate(
       stationId,
       { $inc: { followersCount: 1 } },
-      { new: true },
+      { returnDocument: "after" },
     ).select("followersCount");
     following = true;
     followersCount = updated?.followersCount ?? 0;

@@ -3,6 +3,9 @@ import AppError from "../../errors/AppError";
 import { ChannelPollRepository } from "./channelPoll.repository";
 import { StationRepository } from "../station/station.repository";
 import { CreditService } from "../credit/credit.service";
+import { Follow } from "../follow/follow.model";
+import { NotificationService } from "../notification/notification.service";
+import { logger } from "../../logger/logger";
 import { emitToStation } from "../../socket";
 
 const createPoll = async (
@@ -70,6 +73,37 @@ const createPoll = async (
     totalVotes: 0,
     createdBy,
   });
+
+  // Notify followers only when the poll is live now (not draft/scheduled)
+  if (resolvedStatus === "active") {
+    try {
+      const follows = await Follow.find({
+        station: stationId,
+        notificationsEnabled: true,
+      })
+        .select("user")
+        .lean();
+      const followerIds = follows.map((f: any) => String(f.user));
+      if (followerIds.length > 0) {
+        const stationName = (station as any).name || "the channel";
+        await NotificationService.sendBulkNotifications(
+          followerIds,
+          "New Channel Poll",
+          `Voting is open: "${data.title}" on ${stationName}.`,
+          "announcement",
+          {
+            stationId: String(stationId),
+            channelPollId: String((poll as any)._id),
+            type: "channel_poll",
+            kind: "channel_poll",
+            route: `/channel-polls/${(poll as any)._id}`,
+          },
+        );
+      }
+    } catch (err) {
+      logger.error("[ChannelPoll] Failed to notify followers on create", err);
+    }
+  }
 
   return poll;
 };
@@ -250,7 +284,7 @@ const votePoll = async (
       throw new AppError(StatusCodes.CONFLICT, "You have already voted in this category.");
     }
 
-    // Check billing
+    // Check billing + vote in ONE transaction (same session)
     if (poll.billingMode === "credits" && poll.creditCost > 0) {
       await CreditService.deductCredits(
         userId,
@@ -262,7 +296,13 @@ const votePoll = async (
       );
     }
 
-    const updated = await ChannelPollRepository.vote(pollId, categoryIndex, nomineeIndex, userId);
+    const updated = await ChannelPollRepository.vote(
+      pollId,
+      categoryIndex,
+      nomineeIndex,
+      userId,
+      session,
+    );
     if (!updated || (updated as any).alreadyVoted) {
       throw new AppError(StatusCodes.CONFLICT, "You have already voted in this category.");
     }
@@ -284,7 +324,7 @@ const votePoll = async (
 };
 
 const getPollResults = async (pollId: string, userId?: string) => {
-  const poll = await ChannelPollRepository.findById(pollId);
+  const poll: any = await ChannelPollRepository.findById(pollId);
   if (!poll) {
     throw new AppError(StatusCodes.NOT_FOUND, "Poll not found");
   }
@@ -302,6 +342,11 @@ const getPollResults = async (pollId: string, userId?: string) => {
       description: poll.description,
       status: poll.status,
       totalVotes: poll.totalVotes,
+      billingMode: poll.billingMode,
+      creditCost: poll.creditCost,
+      startDate: poll.startDate,
+      endDate: poll.endDate,
+      station: poll.station,
     },
     results,
     userVotes,

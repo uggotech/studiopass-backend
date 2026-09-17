@@ -15,7 +15,7 @@ const deleteById = (id: string, stationId: string) => {
   return MessageTemplate.findOneAndUpdate(
     { _id: id, station: stationId },
     { isActive: false },
-    { new: true },
+    { returnDocument: "after" },
   ).lean();
 };
 
@@ -27,7 +27,7 @@ const updateById = (id: string, stationId: string, text: string) => {
   return MessageTemplate.findOneAndUpdate(
     { _id: id, station: stationId, isActive: true },
     { text },
-    { new: true },
+    { returnDocument: "after" },
   ).lean();
 };
 

@@ -28,7 +28,7 @@ const deactivate = (id: string, stationId: string) => {
   return StationApiKey.findOneAndUpdate(
     { _id: id, station: stationId },
     { isActive: false },
-    { new: true },
+    { returnDocument: "after" },
   ).lean();
 };
 
@@ -58,7 +58,7 @@ const incrementHits = async (id: string, responseTimeMs: number) => {
         avgResponseTimeMs: newAvg,
       },
     },
-    { new: true },
+    { returnDocument: "after" },
   ).lean();
 };
 

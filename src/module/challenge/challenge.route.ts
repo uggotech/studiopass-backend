@@ -30,6 +30,20 @@ router.get(
   ChallengeController.getStationChallenges,
 );
 
+// My participations (app users) — MUST be before /:id
+router.get(
+  "/my-participations",
+  auth(UserRole.USER),
+  ChallengeController.getMyParticipations,
+);
+
+// Challenge stats (aggregate KPIs) — MUST be before /:id to avoid shadowing
+router.get(
+  "/stats/overview",
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
+  ChallengeController.getChallengeStats,
+);
+
 // Get single challenge
 router.get(
   "/:id",
