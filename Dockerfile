@@ -5,7 +5,7 @@ WORKDIR /app
 
 COPY package.json pnpm-lock.yaml* package-lock.json* ./
 
-RUN corepack enable && pnpm install --frozen-lockfile 2>/dev/null || npm install
+RUN corepack enable && pnpm install --frozen-lockfile --config.dangerouslyAllowAllBuilds=true
 
 COPY tsconfig.json ./
 COPY src ./src
@@ -21,7 +21,7 @@ RUN apk add --no-cache tini
 
 COPY package.json pnpm-lock.yaml* package-lock.json* ./
 
-RUN corepack enable && pnpm install --omit=dev 2>/dev/null || npm install --omit=dev
+RUN corepack enable && pnpm install --omit=dev --config.dangerouslyAllowAllBuilds=true
 
 RUN npm install tsconfig-paths
 
