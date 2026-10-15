@@ -7,7 +7,7 @@ COPY package.json pnpm-lock.yaml* package-lock.json* pnpm-workspace.yaml* ./
 
 RUN corepack enable \
   && printf 'dangerouslyAllowAllBuilds=true\ndangerously-allow-all-builds=true\n' > .npmrc \
-  && pnpm install --frozen-lockfile
+  && pnpm install --frozen-lockfile --dangerously-allow-all-builds
 
 COPY tsconfig.json ./
 COPY src ./src
@@ -25,8 +25,8 @@ COPY package.json pnpm-lock.yaml* package-lock.json* pnpm-workspace.yaml* ./
 
 RUN corepack enable \
   && printf 'dangerouslyAllowAllBuilds=true\ndangerously-allow-all-builds=true\n' > .npmrc \
-  && pnpm install --prod \
-  && pnpm add tsconfig-paths
+  && pnpm install --prod --dangerously-allow-all-builds \
+  && pnpm add tsconfig-paths --dangerously-allow-all-builds
 
 COPY --from=builder /app/dist ./dist
 RUN echo '{"compilerOptions":{"baseUrl":".","paths":{"config/*":["./dist/config/*"],"shared/*":["./dist/shared/*"],"module/*":["./dist/module/*"],"errors/*":["./dist/errors/*"],"logger/*":["./dist/logger/*"],"redis/*":["./dist/redis/*"],"jwt/*":["./dist/jwt/*"],"mail/*":["./dist/mail/*"],"types/*":["./dist/types/*"],"Builder/*":["./dist/Builder/*"],"db/*":["./dist/db/*"],"config":["./dist/config"],"shared":["./dist/shared"],"module":["./dist/module"],"errors":["./dist/errors"],"logger":["./dist/logger"],"redis":["./dist/redis"],"jwt":["./dist/jwt"],"mail":["./dist/mail"],"types":["./dist/types"],"Builder":["./dist/Builder"],"db":["./dist/db"]}}}' > tsconfig.json
