@@ -80,7 +80,7 @@ async function checkAllStations() {
   }
 }
 
-export function startShowScheduler(intervalMs: number = 60000) {
+export function startShowScheduler(intervalMs: number = 15000) {
   if (schedulerInterval) return;
   logger.info(`[ShowScheduler] Starting with ${intervalMs / 1000}s interval`);
   checkAllStations();

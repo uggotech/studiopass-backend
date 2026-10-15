@@ -168,6 +168,32 @@ export default {
   },
 
   // ============================================================================
+  // MOBILE MONEY - PAYLEO (MTN UGANDA)
+  // ============================================================================
+  payleo: {
+    deposit_url: process.env.PAYLEO_DEPOSIT_URL || "https://vendors.pay-leo.com/api/v2/live/deposit/",
+    signature_url: process.env.PAYLEO_SIGNATURE_URL || "https://vendors.pay-leo.com/api/v2/live/deposit",
+    merchant_code: process.env.PAYLEO_MERCHANT_CODE || "38280",
+    consumer_key: process.env.PAYLEO_CONSUMER_KEY || "wjZ1voCA2mGspP6FFLVcwXLsLQ1724061291",
+    consumer_secret: process.env.PAYLEO_CONSUMER_SECRET || "NrMKhZPOtSkN7Z2IY37PWRbx6J1724061291",
+  },
+
+  // ============================================================================
+  // MOBILE MONEY - AIRTEL OPENAPI (AIRTEL UGANDA)
+  // ============================================================================
+  airtel: {
+    client_id: process.env.AIRTEL_CLIENT_ID || "2c6b3011-1432-4eff-888d-9462e3c258b5",
+    client_secret: process.env.AIRTEL_CLIENT_SECRET || "1ede7a51-af6a-4dab-ad66-b0006dc599af",
+    country: process.env.AIRTEL_COUNTRY || "UG",
+    currency: process.env.AIRTEL_CURRENCY || "UGX",
+    token_url: process.env.AIRTEL_TOKEN_URL || "https://openapi.airtel.africa/auth/oauth2/token",
+    collection_url: process.env.AIRTEL_COLLECTION_URL || "https://openapi.airtel.africa/merchant/v2/payments/",
+    merchant_code: process.env.AIRTEL_MERCHANT_CODE || "JN0YO40R",
+    application_name: process.env.AIRTEL_APPLICATION_NAME || "farmora_connect",
+    callback_url: process.env.AIRTEL_CALLBACK_URL || "https://api.studiopass.africa/api/v1/payment/webhook/airtel",
+  },
+
+  // ============================================================================
   // IN-APP PURCHASE (IAP) - APPLE
   // ============================================================================
   apple_iap: {

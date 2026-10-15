@@ -6,6 +6,7 @@ import { User } from "../user/user.model";
 import { CreditService } from "../credit/credit.service";
 import { NotificationService } from "../notification/notification.service";
 import { logger } from "../../logger/logger";
+import { sendAirtime } from "../../util/africasTalkingAirtime";
 
 const createDisbursementsForChallenge = async (challengeId: string): Promise<void> => {
   const session = await mongoose.startSession();
@@ -66,11 +67,15 @@ const createDisbursementsForChallenge = async (challengeId: string): Promise<voi
       const winnerName = user?.fullName || "Participant";
       const phone = user?.phone || "";
 
-      let status: "pending" | "successful" | "failed" = "pending";
+      let status: "pending" | "processing" | "successful" | "failed" = "pending";
+      let provider: string | undefined = undefined;
+      let providerRequestId: string | undefined = undefined;
+      let failureReason: string | undefined = undefined;
       const txRef = `DISB-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
       if (challenge.prizeTypeKey === "bonus_credits") {
         const creditAmount = Number(challenge.prizeValue) || 0;
+        provider = "internal_credit";
         if (creditAmount > 0) {
           try {
             await CreditService.rewardChallengeWinner(
@@ -83,10 +88,43 @@ const createDisbursementsForChallenge = async (challengeId: string): Promise<voi
           } catch (err) {
             logger.error(`[Disbursement] Credit grant error for user ${userIdStr}:`, err);
             status = "failed";
+            failureReason = "Failed to grant bonus credits";
           }
         }
-      } else if (["mobile_money", "airtime", "data_bundles"].includes(challenge.prizeTypeKey || "")) {
-        status = "successful";
+      } else if (challenge.prizeTypeKey === "airtime") {
+        const airtimeAmount = Number(challenge.prizeValue) || 0;
+        provider = "africas_talking";
+        if (airtimeAmount > 0 && phone) {
+          try {
+            const atResult = await sendAirtime({
+              phoneNumber: phone,
+              amount: airtimeAmount,
+              currencyCode: challenge.currency || "UGX",
+              idempotencyKey: txRef,
+            });
+
+            if (atResult.success) {
+              status = "processing";
+              providerRequestId = atResult.requestId;
+            } else {
+              status = "failed";
+              failureReason = atResult.error || "Africa's Talking rejected airtime dispatch";
+            }
+          } catch (err: any) {
+            logger.error(`[Disbursement] Airtime dispatch error for user ${userIdStr}:`, err);
+            status = "failed";
+            failureReason = err.message || "Africa's Talking dispatch exception";
+          }
+        } else {
+          status = "failed";
+          failureReason = !phone ? "User has no phone number on profile" : "Invalid airtime prize value";
+        }
+      } else if (
+        ["merchandise_tshirt", "merchandise_hoodie", "merchandise_cap", "external_gift", "other"].includes(
+          challenge.prizeTypeKey || "",
+        )
+      ) {
+        status = "pending";
       } else {
         status = "successful";
       }
@@ -101,7 +139,10 @@ const createDisbursementsForChallenge = async (challengeId: string): Promise<voi
         prizeLabel,
         prizeValue: prizeValueStr,
         txRef,
+        provider,
+        providerRequestId,
         status,
+        failureReason,
         processedAt: new Date(),
       });
 
@@ -206,7 +247,38 @@ const getDisbursements = async (
   };
 };
 
+const handleAfricasTalkingWebhook = async (payload: {
+  status?: string;
+  requestId?: string;
+  transactionId?: string;
+  category?: string;
+  description?: string;
+  value?: string;
+}) => {
+  const { requestId, status, description } = payload;
+  logger.info(`[AT Airtime Webhook] Delivery report: requestId=${requestId}, status=${status}`);
+
+  if (!requestId) return { received: true };
+
+  const { Disbursement } = await import("./disbursement.model");
+  const disbursement = await Disbursement.findOne({ providerRequestId: requestId });
+  if (!disbursement) {
+    logger.warn(`[AT Airtime Webhook] Disbursement not found for requestId=${requestId}`);
+    return { received: true };
+  }
+
+  const isSuccess = String(status || "").toLowerCase() === "success";
+  disbursement.status = isSuccess ? "successful" : "failed";
+  if (!isSuccess && description) {
+    disbursement.failureReason = description;
+  }
+  disbursement.processedAt = new Date();
+  await disbursement.save();
+  return { received: true };
+};
+
 export const DisbursementService = {
   createDisbursementsForChallenge,
   getDisbursements,
+  handleAfricasTalkingWebhook,
 };

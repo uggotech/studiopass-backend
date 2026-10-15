@@ -1,4 +1,3 @@
-dangerouslyAllowAllBuilds: true
 onlyBuiltDependencies:
   - sharp
   - '@img/sharp-libvips-linuxmusl-x64'

@@ -22,6 +22,12 @@ const getDisbursements = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const handleAfricasTalkingWebhook = async (req: Request, res: Response) => {
+  const result = await DisbursementService.handleAfricasTalkingWebhook(req.body);
+  res.status(StatusCodes.OK).json(result);
+};
+
 export const DisbursementController = {
   getDisbursements,
+  handleAfricasTalkingWebhook,
 };

@@ -27,7 +27,7 @@ export const CARRIER_REGISTRY: Record<string, CountryCarriers> = {
     carriers: [
       {
         name: "Airtel",
-        prefixes: /^(?:70|74|75|20)\d{7}$/,
+        prefixes: /^(?:70|73|74|75|20)\d{7}$/,
       },
       {
         name: "MTN",

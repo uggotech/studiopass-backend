@@ -175,14 +175,15 @@ const processAndUpload = async (req: Request, _res: Response, next: NextFunction
               resizeOptions = { width: 1600, height: 900, fit: "inside", withoutEnlargement: true };
               quality = 80;
             } else if (fieldName === "image") {
-              resizeOptions = { width: 1080, height: 1920, fit: "inside", withoutEnlargement: true };
-              quality = 80;
+              resizeOptions = { width: 1920, height: 1920, fit: "inside", withoutEnlargement: true };
+              quality = 90;
             } else if (isOptionImage) {
               resizeOptions = { width: 800, height: 800, fit: "inside", withoutEnlargement: true };
               quality = 65;
             }
 
             processedBuffer = await sharp(file.buffer)
+              .rotate()
               .resize(resizeOptions)
               .webp({ quality, effort: 4, alphaQuality: 90 })
               .toBuffer();

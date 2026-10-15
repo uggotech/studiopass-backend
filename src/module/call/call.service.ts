@@ -15,6 +15,7 @@ import config from "../../config";
 import { logger } from "../../logger/logger";
 import {
   emitToStation,
+  emitToStationStaff,
   emitToUser,
   getIO,
 } from "../../socket";
@@ -94,7 +95,7 @@ const emitCallEnded = (
   if (handledBy) {
     emitToUser(handledBy, "call-ended", { callId, reason, message, duration, creditsUsed });
   }
-  emitToStation(stationId, "call-ended", { callId, reason, message, duration, creditsUsed });
+  emitToStationStaff(stationId, "call-ended", { callId, reason, message, duration, creditsUsed });
 };
 
 // ─── Timeout Maps ────────────────────────────────────────────────────────────
@@ -168,16 +169,23 @@ const getOperatorOnCallId = async (userId: string): Promise<string | null> => {
  * Check how many operators are connected to the station socket room.
  * Connected = active socket connection in the station room.
  */
+const STAFF_ROLES = ["media_station", "presenter", "station_admin", "super_admin"];
+
 const getConnectedOperatorCount = (stationId: string): number => {
   const io = getIO();
-  const room = `station:${stationId}`;
-  const sockets = io.sockets.adapter.rooms.get(room);
+  const staffRoom = `station-staff:${stationId}`;
+  let sockets = io.sockets.adapter.rooms.get(staffRoom);
+  if (!sockets || sockets.size === 0) {
+    sockets = io.sockets.adapter.rooms.get(`station:${stationId}`);
+  }
   if (!sockets || sockets.size === 0) return 0;
 
   const userIdSet = new Set<string>();
   for (const socketId of sockets) {
     const socket = io.sockets.sockets.get(socketId);
     if (!socket) continue;
+    const userRole = (socket as any).userRole;
+    if (userRole && !STAFF_ROLES.includes(userRole)) continue;
     const userId = (socket as any).userId;
     if (!userId) continue;
     userIdSet.add(userId);
@@ -191,8 +199,11 @@ const getConnectedOperatorCount = (stationId: string): number => {
  */
 const getAvailableOperatorCount = async (stationId: string): Promise<number> => {
   const io = getIO();
-  const room = `station:${stationId}`;
-  const sockets = io.sockets.adapter.rooms.get(room);
+  const staffRoom = `station-staff:${stationId}`;
+  let sockets = io.sockets.adapter.rooms.get(staffRoom);
+  if (!sockets || sockets.size === 0) {
+    sockets = io.sockets.adapter.rooms.get(`station:${stationId}`);
+  }
   if (!sockets || sockets.size === 0) return 0;
 
   // Collect all user IDs first, deduplicate (one operator may have multiple socket connections)
@@ -200,6 +211,8 @@ const getAvailableOperatorCount = async (stationId: string): Promise<number> => 
   for (const socketId of sockets) {
     const socket = io.sockets.sockets.get(socketId);
     if (!socket) continue;
+    const userRole = (socket as any).userRole;
+    if (userRole && !STAFF_ROLES.includes(userRole)) continue;
     const userId = (socket as any).userId;
     if (!userId) continue;
     userIdSet.add(userId);
@@ -266,7 +279,8 @@ const startQueueTimeout = (callId: string, userId: string, stationId: string): v
           reason: "timeout",
           message: "The station was unable to take your call. Please try again later.",
         });
-        emitToStation(stationId, "call-cancelled", { callId });
+        emitToStationStaff(stationId, "call-cancelled", { callId });
+        emitToStationStaff(stationId, "call-removed", { callId });
         logger.info(`[Call] Queue timeout: call ${callId} auto-missed after ${timeoutMs}ms`);
       }
     } catch (err) {
@@ -426,7 +440,7 @@ const requestCall = async (userId: string, stationId: string) => {
 
     // Emit incoming-call to station room (all operators see it)
     const user = await User.findById(userId).select("fullName phone").lean();
-    emitToStation(stationId, "incoming-call", {
+    emitToStationStaff(stationId, "incoming-call", {
       callId: call[0]!._id.toString(),
       callerName: user?.fullName || "Unknown",
       callerPhone: user?.phone || "",
@@ -551,7 +565,7 @@ const acceptCall = async (callId: string, operatorId: string) => {
   });
 
   // Notify station that call was taken (hide from others)
-  emitToStation(result.station.toString(), "call-removed", { callId });
+  emitToStationStaff(result.station.toString(), "call-removed", { callId });
 
   logger.info(`[Call] Call accepted: ${callId} by operator ${operatorId}`);
 
@@ -707,6 +721,20 @@ const endCall = async (callId: string, userId: string, webrtcDuration?: number) 
 // ─── Cancel Call (User backs out while queued) ───────────────────────────────
 
 const cancelCall = async (callId: string, userId: string) => {
+  const call = await Call.findById(callId);
+  if (!call) throw new AppError(StatusCodes.NOT_FOUND, "Call not found");
+  if (call.startedBy.toString() !== userId) {
+    throw new AppError(StatusCodes.FORBIDDEN, "You can only cancel your own call.");
+  }
+  if (["completed", "missed", "cancelled", "rejected"].includes(call.status)) {
+    return { callId, status: call.status };
+  }
+  // If call was already answered by operator, treat user cancellation as endCall
+  if (call.status === "answered") {
+    logger.info(`[Call] User ${userId} cancelled answered call ${callId} — delegating to endCall`);
+    return await endCall(callId, userId);
+  }
+
   const result = await Call.findOneAndUpdate(
     { _id: callId, startedBy: userId, status: "queued" },
     { $set: { status: "cancelled", endedAt: new Date() } },
@@ -714,12 +742,13 @@ const cancelCall = async (callId: string, userId: string) => {
   );
 
   if (!result) {
-    const call = await Call.findById(callId);
-    if (call?.status === "answered" || call?.status === "completed") {
-      throw new AppError(
-        StatusCodes.BAD_REQUEST,
-        "Call was already active or completed.",
-      );
+    const freshCall = await Call.findById(callId);
+    if (freshCall?.status === "answered") {
+      logger.info(`[Call] User ${userId} cancelled answered call ${callId} — delegating to endCall`);
+      return await endCall(callId, userId);
+    }
+    if (freshCall?.status && ["completed", "missed", "cancelled", "rejected"].includes(freshCall.status)) {
+      return { callId, status: freshCall.status };
     }
     throw new AppError(StatusCodes.NOT_FOUND, "Call not found or already ended.");
   }
@@ -730,8 +759,9 @@ const cancelCall = async (callId: string, userId: string) => {
   // Refund credit if it was reserved but not charged
   await refundIfQueued(callId, userId, result.creditsUsed, result.station.toString());
 
-  // Notify station
-  emitToStation(result.station.toString(), "call-cancelled", { callId });
+  // Notify station staff
+  emitToStationStaff(result.station.toString(), "call-cancelled", { callId });
+  emitToStationStaff(result.station.toString(), "call-removed", { callId });
 
   logger.info(`[Call] Call cancelled: ${callId} by user ${userId}`);
 
@@ -1126,7 +1156,7 @@ const reregisterTimeouts = async (): Promise<void> => {
                 reason: "join_timeout",
                 message: "Call ended — connection not established.",
               });
-              emitToStation(call.station.toString(), "call-ended", {
+              emitToStationStaff(call.station.toString(), "call-ended", {
                 callId: call._id.toString(),
                 reason: "join_timeout",
               });

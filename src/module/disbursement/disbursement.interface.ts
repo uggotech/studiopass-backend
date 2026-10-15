@@ -14,6 +14,7 @@ export interface TDisbursement {
   prizeValue: string;
   txRef?: string;
   provider?: string;
+  providerRequestId?: string;
   status: DisbursementStatus;
   failureReason?: string;
   processedAt?: Date;

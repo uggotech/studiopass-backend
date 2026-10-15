@@ -117,15 +117,15 @@ export function initSocket(server: http.Server): Server {
       const userRole = (socket as any).userRole;
       const userStationId = (socket as any).stationId as string | null;
 
-      // Staff roles: verify ownership and join private staff room
-      if (["media_station", "presenter", "station_admin"].includes(userRole)) {
-        if (userStationId !== stationId) {
-          logger.warn(`Socket ${socket.id} denied staff join to station:${stationId} (not their station)`);
-          socket.emit("error", { message: "You can only join your own station room" });
-          return;
-        }
+      // Staff roles: verify ownership and join private staff room (super_admin has global access)
+      const isStaffRole = ["media_station", "presenter", "station_admin"].includes(userRole);
+      if (userRole === "super_admin" || (isStaffRole && userStationId === stationId)) {
         socket.join(`station-staff:${stationId}`);
-        logger.info(`Staff socket ${socket.id} joined station-staff:${stationId}`);
+        logger.info(`Staff socket ${socket.id} (role: ${userRole}) joined station-staff:${stationId}`);
+      } else if (isStaffRole && userStationId !== stationId) {
+        logger.warn(`Socket ${socket.id} denied staff join to station:${stationId} (not their station)`);
+        socket.emit("error", { message: "You can only join your own station room" });
+        return;
       }
 
       socket.join(`station:${stationId}`);
@@ -441,6 +441,15 @@ export function emitToStation(stationId: string, event: string, data: unknown): 
   const sockets = io.sockets.adapter.rooms.get(room);
   const count = sockets?.size ?? 0;
   logger.info(`[Socket] emitToStation: room=${room}, clients=${count}, event=${event}`);
+  io.to(room).emit(event, data);
+}
+
+export function emitToStationStaff(stationId: string, event: string, data: unknown): void {
+  const room = `station-staff:${stationId}`;
+  const io = getIO();
+  const sockets = io.sockets.adapter.rooms.get(room);
+  const count = sockets?.size ?? 0;
+  logger.info(`[Socket] emitToStationStaff: room=${room}, clients=${count}, event=${event}`);
   io.to(room).emit(event, data);
 }
 

@@ -11,4 +11,10 @@ router.get(
   DisbursementController.getDisbursements,
 );
 
+// Delivery report webhook from Africa's Talking
+router.post(
+  "/webhook/africas-talking",
+  DisbursementController.handleAfricasTalkingWebhook,
+);
+
 export const DisbursementRoutes = router;

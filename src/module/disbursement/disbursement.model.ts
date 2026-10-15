@@ -13,6 +13,7 @@ const disbursementSchema = new Schema<TDisbursement>(
     prizeValue: { type: String, required: true, trim: true },
     txRef: { type: String, trim: true },
     provider: { type: String, trim: true },
+    providerRequestId: { type: String, trim: true, index: true },
     status: {
       type: String,
       enum: ["pending", "processing", "successful", "failed", "cancelled"],

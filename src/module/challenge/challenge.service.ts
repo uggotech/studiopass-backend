@@ -56,13 +56,25 @@ const createChallenge = async (
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
   }
 
-  if (station.category === "channel") {
-    if (userRole && !["super_admin", "partner_admin"].includes(userRole)) {
-      throw new AppError(
-        StatusCodes.FORBIDDEN,
-        "Only Super Admin and Partner Admin can create challenges for Channels.",
-      );
-    }
+  if (station.category !== "channel") {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Challenges can only be created for Channels, not Radio or TV stations.",
+    );
+  }
+
+  if (station.channelType && station.channelType !== "challenges") {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Challenges can only be created for Channels configured for 'challenges'.",
+    );
+  }
+
+  if (userRole && !["super_admin", "partner_admin"].includes(userRole)) {
+    throw new AppError(
+      StatusCodes.FORBIDDEN,
+      "Only Super Admin and Partner Admin can create challenges for Channels.",
+    );
   }
 
   const currency = data.currency || station.country?.currency || "UGX";

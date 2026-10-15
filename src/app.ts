@@ -77,6 +77,12 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
+app.use(
+  express.text({
+    type: ["*/xml", "application/xml", "text/xml", "text/plain"],
+    limit: "10mb",
+  }),
+);
 app.use(cookieParser());
 
 // ============ 7. MONGO INJECTION SANITIZATION (after body parsing) ============

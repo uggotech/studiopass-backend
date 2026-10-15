@@ -26,6 +26,7 @@ import { DeviceSessionRoutes } from "../module/device-session/device-session.rou
 import { StickerRoutes } from "../module/sticker/sticker.route";
 import { SettingsRoutes } from "../module/settings/settings.route";
 import { AuditLogRoutes } from "../module/auditLog/auditLog.route";
+import { PaymentRoutes } from "../module/payment/payment.route";
 
 const router: Router = express.Router();
 
@@ -57,6 +58,7 @@ const apiRoutes = [
   { path: "/sticker", route: StickerRoutes },
   { path: "/settings", route: SettingsRoutes },
   { path: "/audit-logs", route: AuditLogRoutes },
+  { path: "/payment", route: PaymentRoutes },
 ];
 
 apiRoutes.forEach((route) => router.use(route.path, route.route));
