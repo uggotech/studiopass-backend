@@ -9,6 +9,9 @@ import seedSuperAdmin from "./db/seedSuperAdmin";
 import seedCountries from "./db/seedCountries";
 import { seedPrizeTypes } from "./module/prizeType/prizeType.service";
 import { startChallengeScheduler } from "./module/challenge/challengeScheduler";
+import { startPaymentReconciler, stopPaymentReconciler } from "./module/payment/payment.reconciler";
+import { isPayLeoConfigured } from "./module/payment/payleo.service";
+import { isAirtelConfigured } from "./module/payment/airtel.service";
 import { initMinio } from "./util/minio";
 import { initSocket, getIO } from "./socket";
 import { startShowScheduler, stopShowScheduler } from "./module/show/showScheduler";
@@ -58,11 +61,16 @@ async function main() {
       }
     }, 30 * 60 * 1000);
 
-    startShowScheduler(60000);
+    startShowScheduler(10000);
     logger.info("Show scheduler started");
 
     startChallengeScheduler(60000);
     logger.info("Challenge scheduler started");
+
+    startPaymentReconciler();
+    logger.info("Payment reconciler started");
+    if (!isPayLeoConfigured()) logger.warn("PAYLEO_* credentials missing: MTN Mobile Money payments are disabled");
+    if (!isAirtelConfigured()) logger.warn("AIRTEL_* credentials missing: Airtel Money payments are disabled");
 
     StatusService.startWeeklyTopFansScheduler();
     logger.info("Weekly top fans scheduler started");
@@ -89,6 +97,7 @@ async function gracefulShutdown(signal: string) {
 
   try {
     stopShowScheduler();
+    stopPaymentReconciler();
     StatusService.stopWeeklyTopFansScheduler();
     if (cleanupInterval) clearInterval(cleanupInterval);
 

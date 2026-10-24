@@ -65,6 +65,13 @@ app.use(compressionConfig);
 app.use(generalLimiter);
 
 // ============ 6. BODY PARSERS ============
+// PayLeo posts raw XML with an unknown content type. Read it as text first so the
+// urlencoded/json parsers below (which skip already-read bodies) can't mangle it.
+app.use(
+  "/api/v1/payment/webhook/payleo",
+  express.text({ type: () => true, limit: "64kb" }),
+);
+
 app.use(
   express.json({
     limit: "25mb",

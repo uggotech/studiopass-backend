@@ -100,6 +100,7 @@ const listenerStatementSchema = new Schema<TListenerStatement>(
   { timestamps: true },
 );
 
+listenerStatementSchema.index({ sourceId: 1 }); // idempotency lookup for every message / call
 listenerStatementSchema.index({ user: 1, createdAt: -1 });
 listenerStatementSchema.index({ user: 1, type: 1, createdAt: -1 });
 listenerStatementSchema.index({ station: 1, createdAt: -1 });

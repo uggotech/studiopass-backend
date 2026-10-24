@@ -5,6 +5,7 @@ import { ShowService } from "./show.service";
 import { StationRepository } from "../station/station.repository";
 import { Country } from "../country/country.model";
 import { StatusCodes } from "http-status-codes";
+import AppError from "../../errors/AppError";
 
 const getAllShows = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
@@ -103,7 +104,24 @@ const updateShow = catchAsync(async (req: Request, res: Response) => {
 
 const getLiveStats = catchAsync(async (req: Request, res: Response) => {
   const { stationId } = req.params as { stationId: string };
-  const result = await ShowService.getLiveStats(stationId);
+  const user = req.user as any;
+
+  // Tenant scope: live stats include the caller currently on air (name / phone / avatar)
+  if (user.role === "partner_admin") {
+    const station = await StationRepository.findById(stationId);
+    const stationPartnerId = (station as any)?.partner?._id?.toString() || (station as any)?.partner?.toString();
+    if (!station || !user.partnerId || stationPartnerId !== user.partnerId.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only view live stats of stations under your partner.");
+    }
+  } else if (user.role !== "super_admin") {
+    if (!user.stationId || user.stationId.toString() !== stationId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only view live stats of your own station.");
+    }
+  }
+
+  // A Media Station only sees the call IT is handling as "on speaker"
+  const operatorId = user.role === "media_station" ? user._id.toString() : undefined;
+  const result = await ShowService.getLiveStats(stationId, operatorId);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,

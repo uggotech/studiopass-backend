@@ -19,7 +19,7 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache tini
+RUN apk add --no-cache tini ffmpeg
 
 COPY package.json pnpm-lock.yaml* package-lock.json* pnpm-workspace.yaml* ./
 

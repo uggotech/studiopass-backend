@@ -13,6 +13,7 @@ export interface TPaymentTransaction {
   amount: number;                       // Fiat amount in UGX (e.g. 2000)
   currency: string;                     // "UGX"
   creditsToGrant: number;               // Credits to credit upon success (e.g. 20)
+  packageId?: string;                   // Server-side credit package that set amount/credits
   transactionId: string;                // Internal / Provider Transaction ID (unique index)
   referenceId?: string;                 // Gateway Reference ID
   providerReference?: string;           // Operator Reference (e.g. airtel_money_id / PayLeo ref)
@@ -27,10 +28,8 @@ export interface TPaymentTransaction {
 }
 
 export interface InitiatePaymentDTO {
-  amount: number;         // Amount in UGX (e.g. 2000)
-  credits: number;        // Credits to receive (e.g. 20)
+  packageId: string;      // Server-side package id; amount & credits come from the package
   phoneNumber: string;    // Raw input from user (e.g. "0771819679")
-  narration?: string;
 }
 
 export interface PayLeoCallbackParsed {
@@ -42,6 +41,19 @@ export interface PayLeoCallbackParsed {
   client_transaction?: string;
   narration?: string;
   message?: string;
+}
+
+// JSON body sent by the client's payleo_callback.php forwarder
+export interface PayLeoForwardedCallback {
+  status: "SUCCESS" | "FAILED";
+  method: string;
+  msisdn: string;
+  transactionId: string;
+  referenceId?: string | null;
+  amount: string;
+  client_transaction?: string | null;
+  narration?: string | null;
+  message?: string | null;
 }
 
 export interface AirtelCallbackParsed {

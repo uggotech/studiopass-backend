@@ -1,7 +1,9 @@
+import mongoose from "mongoose";
 import { StatusCodes } from "http-status-codes";
 import AppError from "../../errors/AppError";
 import { ShowRepository } from "./show.repository";
 import { StationRepository } from "../station/station.repository";
+import { Station } from "../station/station.model";
 import { Country } from "../country/country.model";
 import { User } from "../user/user.model";
 import { UserRepository } from "../user/user.repository";
@@ -56,6 +58,26 @@ function computeShowStatus(show: TShow, timezone: string): "Active" | "Scheduled
 
   return isOnAir ? "Active" : "Scheduled";
 }
+
+/**
+ * Timezone of every given station in ONE query (the country is populated), instead of
+ * three to four queries per station.
+ */
+const loadStationTimezones = async (stationIds: string[]): Promise<Map<string, string>> => {
+  const result = new Map<string, string>();
+  stationIds.forEach((id) => result.set(id, "UTC"));
+  if (stationIds.length === 0) return result;
+
+  const stations = await Station.find({ _id: { $in: stationIds } })
+    .select("country")
+    .populate("country", "timezone")
+    .lean();
+  for (const station of stations) {
+    const tz = (station.country as any)?.timezone;
+    if (tz) result.set((station._id as any).toString(), tz);
+  }
+  return result;
+};
 
 const getAllShows = async (
   query: Record<string, unknown>,
@@ -147,18 +169,7 @@ const getAllShows = async (
   }).filter(Boolean))];
 
   // Load station timezones
-  await Promise.all(
-    stationIds.map(async (sid) => {
-      const station = await StationRepository.findById(sid);
-      if (station?.country) {
-        const countryId = (station.country as any)?._id || station.country;
-        const country = await Country.findById(countryId).lean();
-        stationTimezones.set(sid, country?.timezone || "UTC");
-      } else {
-        stationTimezones.set(sid, "UTC");
-      }
-    }),
-  );
+  (await loadStationTimezones(stationIds)).forEach((tz, sid) => stationTimezones.set(sid, tz));
 
   const showsWithStatus = shows.map((s) => {
     const stationObj = s.station as any;
@@ -240,6 +251,26 @@ const getShowsByStation = async (stationId: string) => {
   return result.shows;
 };
 
+/**
+ * Exact end of the show that is on air right now (ISO, UTC), plus the server clock.
+ * Dashboards use these two values to switch shows at the correct second without trusting the
+ * clock of the studio PC. Computed on every read (never cached): it depends on "now".
+ */
+function withShowTiming<T extends { startTime: string; endTime: string }>(show: T, timezone: string) {
+  let endsAt: string | null = null;
+  try {
+    const start = getShowStartTimestamp(show.startTime, show.endTime, timezone);
+    const [sh, sm] = show.startTime.split(":").map(Number);
+    const [eh, em] = show.endTime.split(":").map(Number);
+    let durationMinutes = eh! * 60 + em! - (sh! * 60 + sm!);
+    if (durationMinutes <= 0) durationMinutes += 24 * 60; // overnight show
+    endsAt = new Date(start.getTime() + durationMinutes * 60_000).toISOString();
+  } catch {
+    endsAt = null;
+  }
+  return { ...show, endsAt, serverTime: new Date().toISOString() };
+}
+
 const getActiveShow = async (stationId: string, timezone: string = "UTC") => {
   const cacheKey = `show:active:${stationId}`;
   try {
@@ -255,7 +286,7 @@ const getActiveShow = async (stationId: string, timezone: string = "UTC") => {
         timezone,
         parsed.startTime,
       );
-      return { ...parsed, timeRemainingMinutes: remaining };
+      return { ...withShowTiming(parsed, timezone), timeRemainingMinutes: remaining };
     }
   } catch {}
 
@@ -298,7 +329,7 @@ const getActiveShow = async (stationId: string, timezone: string = "UTC") => {
     await redisClient.set(cacheKey, JSON.stringify(cacheable), 30);
   } catch {}
   return {
-    ...cacheable,
+    ...withShowTiming(cacheable, timezone),
     timeRemainingMinutes,
   };
 };
@@ -416,18 +447,7 @@ const getMyShows = async (userId: string) => {
     return station?._id?.toString() || station?.toString() || "";
   }).filter(Boolean))];
 
-  await Promise.all(
-    stationIds.map(async (sid) => {
-      const station = await StationRepository.findById(sid);
-      if (station?.country) {
-        const countryId = (station.country as any)?._id || station.country;
-        const country = await Country.findById(countryId).lean();
-        stationTimezones.set(sid, country?.timezone || "UTC");
-      } else {
-        stationTimezones.set(sid, "UTC");
-      }
-    }),
-  );
+  (await loadStationTimezones(stationIds)).forEach((tz, sid) => stationTimezones.set(sid, tz));
 
   // Compute status + time info for each show
   const enrichedShows = shows.map((s) => {
@@ -705,7 +725,7 @@ export function getShowStartTimestamp(startTime: string, endTime: string, timezo
     day: "numeric",
     hour: "numeric",
     minute: "numeric",
-    hour12: false,
+    hourCycle: "h23", // 00:xx must not come back as "24:xx"
   });
   const parts = dateFmt.formatToParts(now);
   const getPart = (t: string) => Number(parts.find((p) => p.type === t)?.value) || 0;
@@ -722,13 +742,30 @@ export function getShowStartTimestamp(startTime: string, endTime: string, timezo
     day -= 1;
   }
 
-  const sampleUtc = new Date(Date.UTC(year, month - 1, day, startH, startM, 0));
-  const tzDate = new Date(sampleUtc.toLocaleString("en-US", { timeZone: timezone }));
-  const offsetMs = tzDate.getTime() - sampleUtc.getTime();
-  return new Date(sampleUtc.getTime() - offsetMs);
+  // Wall-clock time in the station timezone -> real UTC instant (independent of the server timezone)
+  const sampleUtc = Date.UTC(year, month - 1, day, startH, startM, 0);
+  const offsetMs = getTimeZoneOffsetMs(new Date(sampleUtc), timezone);
+  return new Date(sampleUtc - offsetMs);
 }
 
-const getLiveStats = async (stationId: string) => {
+/** Offset (ms) of `timeZone` from UTC at the given instant: positive east of Greenwich. */
+function getTimeZoneOffsetMs(at: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(at);
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+  const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+  return asUtc - Math.floor(at.getTime() / 1000) * 1000;
+}
+
+const getLiveStats = async (stationId: string, operatorId?: string) => {
   const station = await StationRepository.findById(stationId);
   if (!station) {
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
@@ -760,9 +797,7 @@ const getLiveStats = async (stationId: string) => {
 
   const [
     incomingMessages,
-    totalCalls,
-    waitingCalls,
-    completedCalls,
+    callStatusCounts,
     repliedMessages,
     liveActiveCall,
   ] = await Promise.all([
@@ -774,26 +809,17 @@ const getLiveStats = async (stationId: string) => {
       isDeleted: { $ne: true },
       createdAt: { $gte: showStart },
     }),
-    // Total calls placed for this show today
-    Call.countDocuments({
-      station: stationId,
-      show: activeShow._id,
-      startedAt: { $gte: showStart },
-    }),
-    // Waiting calls currently in queue
-    Call.countDocuments({
-      station: stationId,
-      show: activeShow._id,
-      status: "queued",
-      startedAt: { $gte: showStart },
-    }),
-    // Calls answered or completed
-    Call.countDocuments({
-      station: stationId,
-      show: activeShow._id,
-      status: { $in: ["answered", "completed"] },
-      startedAt: { $gte: showStart },
-    }),
+    // Calls of this show today, counted per status in ONE query (total / waiting / answered)
+    Call.aggregate([
+      {
+        $match: {
+          station: new mongoose.Types.ObjectId(stationId),
+          show: activeShow._id,
+          startedAt: { $gte: showStart },
+        },
+      },
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]),
     // Listener threads/messages replied during this show today
     Message.countDocuments({
       station: stationId,
@@ -807,10 +833,17 @@ const getLiveStats = async (stationId: string) => {
       station: stationId,
       show: activeShow._id,
       status: "answered",
+      ...(operatorId ? { handledBy: operatorId } : {}),
     })
       .populate("startedBy", "fullName phone avatar")
       .lean(),
   ]);
+
+  const countOf = (status: string) =>
+    (callStatusCounts as Array<{ _id: string; count: number }>).find((row) => row._id === status)?.count ?? 0;
+  const totalCalls = (callStatusCounts as Array<{ count: number }>).reduce((sum, row) => sum + row.count, 0);
+  const waitingCalls = countOf("queued");
+  const completedCalls = countOf("answered") + countOf("completed");
 
   const uncutCalls = completedCalls;
   const successfulInteractions = completedCalls + repliedMessages;

@@ -14,8 +14,7 @@ import redisClient from "../../redis/redisClient";
 import config from "../../config";
 import { logger } from "../../logger/logger";
 import {
-  emitToStation,
-  emitToStationStaff,
+  emitToStationCalls,
   emitToUser,
   getIO,
 } from "../../socket";
@@ -55,8 +54,18 @@ const refundIfQueued = async (
     }
 
     const actualCreditsToRefund = updatedCall.creditsUsed || creditsUsed;
-    await CreditService.refundCredits(startedBy, actualCreditsToRefund, station, callId, "call");
-    logger.info(`[Call] Refunded ${actualCreditsToRefund} credit(s) for call: ${callId}`);
+    try {
+      await CreditService.refundCredits(startedBy, actualCreditsToRefund, station, callId, "call");
+      logger.info(`[Call] Refunded ${actualCreditsToRefund} credit(s) for call: ${callId}`);
+    } catch (refundErr) {
+      // Refund failed after we zeroed creditsUsed: put it back so the periodic sweep can retry
+      // (otherwise the credit would be lost with no way to recover it).
+      await Call.updateOne(
+        { _id: callId, creditsUsed: 0 },
+        { $set: { creditsUsed: actualCreditsToRefund } },
+      ).catch(() => undefined);
+      throw refundErr;
+    }
   } catch (err) {
     logger.error(`[Call] Refund failed for ${callId}:`, err);
   }
@@ -95,7 +104,8 @@ const emitCallEnded = (
   if (handledBy) {
     emitToUser(handledBy, "call-ended", { callId, reason, message, duration, creditsUsed });
   }
-  emitToStationStaff(stationId, "call-ended", { callId, reason, message, duration, creditsUsed });
+  // Call events go only to the Media Station call room (never the public station room)
+  emitToStationCalls(stationId, "call-ended", { callId, reason, message, duration, creditsUsed });
 };
 
 // ─── Timeout Maps ────────────────────────────────────────────────────────────
@@ -139,9 +149,19 @@ const setOperatorOnCall = async (userId: string, callId: string): Promise<void> 
   }
 };
 
-const removeOperatorOnCall = async (userId: string): Promise<void> => {
+/**
+ * Clear the operator's "on call" marker.
+ * When `onlyIfCallId` is given, the marker is cleared only if it still points at that call,
+ * so ending an old call can never wipe the marker of the call the operator switched to.
+ */
+const removeOperatorOnCall = async (userId: string, onlyIfCallId?: string): Promise<void> => {
   try {
-    await redisClient.delete(`operator:${userId}:on_call`);
+    const key = `operator:${userId}:on_call`;
+    if (onlyIfCallId) {
+      const current = await redisClient.get(key);
+      if (current && current !== onlyIfCallId) return;
+    }
+    await redisClient.delete(key);
   } catch (err) {
     logger.warn(`[Call] Redis unavailable for removeOperatorOnCall: ${err}`);
   }
@@ -159,8 +179,20 @@ const isOperatorOnCall = async (userId: string): Promise<boolean> => {
 
 const getOperatorOnCallId = async (userId: string): Promise<string | null> => {
   try {
-    return await redisClient.get(`operator:${userId}:on_call`);
+    const marked = await redisClient.get(`operator:${userId}:on_call`);
+    if (marked) return marked;
   } catch (err) {
+    // Redis down: fall through to the database
+  }
+  // Redis down, restarted/flushed mid-call, or the key expired: the database is the source of
+  // truth, so a switch / disconnect still finds the live call (indexed on {handledBy, status}).
+  try {
+    const live = await Call.findOne({ handledBy: userId, status: "answered" })
+      .sort({ answeredAt: -1 })
+      .select("_id")
+      .lean();
+    return live ? live._id.toString() : null;
+  } catch {
     return null;
   }
 };
@@ -169,55 +201,38 @@ const getOperatorOnCallId = async (userId: string): Promise<string | null> => {
  * Check how many operators are connected to the station socket room.
  * Connected = active socket connection in the station room.
  */
-const STAFF_ROLES = ["media_station", "presenter", "station_admin", "super_admin"];
+// Only Media Station accounts can take calls (presenter / station admin / super admin cannot).
+const OPERATOR_ROLES = ["media_station"];
 
-const getConnectedOperatorCount = (stationId: string): number => {
+/** Distinct Media Station users connected to the station's call room. */
+const getConnectedOperatorIds = (stationId: string): string[] => {
   const io = getIO();
-  const staffRoom = `station-staff:${stationId}`;
-  let sockets = io.sockets.adapter.rooms.get(staffRoom);
-  if (!sockets || sockets.size === 0) {
-    sockets = io.sockets.adapter.rooms.get(`station:${stationId}`);
-  }
-  if (!sockets || sockets.size === 0) return 0;
+  const sockets = io.sockets.adapter.rooms.get(`station-calls:${stationId}`);
+  if (!sockets || sockets.size === 0) return [];
 
   const userIdSet = new Set<string>();
   for (const socketId of sockets) {
     const socket = io.sockets.sockets.get(socketId);
     if (!socket) continue;
     const userRole = (socket as any).userRole;
-    if (userRole && !STAFF_ROLES.includes(userRole)) continue;
+    if (!OPERATOR_ROLES.includes(userRole)) continue;
     const userId = (socket as any).userId;
     if (!userId) continue;
     userIdSet.add(userId);
   }
-  return userIdSet.size;
+  return [...userIdSet];
 };
+
+const getConnectedOperatorCount = (stationId: string): number =>
+  getConnectedOperatorIds(stationId).length;
 
 /**
  * Check how many operators are available for a station.
  * Available = connected to station socket room AND not on a call.
  */
 const getAvailableOperatorCount = async (stationId: string): Promise<number> => {
-  const io = getIO();
-  const staffRoom = `station-staff:${stationId}`;
-  let sockets = io.sockets.adapter.rooms.get(staffRoom);
-  if (!sockets || sockets.size === 0) {
-    sockets = io.sockets.adapter.rooms.get(`station:${stationId}`);
-  }
-  if (!sockets || sockets.size === 0) return 0;
-
-  // Collect all user IDs first, deduplicate (one operator may have multiple socket connections)
-  const userIdSet = new Set<string>();
-  for (const socketId of sockets) {
-    const socket = io.sockets.sockets.get(socketId);
-    if (!socket) continue;
-    const userRole = (socket as any).userRole;
-    if (userRole && !STAFF_ROLES.includes(userRole)) continue;
-    const userId = (socket as any).userId;
-    if (!userId) continue;
-    userIdSet.add(userId);
-  }
-  const userIds = [...userIdSet];
+  // Distinct operators (one operator may have multiple socket connections)
+  const userIds = getConnectedOperatorIds(stationId);
 
   if (userIds.length === 0) return 0;
 
@@ -261,8 +276,14 @@ const generateAgoraToken = (
 
 // ─── Queue Timeout ───────────────────────────────────────────────────────────
 
-const startQueueTimeout = (callId: string, userId: string, stationId: string): void => {
-  const timeoutMs = config.calls.queue_timeout_ms;
+const startQueueTimeout = (
+  callId: string,
+  userId: string,
+  stationId: string,
+  timeoutMs: number = config.calls.queue_timeout_ms,
+): void => {
+  // Never keep two timers for the same call
+  clearQueueTimeout(callId);
 
   const timeoutId = setTimeout(async () => {
     try {
@@ -279,8 +300,8 @@ const startQueueTimeout = (callId: string, userId: string, stationId: string): v
           reason: "timeout",
           message: "The station was unable to take your call. Please try again later.",
         });
-        emitToStationStaff(stationId, "call-cancelled", { callId });
-        emitToStationStaff(stationId, "call-removed", { callId });
+        emitToStationCalls(stationId, "call-cancelled", { callId });
+        emitToStationCalls(stationId, "call-removed", { callId });
         logger.info(`[Call] Queue timeout: call ${callId} auto-missed after ${timeoutMs}ms`);
       }
     } catch (err) {
@@ -308,8 +329,9 @@ const startJoinTimeout = (
   userId: string,
   stationId: string,
   operatorId: string,
+  timeoutMs: number = config.calls.join_confirmation_timeout_ms,
 ): void => {
-  const timeoutMs = config.calls.join_confirmation_timeout_ms;
+  clearJoinTimeout(callId);
 
   const timeoutId = setTimeout(async () => {
     try {
@@ -321,8 +343,8 @@ const startJoinTimeout = (
 
       if (result) {
         await refundIfQueued(callId, userId, result.creditsUsed, stationId);
-        await removeOperatorOnCall(operatorId);
-        emitCallEnded(callId, stationId, userId, undefined, "join_timeout", "Call ended — connection not established.");
+        await removeOperatorOnCall(operatorId, callId);
+        emitCallEnded(callId, stationId, userId, operatorId, "join_timeout", "Call ended — connection not established.");
         logger.info(`[Call] Join timeout: call ${callId} auto-ended after ${timeoutMs}ms`);
       }
     } catch (err) {
@@ -440,7 +462,7 @@ const requestCall = async (userId: string, stationId: string) => {
 
     // Emit incoming-call to station room (all operators see it)
     const user = await User.findById(userId).select("fullName phone").lean();
-    emitToStationStaff(stationId, "incoming-call", {
+    emitToStationCalls(stationId, "incoming-call", {
       callId: call[0]!._id.toString(),
       callerName: user?.fullName || "Unknown",
       callerPhone: user?.phone || "",
@@ -463,6 +485,126 @@ const requestCall = async (userId: string, stationId: string) => {
   }
 };
 
+// ─── System / forced termination ─────────────────────────────────────────────
+
+/**
+ * End a call that is still queued or answered, from the server side
+ * (operator switched, socket grace expired, show ended, ...).
+ *
+ * One atomic status change decides the winner, so it is safe to call from several
+ * places at once: only the first caller does the work, everyone else gets null.
+ *  - queued   -> missed     (credit refunded)
+ *  - answered -> completed  (listener statement created)
+ * Operator marker, timers and socket events are all handled here so every code path
+ * ends a call in exactly the same way.
+ */
+const endCallBySystem = async (
+  callId: string,
+  reason: string,
+  message: string,
+  options: { handledBy?: string } = {},
+) => {
+  const endedAt = new Date();
+  const filter: Record<string, unknown> = {
+    _id: callId,
+    status: { $in: ["queued", "answered"] },
+  };
+  if (options.handledBy) filter.handledBy = options.handledBy;
+
+  const result = await Call.findOneAndUpdate(
+    filter,
+    [
+      {
+        $set: {
+          status: { $cond: [{ $eq: ["$status", "answered"] }, "completed", "missed"] },
+          endedAt,
+          duration: {
+            $cond: [
+              { $ne: ["$answeredAt", null] },
+              {
+                $max: [
+                  0,
+                  { $floor: { $divide: [{ $subtract: [endedAt, "$answeredAt"] }, 1000] } },
+                ],
+              },
+              0,
+            ],
+          },
+        },
+      },
+    ],
+    { returnDocument: "after", updatePipeline: true },
+  );
+
+  if (!result) return null;
+
+  clearQueueTimeout(callId);
+  clearJoinTimeout(callId);
+
+  const startedBy = result.startedBy.toString();
+  const stationId = result.station.toString();
+  const handledBy = result.handledBy?.toString();
+
+  if (result.status === "missed") {
+    await refundIfQueued(callId, startedBy, result.creditsUsed, stationId);
+  }
+  if (handledBy) {
+    await removeOperatorOnCall(handledBy, callId);
+  }
+  if (result.status === "completed") {
+    await createStatementIfNeeded(callId);
+  }
+
+  emitCallEnded(
+    callId,
+    stationId,
+    startedBy,
+    handledBy,
+    reason,
+    message,
+    result.duration || 0,
+    result.status === "missed" ? 0 : result.creditsUsed,
+  );
+  if (result.status === "missed") {
+    // Make sure it disappears from every open waiting queue
+    emitToStationCalls(stationId, "call-removed", { callId });
+  }
+
+  logger.info(`[Call] Call ${callId} ended by system (${reason}) -> ${result.status}`);
+  return result;
+};
+
+/**
+ * End every live (queued or answered) call of a station — used when a show ends.
+ * Queued callers are refunded, the on-air caller is completed.
+ */
+const endAllActiveCallsForStation = async (
+  stationId: string,
+  reason: string,
+  message: string,
+): Promise<number> => {
+  const active = await Call.find({
+    station: stationId,
+    status: { $in: ["queued", "answered"] },
+  })
+    .select("_id")
+    .lean();
+
+  let ended = 0;
+  for (const call of active) {
+    try {
+      const done = await endCallBySystem(call._id.toString(), reason, message);
+      if (done) ended++;
+    } catch (err) {
+      logger.error(`[Call] Failed to end call ${call._id} (${reason}):`, err);
+    }
+  }
+  if (ended > 0) {
+    logger.info(`[Call] ${ended} call(s) ended for station ${stationId} (${reason})`);
+  }
+  return ended;
+};
+
 // ─── Accept Call (Operator picks up) ─────────────────────────────────────────
 
 const acceptCall = async (callId: string, operatorId: string) => {
@@ -483,44 +625,17 @@ const acceptCall = async (callId: string, operatorId: string) => {
     }
   }
 
-  // If operator is already on another call, end it cleanly first (atomic caller switch for MVP)
+  // Build credentials BEFORE touching any call, so a misconfiguration (or any failure here)
+  // can never leave the presenter without their current caller and without the new one.
+  // UID range 1000000–1999999 is disjoint from the listener range.
+  const operatorUid = (((operatorId.split("").reduce((acc, char) => ((acc << 5) - acc + char.charCodeAt(0)) | 0, 0) >>> 0) % 1000000) + 1000000);
+  const token = generateAgoraToken(call.agoraChannelId, operatorUid, true);
+
+  // Remember the current call of this operator (if any) before we change anything
   const previousCallId = await getOperatorOnCallId(operatorId);
-  if (previousCallId && previousCallId !== callId) {
-    logger.info(`[Call] Operator ${operatorId} switching from active call ${previousCallId} to new call ${callId}`);
-    try {
-      const prevCall = await Call.findById(previousCallId);
-      if (prevCall && prevCall.status === "answered") {
-        const endedAt = new Date();
-        const duration = prevCall.answeredAt
-          ? Math.max(0, Math.floor((endedAt.getTime() - prevCall.answeredAt.getTime()) / 1000))
-          : 0;
 
-        await Call.findByIdAndUpdate(previousCallId, {
-          $set: { status: "completed", endedAt, duration },
-        });
-
-        clearJoinTimeout(previousCallId);
-        clearQueueTimeout(previousCallId);
-
-        emitCallEnded(
-          previousCallId,
-          prevCall.station.toString(),
-          prevCall.startedBy.toString(),
-          operatorId,
-          "switched",
-          "Presenter switched to another caller.",
-          duration,
-          prevCall.creditsUsed || 0,
-        );
-
-        await createStatementIfNeeded(previousCallId);
-      }
-    } catch (switchErr) {
-      logger.error(`[Call] Error ending previous call ${previousCallId} during switch:`, switchErr);
-    }
-  }
-
-  // Atomic: only accept if still queued (prevents race condition with two operators)
+  // 1) Claim the NEW caller first. Atomic: only succeeds if it is still queued
+  //    (also prevents two operators accepting the same call).
   const result = await Call.findOneAndUpdate(
     { _id: callId, status: "queued" },
     {
@@ -534,6 +649,7 @@ const acceptCall = async (callId: string, operatorId: string) => {
   );
 
   if (!result) {
+    // Nothing was changed: the presenter keeps their current caller
     const current = await Call.findById(callId);
     if (current?.status === "cancelled") {
       throw new AppError(StatusCodes.CONFLICT, "Call was cancelled by the caller.");
@@ -544,17 +660,23 @@ const acceptCall = async (callId: string, operatorId: string) => {
     throw new AppError(StatusCodes.CONFLICT, "Call already accepted by another operator.");
   }
 
-  // Clear queue timeout
   clearQueueTimeout(callId);
 
-  // Mark operator as on a call
+  // 2) New caller secured -> now end the previous one (switch).
+  //    Guarded by handledBy so we can only ever end a call that this operator is handling.
+  if (previousCallId && previousCallId !== callId) {
+    logger.info(`[Call] Operator ${operatorId} switching from active call ${previousCallId} to new call ${callId}`);
+    try {
+      await endCallBySystem(previousCallId, "switched", "Presenter switched to another caller.", {
+        handledBy: operatorId,
+      });
+    } catch (switchErr) {
+      logger.error(`[Call] Error ending previous call ${previousCallId} during switch:`, switchErr);
+    }
+  }
+
+  // 3) Mark operator as on the new call and wait for the listener to join
   await setOperatorOnCall(operatorId, callId);
-
-  // Generate Agora token for operator (UID in range 1000000–1999999, disjoint from user range)
-  const operatorUid = (((operatorId.split("").reduce((acc, char) => ((acc << 5) - acc + char.charCodeAt(0)) | 0, 0) >>> 0) % 1000000) + 1000000);
-  const token = generateAgoraToken(result.agoraChannelId, operatorUid, true);
-
-  // Start join-confirmation timeout
   startJoinTimeout(callId, result.startedBy.toString(), result.station.toString(), operatorId);
 
   // Notify caller that call was accepted (no token — user gets their own via joinCall)
@@ -564,8 +686,8 @@ const acceptCall = async (callId: string, operatorId: string) => {
     operatorName: operator.fullName || "Operator",
   });
 
-  // Notify station that call was taken (hide from others)
-  emitToStationStaff(result.station.toString(), "call-removed", { callId });
+  // Notify station that call was taken (hide from other operators)
+  emitToStationCalls(result.station.toString(), "call-removed", { callId });
 
   logger.info(`[Call] Call accepted: ${callId} by operator ${operatorId}`);
 
@@ -684,7 +806,7 @@ const endCall = async (callId: string, userId: string, webrtcDuration?: number) 
 
   // If call was answered and operator was on it, clean up
   if (result.handledBy) {
-    await removeOperatorOnCall(result.handledBy.toString());
+    await removeOperatorOnCall(result.handledBy.toString(), callId);
   }
 
   // Clear any pending timeouts
@@ -759,9 +881,9 @@ const cancelCall = async (callId: string, userId: string) => {
   // Refund credit if it was reserved but not charged
   await refundIfQueued(callId, userId, result.creditsUsed, result.station.toString());
 
-  // Notify station staff
-  emitToStationStaff(result.station.toString(), "call-cancelled", { callId });
-  emitToStationStaff(result.station.toString(), "call-removed", { callId });
+  // Notify the Media Station call room
+  emitToStationCalls(result.station.toString(), "call-cancelled", { callId });
+  emitToStationCalls(result.station.toString(), "call-removed", { callId });
 
   logger.info(`[Call] Call cancelled: ${callId} by user ${userId}`);
 
@@ -771,6 +893,24 @@ const cancelCall = async (callId: string, userId: string) => {
 // ─── Reject Call (Station Operator cuts/declines an incoming call) ────────────────
 
 const rejectCall = async (callId: string, operatorId: string, reason?: string) => {
+  // 0. Station-scope authorization: an operator can only cut calls of their own station
+  const [target, operator] = await Promise.all([
+    Call.findById(callId).select("station").lean(),
+    User.findById(operatorId).select("stationId role").lean(),
+  ]);
+  if (!target) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Call not found or already ended.");
+  }
+  if (!operator) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Operator not found");
+  }
+  if (operator.role !== "super_admin") {
+    const operatorStationId = operator.stationId?.toString();
+    if (!operatorStationId || operatorStationId !== target.station.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only decline calls from your own station.");
+    }
+  }
+
   // 1. Atomically update call status to 'rejected'
   const result = await Call.findOneAndUpdate(
     { _id: callId, status: "queued" },
@@ -837,7 +977,7 @@ const getCallHistory = async (
       .populate("station", "name stationCode category logo country isActive isVerified")
       .populate("show", "name")
       .populate("handledBy", "fullName")
-      .sort({ createdAt: -1 })
+      .sort({ startedAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
@@ -946,7 +1086,7 @@ const getStationCalls = async (
       .populate("startedBy", "fullName phone avatar")
       .populate("show", "name")
       .populate("handledBy", "fullName")
-      .sort({ createdAt: -1 })
+      .sort({ startedAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
@@ -973,207 +1113,158 @@ const getStationCalls = async (
 // ─── Startup Cleanup ────────────────────────────────────────────────────────
 
 /**
- * Clean up stale calls from previous server run.
- * Called once on server startup.
+ * Clean up stale calls (orphans left by a crash / restart). Runs on startup and periodically.
+ * Every call is ended through endCallBySystem, so status, refund, statement, operator marker
+ * and socket events are handled exactly like any other call ending.
  */
 const cleanupStaleCalls = async (): Promise<void> => {
   try {
     const queueTimeoutMs = config.calls.queue_timeout_ms;
     const now = new Date();
-    let queuedRefunded = 0;
+    let queuedCleaned = 0;
     let answeredCleaned = 0;
+    let refundsRecovered = 0;
 
-    // Process stale queued calls — per-call atomic refund + status update
+    // Stale queued calls — missed + refund
     const staleQueuedCalls = await Call.find({
       status: "queued",
       createdAt: { $lt: new Date(now.getTime() - queueTimeoutMs) },
-    }).lean();
+    })
+      .select("_id")
+      .lean();
 
     for (const call of staleQueuedCalls) {
       try {
-        const updated = await Call.findOneAndUpdate(
-          { _id: call._id, status: "queued" },
-          { $set: { status: "missed", endedAt: now } },
-          { returnDocument: "after" },
+        const done = await endCallBySystem(
+          call._id.toString(),
+          "timeout",
+          "The station was unable to take your call. Please try again later.",
         );
-        if (updated && call.creditsUsed > 0) {
-          await refundIfQueued(call._id.toString(), call.startedBy.toString(), call.creditsUsed, call.station.toString());
-          // Notify user that their queued call was cleaned up
-          emitToUser(call.startedBy.toString(), "call-ended", {
-            callId: call._id.toString(),
-            reason: "timeout",
-            message: "Call expired.",
-          });
-          // Notify station room
-          emitToStation(call.station.toString(), "call-ended", {
-            callId: call._id.toString(),
-            reason: "timeout",
-          });
-          queuedRefunded++;
-        }
+        if (done) queuedCleaned++;
       } catch (err) {
-        logger.error(`[Call] Startup cleanup failed for queued call ${call._id}:`, err);
+        logger.error(`[Call] Cleanup failed for queued call ${call._id}:`, err);
       }
     }
 
-    // Process stale answered calls (4+ hours — well above Redis on_call TTL of 2h)
+    // Stale answered calls (4+ hours — well above the Redis on_call TTL of 2h) — completed
     const staleAnsweredThresholdMs = 4 * 60 * 60 * 1000;
     const staleAnsweredCalls = await Call.find({
       status: "answered",
       answeredAt: { $lt: new Date(now.getTime() - staleAnsweredThresholdMs) },
-    }).lean();
+    })
+      .select("_id")
+      .lean();
 
     for (const call of staleAnsweredCalls) {
       try {
-        const duration = call.answeredAt
-          ? Math.floor((now.getTime() - call.answeredAt.getTime()) / 1000)
-          : 0;
-        const updated = await Call.findOneAndUpdate(
-          { _id: call._id, status: "answered" },
-          { $set: { status: "completed", endedAt: now, duration } },
-          { returnDocument: "after" },
-        );
-        if (updated) {
-          if (call.handledBy) {
-            await removeOperatorOnCall(call.handledBy.toString());
-          }
-          // Create listener statement for stale answered calls (non-critical)
-          await createStatementIfNeeded(call._id.toString());
-          // Notify user that their answered call was cleaned up
-          emitToUser(call.startedBy.toString(), "call-ended", {
-            callId: call._id.toString(),
-            reason: "timeout",
-            message: "Call expired.",
-            duration,
-          });
-          // Notify station room
-          emitToStation(call.station.toString(), "call-ended", {
-            callId: call._id.toString(),
-            reason: "timeout",
-            duration,
-          });
-          answeredCleaned++;
-        }
+        const done = await endCallBySystem(call._id.toString(), "timeout", "Call expired.");
+        if (done) answeredCleaned++;
       } catch (err) {
-        logger.error(`[Call] Startup cleanup failed for answered call ${call._id}:`, err);
+        logger.error(`[Call] Cleanup failed for answered call ${call._id}:`, err);
       }
     }
 
-    if (queuedRefunded > 0 || answeredCleaned > 0) {
+    // Recover refunds that failed (refundIfQueued puts creditsUsed back when a refund throws).
+    // Only recent calls, and only if no refund transaction exists yet — never double refund.
+    const unrefunded = await Call.find({
+      status: { $in: ["missed", "cancelled", "rejected"] },
+      creditsUsed: { $gt: 0 },
+      endedAt: {
+        $lt: new Date(now.getTime() - 2 * 60 * 1000),
+        $gte: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+      },
+    })
+      .select("_id startedBy station creditsUsed")
+      .limit(100)
+      .lean();
+
+    for (const call of unrefunded) {
+      try {
+        const alreadyRefunded = await CreditTransaction.exists({
+          resourceId: call._id,
+          type: "call_refund",
+        });
+        if (alreadyRefunded) {
+          // Credit was already returned earlier; just reconcile the call record
+          await Call.updateOne({ _id: call._id }, { $set: { creditsUsed: 0 } });
+          continue;
+        }
+        await refundIfQueued(
+          call._id.toString(),
+          call.startedBy.toString(),
+          call.creditsUsed,
+          call.station.toString(),
+        );
+        refundsRecovered++;
+      } catch (err) {
+        logger.error(`[Call] Refund recovery failed for call ${call._id}:`, err);
+      }
+    }
+
+    if (queuedCleaned > 0 || answeredCleaned > 0 || refundsRecovered > 0) {
       logger.info(
-        `[Call] Startup cleanup: ${queuedRefunded} queued → missed, ${answeredCleaned} answered → completed`,
+        `[Call] Cleanup: ${queuedCleaned} queued → missed, ${answeredCleaned} answered → completed, ${refundsRecovered} refund(s) recovered`,
       );
     }
   } catch (err) {
-    logger.error("[Call] Startup cleanup error:", err);
+    logger.error("[Call] Cleanup error:", err);
   }
 };
 
 /**
- * Re-register timeouts for active queued calls on server startup.
- * Called once after cleanupStaleCalls.
+ * Re-register timeouts for active calls after a server restart.
+ * Called once after cleanupStaleCalls. Uses the same timeout functions as normal operation.
  */
 const reregisterTimeouts = async (): Promise<void> => {
   try {
-    // 1. Re-register queue timeouts for queued calls
-    const queuedCalls = await Call.find({
-      status: "queued",
-    }).select("_id startedBy station createdAt").lean();
+    // 1. Queue timeouts for calls still waiting
+    const queuedCalls = await Call.find({ status: "queued" })
+      .select("_id startedBy station createdAt")
+      .lean();
 
+    let queuedRegistered = 0;
     for (const call of queuedCalls) {
       const elapsed = Date.now() - (call.createdAt?.getTime() ?? call._id.getTimestamp().getTime());
-      const timeoutMs = config.calls.queue_timeout_ms;
-
-      if (elapsed < timeoutMs) {
-        const remainingMs = timeoutMs - elapsed;
+      const remainingMs = config.calls.queue_timeout_ms - elapsed;
+      if (remainingMs > 0) {
         logger.info(`[Call] Re-registering queue timeout for ${call._id} (${remainingMs}ms remaining)`);
-        // Manually create timeout with remaining time (skip full startQueueTimeout)
-        const timeoutId = setTimeout(async () => {
-          try {
-            const result = await Call.findOneAndUpdate(
-              { _id: call._id, status: "queued" },
-              { $set: { status: "missed", endedAt: new Date() } },
-              { returnDocument: "after" },
-            );
-            if (result) {
-              if (result.creditsUsed > 0) {
-                try {
-                  await CreditService.refundCredits(
-                    call.startedBy.toString(),
-                    result.creditsUsed,
-                    call.station.toString(),
-                    call._id.toString(),
-                    "call",
-                  );
-                } catch (refundErr) {
-                  logger.error(`[Call] Re-registered queue timeout refund failed for ${call._id}:`, refundErr);
-                }
-              }
-              emitToUser(call.startedBy.toString(), "call-ended", {
-                callId: call._id.toString(),
-                reason: "timeout",
-                message: "The station was unable to take your call. Please try again later.",
-              });
-              emitToStation(call.station.toString(), "call-cancelled", { callId: call._id.toString() });
-            }
-          } catch (err) {
-            logger.error(`[Call] Re-registered queue timeout error for ${call._id}:`, err);
-          } finally {
-            callQueueTimeouts.delete(call._id.toString());
-          }
-        }, remainingMs);
-        callQueueTimeouts.set(call._id.toString(), timeoutId);
+        startQueueTimeout(
+          call._id.toString(),
+          call.startedBy.toString(),
+          call.station.toString(),
+          remainingMs,
+        );
+        queuedRegistered++;
       }
     }
 
-    // 2. Re-register join confirmation timeouts for answered calls
+    // 2. Join-confirmation timeouts for just-accepted calls
     const answeredCalls = await Call.find({
       status: "answered",
       handledBy: { $exists: true, $ne: null },
-    }).select("_id startedBy station handledBy answeredAt").lean();
+    })
+      .select("_id startedBy station handledBy answeredAt")
+      .lean();
 
+    let answeredRegistered = 0;
     for (const call of answeredCalls) {
       const elapsed = call.answeredAt ? Date.now() - call.answeredAt.getTime() : 0;
-      const timeoutMs = config.calls.join_confirmation_timeout_ms;
-
-      if (elapsed < timeoutMs) {
-        const remainingMs = timeoutMs - elapsed;
+      const remainingMs = config.calls.join_confirmation_timeout_ms - elapsed;
+      if (remainingMs > 0 && call.handledBy) {
         logger.info(`[Call] Re-registering join timeout for ${call._id} (${remainingMs}ms remaining)`);
-        const timeoutId = setTimeout(async () => {
-          try {
-            const result = await Call.findOneAndUpdate(
-              { _id: call._id, status: "answered" },
-              { $set: { status: "missed", endedAt: new Date() } },
-              { returnDocument: "after" },
-            );
-            if (result) {
-              await refundIfQueued(call._id.toString(), call.startedBy.toString(), result.creditsUsed, call.station.toString());
-              if (call.handledBy) {
-                await removeOperatorOnCall(call.handledBy.toString());
-              }
-              emitToUser(call.startedBy.toString(), "call-ended", {
-                callId: call._id.toString(),
-                reason: "join_timeout",
-                message: "Call ended — connection not established.",
-              });
-              emitToStationStaff(call.station.toString(), "call-ended", {
-                callId: call._id.toString(),
-                reason: "join_timeout",
-              });
-            }
-          } catch (err) {
-            logger.error(`[Call] Re-registered join timeout error for ${call._id}:`, err);
-          } finally {
-            callJoinTimeouts.delete(call._id.toString());
-          }
-        }, remainingMs);
-        callJoinTimeouts.set(call._id.toString(), timeoutId);
+        startJoinTimeout(
+          call._id.toString(),
+          call.startedBy.toString(),
+          call.station.toString(),
+          call.handledBy.toString(),
+          remainingMs,
+        );
+        answeredRegistered++;
       }
     }
 
-    const total = queuedCalls.length + answeredCalls.length;
-    if (total > 0) {
-      logger.info(`[Call] Re-registered timeouts: ${queuedCalls.length} queued, ${answeredCalls.length} answered`);
+    if (queuedRegistered + answeredRegistered > 0) {
+      logger.info(`[Call] Re-registered timeouts: ${queuedRegistered} queued, ${answeredRegistered} answered`);
     }
   } catch (err) {
     logger.error("[Call] Re-register timeouts error:", err);
@@ -1201,6 +1292,10 @@ export const CallService = {
   endCall,
   cancelCall,
   rejectCall,
+
+  // System-initiated endings (socket grace expiry, show end)
+  endCallBySystem,
+  endAllActiveCallsForStation,
 
   // Timeouts (exposed for socket disconnect cleanup)
   clearJoinTimeout,

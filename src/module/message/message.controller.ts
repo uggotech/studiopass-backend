@@ -4,6 +4,74 @@ import sendResponse from "../../shared/sendResponse";
 import { MessageService } from "./message.service";
 import AppError from "../../errors/AppError";
 import { resolveMsisdn } from "../../shared/maskMsisdn";
+import { StationRepository } from "../station/station.repository";
+
+/**
+ * Station filter for list / search / export:
+ *  - super_admin: whatever was requested (or all stations)
+ *  - partner_admin: only stations of their own partner (the requested one is verified)
+ *  - station-level staff: always their own station
+ */
+const resolveStationScope = async (
+  user: any,
+  requestedStationId?: string,
+): Promise<string | string[] | undefined> => {
+  if (user.role === "super_admin") return requestedStationId;
+
+  if (user.role === "partner_admin") {
+    const partnerId = user.partnerId?.toString();
+    if (!partnerId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "Partner admin has no partner assigned.");
+    }
+    const partnerStations = await StationRepository.findAll({ partner: partnerId }, { limit: 1000 });
+    const ids = partnerStations.map((s) => (s._id as any).toString());
+    if (requestedStationId) {
+      if (!ids.includes(requestedStationId)) {
+        throw new AppError(StatusCodes.FORBIDDEN, "You can only access stations under your partner.");
+      }
+      return requestedStationId;
+    }
+    return ids; // an empty list matches nothing
+  }
+
+  return user.stationId?.toString();
+};
+
+/** A message belongs to a listener when they wrote it, or it is a station reply to their number. */
+const isMessageOfListener = (message: any, userId: string, phone?: string): boolean => {
+  const ownerId = message.user?._id?.toString?.() || message.user?.toString?.();
+  if (ownerId) return ownerId === userId;
+  return message.senderType === "station" && !!phone && message.msisdn === phone;
+};
+
+/** Throws unless the caller may read / touch this message. */
+const assertMessageAccess = async (req: any, message: any, ownMessageError: string): Promise<void> => {
+  const user = req.user!;
+  const role = user.role;
+  if (role === "super_admin") return;
+
+  if (role === "user") {
+    if (!isMessageOfListener(message, user._id.toString(), user.phone)) {
+      throw new AppError(StatusCodes.FORBIDDEN, ownMessageError);
+    }
+    return;
+  }
+
+  const messageStationId = message.station?._id?.toString?.() || message.station?.toString?.();
+
+  if (role === "partner_admin") {
+    const station = messageStationId ? await StationRepository.findById(messageStationId) : null;
+    const stationPartnerId = (station as any)?.partner?._id?.toString() || (station as any)?.partner?.toString();
+    if (!user.partnerId || !stationPartnerId || stationPartnerId !== user.partnerId.toString()) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only access messages from stations under your partner.");
+    }
+    return;
+  }
+
+  if (!user.stationId || user.stationId.toString() !== messageStationId) {
+    throw new AppError(StatusCodes.FORBIDDEN, "You can only access messages from your own station.");
+  }
+};
 
 const sendMessage = catchAsync(async (req, res) => {
   const { stationId, content, imageUrl, videoUrl, audioUrl, audioDuration, waveform, mediaType, stickerUrl } = req.body;
@@ -390,19 +458,13 @@ const deleteForEveryone = catchAsync(async (req, res) => {
 
 const markAsRead = catchAsync(async (req, res) => {
   const id = req.params.id as string;
-  const userRole = req.user!.role;
 
-  // User can only mark their own messages as read
-  if (userRole === "user") {
-    const message = await MessageService.findMessageForAuth(id);
-    if (!message) {
-      throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
-    }
-    const userId = req.user!._id.toString();
-    if ((message as any).user?.toString() !== userId) {
-      throw new AppError(StatusCodes.FORBIDDEN, "You can only mark your own messages as read.");
-    }
+  // Listeners: only their own messages. Staff: only messages of their own station / partner.
+  const message = await MessageService.findMessageForAuth(id);
+  if (!message) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
   }
+  await assertMessageAccess(req, message, "You can only mark your own messages as read.");
 
   const result = await MessageService.markAsRead(id);
 
@@ -445,19 +507,13 @@ const getPendingMessages = catchAsync(async (req, res) => {
 
 const getMessageById = catchAsync(async (req, res) => {
   const id = req.params.id as string;
-  const userRole = req.user!.role;
 
-  // User can only view their own messages
-  if (userRole === "user") {
-    const message = await MessageService.findMessageForAuth(id);
-    if (!message) {
-      throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
-    }
-    const userId = req.user!._id.toString();
-    if ((message as any).user?.toString() !== userId) {
-      throw new AppError(StatusCodes.FORBIDDEN, "You can only view your own messages.");
-    }
+  // Listeners: only their own messages. Staff: only messages of their own station / partner.
+  const message = await MessageService.findMessageForAuth(id);
+  if (!message) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Message not found");
   }
+  await assertMessageAccess(req, message, "You can only view your own messages.");
 
   const result = await MessageService.getMessageById(id);
 
@@ -472,10 +528,7 @@ const exportMessages = catchAsync(async (req, res) => {
   const { stationId, format = "csv" } = req.query;
   const userRole = req.user!.role;
 
-  let resolvedStationId = stationId as string | undefined;
-  if (userRole !== "super_admin" && userRole !== "partner_admin") {
-    resolvedStationId = req.user!.stationId?.toString();
-  }
+  const resolvedStationId = await resolveStationScope(req.user, stationId as string | undefined);
 
   // Pass role so service can mask msisdn in CSV/JSON output
   const result = await MessageService.exportMessages(resolvedStationId, format as string, userRole);
@@ -496,12 +549,8 @@ const exportMessages = catchAsync(async (req, res) => {
 
 const searchMessages = catchAsync(async (req, res) => {
   const { q, stationId, page = 1, limit = 20 } = req.query;
-  const userRole = req.user!.role;
 
-  let resolvedStationId = stationId as string | undefined;
-  if (userRole !== "super_admin" && userRole !== "partner_admin") {
-    resolvedStationId = req.user!.stationId?.toString();
-  }
+  const resolvedStationId = await resolveStationScope(req.user, stationId as string | undefined);
 
   const result = await MessageService.searchMessages(
     (q as string) || "",
@@ -521,12 +570,8 @@ const searchMessages = catchAsync(async (req, res) => {
 
 const getList = catchAsync(async (req, res) => {
   const { page = 1, limit = 20, stationId: queryStationId, country, show, status, search, q } = req.query;
-  const userRole = req.user!.role;
 
-  let resolvedStationId = queryStationId as string | undefined;
-  if (userRole !== "super_admin" && userRole !== "partner_admin") {
-    resolvedStationId = req.user!.stationId?.toString();
-  }
+  const resolvedStationId = await resolveStationScope(req.user, queryStationId as string | undefined);
 
   const result = await MessageService.getAllMessages(
     resolvedStationId,

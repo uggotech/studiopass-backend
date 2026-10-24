@@ -25,6 +25,24 @@ const MAX_CONNECTIONS_PER_USER = 5;
 // Grace period timers for socket disconnects — prevents mobile blips from ending active calls
 const disconnectGraceTimers: Map<string, NodeJS.Timeout> = new Map();
 
+/**
+ * True while the user still has at least one live socket (another tab / device).
+ * At "disconnect" time the closing socket has already left its rooms, so this
+ * only counts the remaining connections.
+ */
+function userHasLiveSocket(userId: string): boolean {
+  if (!io) return false;
+  const room = io.sockets.adapter.rooms.get(`user:${userId}`);
+  return !!room && room.size > 0;
+}
+
+/** Store a grace timer for a user, clearing any earlier one so no orphan timer survives. */
+function setDisconnectGraceTimer(userId: string, timer: NodeJS.Timeout): void {
+  const previous = disconnectGraceTimers.get(userId);
+  if (previous) clearTimeout(previous);
+  disconnectGraceTimers.set(userId, timer);
+}
+
 export function initSocket(server: http.Server): Server {
   io = new Server(server, {
     transports: ["websocket", "polling"],
@@ -95,8 +113,8 @@ export function initSocket(server: http.Server): Server {
       const ioServer = io!;
       for (const [sid, s] of ioServer.sockets.sockets) {
         if ((s as any).userId === userId && sid !== socket.id) {
+          // The evicted socket's own "disconnect" handler decrements the counter
           s.disconnect(true);
-          userConnectionCount.set(userId, currentCount - 1);
           break;
         }
       }
@@ -122,6 +140,12 @@ export function initSocket(server: http.Server): Server {
       if (userRole === "super_admin" || (isStaffRole && userStationId === stationId)) {
         socket.join(`station-staff:${stationId}`);
         logger.info(`Staff socket ${socket.id} (role: ${userRole}) joined station-staff:${stationId}`);
+
+        // Only the station's Media Station accounts receive call events (incoming / removed / ended)
+        if (userRole === "media_station") {
+          socket.join(`station-calls:${stationId}`);
+          logger.info(`Media station socket ${socket.id} joined station-calls:${stationId}`);
+        }
       } else if (isStaffRole && userStationId !== stationId) {
         logger.warn(`Socket ${socket.id} denied staff join to station:${stationId} (not their station)`);
         socket.emit("error", { message: "You can only join your own station room" });
@@ -140,6 +164,7 @@ export function initSocket(server: http.Server): Server {
     socket.on("leave-station", (stationId: string) => {
       socket.leave(`station:${stationId}`);
       socket.leave(`station-staff:${stationId}`);
+      socket.leave(`station-calls:${stationId}`);
       logger.info(`Socket ${socket.id} left station:${stationId}`);
     });
 
@@ -154,10 +179,10 @@ export function initSocket(server: http.Server): Server {
         return;
       }
 
-      // Listeners can join any show (they see show status)
+      // Listeners must not join show rooms: those rooms carry staff-side message events.
+      // Show start/end reaches listeners through the public station room instead.
       if (userRole === "user") {
-        socket.join(`show:${showId}`);
-        logger.info(`Socket ${socket.id} joined show:${showId}`);
+        socket.emit("error", { message: "Listeners cannot join show rooms" });
         return;
       }
 
@@ -257,82 +282,50 @@ export function initSocket(server: http.Server): Server {
         userConnectionCount.set(disconnectUserId, count - 1);
       }
 
+      // Another tab / device of the same user is still connected:
+      // the call (and the operator's online status) must not be touched.
+      if (userHasLiveSocket(disconnectUserId)) {
+        logger.info(`[Call] User ${disconnectUserId} still has another live socket — no call grace started`);
+        return;
+      }
+
       const graceMs = config.calls.socket_disconnect_grace_ms;
+      const isOperatorRole = ["media_station", "presenter", "station_admin", "super_admin"].includes(disconnectUserRole);
 
       try {
         // ─── Operator disconnect — grace period before ending call ────────
-        if (["media_station", "presenter", "station_admin", "super_admin"].includes(disconnectUserRole)) {
+        if (isOperatorRole) {
           const activeCallId = await CallService.getOperatorOnCallId(disconnectUserId);
           if (activeCallId) {
-            // Don't remove operator on-call yet — grace period may cancel
-            CallService.clearJoinTimeout(activeCallId);
-            CallService.clearQueueTimeout(activeCallId);
-
+            // Join / queue timeouts keep running on purpose: if the listener never joins,
+            // the call must still be ended even when the operator reconnects.
             logger.info(`[Call] Operator ${disconnectUserId} disconnected — starting ${graceMs}ms grace for call ${activeCallId}`);
 
             const graceTimer = setTimeout(async () => {
               disconnectGraceTimers.delete(disconnectUserId);
+              try {
+                // Reconnected during the grace period (the connection handler also clears this timer)
+                if (userHasLiveSocket(disconnectUserId)) return;
 
-              // Re-check: call may have been ended or user may have reconnected
-              const recheckCall = await Call.findById(activeCallId)
-                .select("status")
-                .lean();
-              if (!recheckCall || ["missed", "rejected", "cancelled", "completed"].includes(recheckCall.status)) {
-                logger.info(`[Call] Grace expired for operator ${disconnectUserId} but call ${activeCallId} already ended (${recheckCall?.status})`);
-                // Still clean up operator on-call if call ended
-                await CallService.removeOperatorOnCall(disconnectUserId);
-                return;
-              }
-
-              // Call still active after grace — end it
-              await CallService.removeOperatorOnCall(disconnectUserId);
-
-              const originalCall = await Call.findById(activeCallId)
-                .select("startedBy station creditsUsed status answeredAt")
-                .lean();
-
-              if (originalCall) {
-                const newStatus = originalCall.status === "answered" ? "completed" : "missed";
-                const duration = (originalCall.status === "answered" && originalCall.answeredAt)
-                  ? Math.floor((Date.now() - originalCall.answeredAt.getTime()) / 1000)
-                  : 0;
-
-                const updated = await Call.findOneAndUpdate(
-                  {
-                    _id: activeCallId,
-                    status: { $nin: ["missed", "rejected", "cancelled", "completed"] },
-                  },
-                  { $set: { status: newStatus, endedAt: new Date(), duration } },
-                  { returnDocument: "after" },
+                const ended = await CallService.endCallBySystem(
+                  activeCallId,
+                  "operator_disconnected",
+                  "Operator disconnected.",
+                  { handledBy: disconnectUserId },
                 );
-
-                if (updated) {
-                  if (updated.status === "missed" && !updated.answeredAt && originalCall.creditsUsed > 0) {
-                    await CallService.refundIfQueued(
-                      activeCallId,
-                      originalCall.startedBy.toString(),
-                      originalCall.creditsUsed,
-                      originalCall.station.toString(),
-                    );
-                  }
-                  if (updated.status === "completed") {
-                    await CallService.createStatementIfNeeded(activeCallId);
-                  }
-                  CallService.emitCallEnded(
-                    activeCallId,
-                    originalCall.station.toString(),
-                    originalCall.startedBy.toString(),
-                    undefined,
-                    "operator_disconnected",
-                    "Operator disconnected.",
-                  );
+                if (!ended) {
+                  // Call was already over — just make sure the marker is gone
+                  await CallService.removeOperatorOnCall(disconnectUserId, activeCallId);
+                  logger.info(`[Call] Grace expired for operator ${disconnectUserId} but call ${activeCallId} already ended`);
+                } else {
+                  logger.warn(`[Call] Operator ${disconnectUserId} grace expired — call ${activeCallId} ended`);
                 }
+              } catch (err) {
+                logger.error(`[Call] Operator grace expiry error for call ${activeCallId}:`, err);
               }
-
-              logger.warn(`[Call] Operator ${disconnectUserId} grace expired — call ${activeCallId} ended`);
             }, graceMs);
 
-            disconnectGraceTimers.set(disconnectUserId, graceTimer);
+            setDisconnectGraceTimer(disconnectUserId, graceTimer);
           }
         }
 
@@ -341,82 +334,39 @@ export function initSocket(server: http.Server): Server {
           const activeCall = await Call.findOne({
             startedBy: disconnectUserId,
             status: { $in: ["queued", "answered"] },
-          }).select("_id station handledBy creditsUsed status answeredAt").lean();
+          })
+            .select("_id")
+            .lean();
 
           if (activeCall) {
-            logger.info(`[Call] User ${disconnectUserId} disconnected — starting ${graceMs}ms grace for call ${activeCall._id}`);
+            const activeCallId = activeCall._id.toString();
+            logger.info(`[Call] User ${disconnectUserId} disconnected — starting ${graceMs}ms grace for call ${activeCallId}`);
 
             const graceTimer = setTimeout(async () => {
               disconnectGraceTimers.delete(disconnectUserId);
+              try {
+                // Reconnected during the grace period
+                if (userHasLiveSocket(disconnectUserId)) return;
 
-              // Re-check: call may have been ended or user may have reconnected
-              const recheckCall = await Call.findById(activeCall._id)
-                .select("status")
-                .lean();
-              if (!recheckCall || ["missed", "rejected", "cancelled", "completed"].includes(recheckCall.status)) {
-                logger.info(`[Call] Grace expired for user ${disconnectUserId} but call ${activeCall._id} already ended (${recheckCall?.status})`);
-                return;
-              }
-
-              // Call still active after grace — end it
-              const newStatus = activeCall.status === "answered" ? "completed" : "missed";
-              const duration = (activeCall.status === "answered" && activeCall.answeredAt)
-                ? Math.floor((Date.now() - activeCall.answeredAt.getTime()) / 1000)
-                : 0;
-
-              const updated = await Call.findOneAndUpdate(
-                {
-                  _id: activeCall._id,
-                  status: { $nin: ["missed", "rejected", "cancelled", "completed"] },
-                },
-                { $set: { status: newStatus, endedAt: new Date(), duration } },
-                { returnDocument: "after" },
-              );
-
-              if (updated) {
-                if (updated.status === "missed" && !updated.answeredAt && activeCall.creditsUsed > 0) {
-                  await CallService.refundIfQueued(
-                    activeCall._id.toString(),
-                    disconnectUserId,
-                    activeCall.creditsUsed,
-                    activeCall.station.toString(),
-                  );
-                }
-                if (activeCall.handledBy) {
-                  await CallService.removeOperatorOnCall(activeCall.handledBy.toString());
-                }
-                if (updated.status === "completed") {
-                  await CallService.createStatementIfNeeded(activeCall._id.toString());
-                }
-                if (activeCall.handledBy) {
-                  CallService.emitCallEnded(
-                    activeCall._id.toString(),
-                    activeCall.station.toString(),
-                    disconnectUserId,
-                    activeCall.handledBy.toString(),
-                    "user_disconnected",
-                    "User disconnected.",
-                  );
-                }
-                CallService.emitCallEnded(
-                  activeCall._id.toString(),
-                  activeCall.station.toString(),
-                  disconnectUserId,
-                  activeCall.handledBy?.toString(),
+                const ended = await CallService.endCallBySystem(
+                  activeCallId,
                   "user_disconnected",
                   "User disconnected.",
                 );
+                if (ended) {
+                  logger.warn(`[Call] User ${disconnectUserId} grace expired — call ${activeCallId} ended`);
+                }
+              } catch (err) {
+                logger.error(`[Call] User grace expiry error for call ${activeCallId}:`, err);
               }
-
-              logger.warn(`[Call] User ${disconnectUserId} grace expired — call ${activeCall._id} ended`);
             }, graceMs);
 
-            disconnectGraceTimers.set(disconnectUserId, graceTimer);
+            setDisconnectGraceTimer(disconnectUserId, graceTimer);
           }
         }
 
         // Only remove operator online status for operator roles
-        if (["media_station", "presenter", "station_admin", "super_admin"].includes(disconnectUserRole)) {
+        if (isOperatorRole) {
           await CallService.removeOperatorOnline(disconnectUserId);
         }
       } catch (err) {
@@ -441,6 +391,19 @@ export function emitToStation(stationId: string, event: string, data: unknown): 
   const sockets = io.sockets.adapter.rooms.get(room);
   const count = sockets?.size ?? 0;
   logger.info(`[Socket] emitToStation: room=${room}, clients=${count}, event=${event}`);
+  io.to(room).emit(event, data);
+}
+
+/**
+ * Emit to the station's Media Station accounts only (incoming calls, queue changes, call endings).
+ * Presenters, station admins and listeners are not in this room.
+ */
+export function emitToStationCalls(stationId: string, event: string, data: unknown): void {
+  const room = `station-calls:${stationId}`;
+  const io = getIO();
+  const sockets = io.sockets.adapter.rooms.get(room);
+  const count = sockets?.size ?? 0;
+  logger.info(`[Socket] emitToStationCalls: room=${room}, clients=${count}, event=${event}`);
   io.to(room).emit(event, data);
 }
 
@@ -475,23 +438,73 @@ export function emitToUser(userId: string, event: string, data: unknown): void {
   io.to(room).emit(event, data);
 }
 
+const LAST_SHOW_KEY = (stationId: string) => `show:last:${stationId}`;
+const LAST_SHOW_NONE = "none";
+const LAST_SHOW_TTL_SEC = 7 * 24 * 60 * 60;
+
+/**
+ * Last known active show of a station: memory first, Redis second (survives a restart).
+ * Returns undefined when this station has never been observed.
+ */
+async function loadLastActiveShow(stationId: string): Promise<string | null | undefined> {
+  if (lastActiveShow.has(stationId)) return lastActiveShow.get(stationId) ?? null;
+  try {
+    const { default: redisClient } = await import("../redis/redisClient");
+    const stored = await redisClient.get(LAST_SHOW_KEY(stationId));
+    if (stored === null) return undefined;
+    const value = stored === LAST_SHOW_NONE ? null : stored;
+    lastActiveShow.set(stationId, value);
+    return value;
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveLastActiveShow(stationId: string, showId: string | null): Promise<void> {
+  lastActiveShow.set(stationId, showId);
+  try {
+    const { default: redisClient } = await import("../redis/redisClient");
+    await redisClient.set(LAST_SHOW_KEY(stationId), showId ?? LAST_SHOW_NONE, LAST_SHOW_TTL_SEC);
+  } catch {
+    // Redis unavailable — memory state still works for this process
+  }
+}
+
 /**
  * Check if the active show for a station has changed and emit transition events.
- * Called on each message send to detect show start/end.
+ * Called by the show scheduler (every few seconds) and on each message send.
+ *
+ * - The first observation of a station only records the state (no event, no refetch storm
+ *   after a restart); the state is kept in Redis so a restart does not lose it.
+ * - The cached "active show" for the station is cleared BEFORE the events go out, so the
+ *   refetch triggered by show-started / show-ended already sees the new show.
  */
-export function checkAndEmitShowTransition(
+export async function checkAndEmitShowTransition(
   stationId: string,
   currentShowId: string | null,
   showName: string | null,
-): void {
-  // Mutex: skip if already processing this station
+): Promise<void> {
+  // Skip if this station is already being processed (scheduler tick vs message flow)
   if (showTransitionLocks.get(stationId)) return;
   showTransitionLocks.set(stationId, true);
 
   try {
-    const prevShowId = lastActiveShow.get(stationId) ?? null;
+    const prevShowId = await loadLastActiveShow(stationId);
+
+    if (prevShowId === undefined) {
+      await saveLastActiveShow(stationId, currentShowId);
+      return;
+    }
 
     if (currentShowId !== prevShowId) {
+      // Drop the cached active show so the next fetch returns the new state
+      try {
+        const { default: redisClient } = await import("../redis/redisClient");
+        await redisClient.delete(`show:active:${stationId}`);
+      } catch {
+        // cache is best-effort
+      }
+
       // Show ended (previous show no longer active)
       if (prevShowId) {
         emitToStation(stationId, "show-ended", {
@@ -511,7 +524,7 @@ export function checkAndEmitShowTransition(
         logger.info(`[Socket] show-started emitted for station:${stationId}, show:${currentShowId}`);
       }
 
-      lastActiveShow.set(stationId, currentShowId);
+      await saveLastActiveShow(stationId, currentShowId);
     }
   } finally {
     showTransitionLocks.delete(stationId);

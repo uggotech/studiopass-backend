@@ -231,7 +231,9 @@ const applyQueryFilters = (
   filter: Record<string, unknown>,
   query: Record<string, unknown>,
 ) => {
-  if (query.userId) filter.user = query.userId;
+  // The user filter is only honoured for roles that are NOT already scoped to one user
+  // (otherwise ?userId=<someone else> would override the caller's own scope)
+  if (query.userId && !filter.user) filter.user = query.userId;
   if (query.type) filter.type = query.type;
   if (query.isFree !== undefined) filter.isFree = query.isFree === "true";
   if (query.country) filter.country = query.country;
@@ -308,11 +310,31 @@ const getStatementById = async (
     }
   }
 
-  // Station admin can only view their station's statements
-  if (scope?.role === "station_admin" && scope.stationId) {
-    const statementStationId = (statement as any).station?._id?.toString() || (statement as any).station?.toString();
-    if (statementStationId !== scope.stationId) {
+  const statementStationId = (statement as any).station?._id?.toString() || (statement as any).station?.toString();
+
+  // Station-level staff can only view their station's statements
+  if (["station_admin", "media_station", "customer_care"].includes(scope?.role || "")) {
+    if (!scope?.stationId || statementStationId !== scope.stationId) {
       throw new AppError(StatusCodes.FORBIDDEN, "You can only view statements from your station.");
+    }
+  }
+
+  // Partner admin: only stations under their partner
+  if (scope?.role === "partner_admin") {
+    const station = statementStationId ? await StationRepository.findById(statementStationId) : null;
+    const stationPartnerId = (station as any)?.partner?._id?.toString() || (station as any)?.partner?.toString();
+    if (!scope.partnerId || !stationPartnerId || stationPartnerId !== scope.partnerId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only view statements from stations under your partner.");
+    }
+  }
+
+  // Presenter: only statements of their own shows
+  if (scope?.role === "presenter" && scope.userId) {
+    const presenterShows = await ShowRepository.findByPresenter(scope.userId);
+    const showIds = presenterShows.map((s) => s._id.toString());
+    const statementShowId = (statement as any).show?._id?.toString() || (statement as any).show?.toString();
+    if (!statementShowId || !showIds.includes(statementShowId)) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only view statements from your own shows.");
     }
   }
 

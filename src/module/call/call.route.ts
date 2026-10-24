@@ -15,10 +15,10 @@ router.post(
   CallController.requestCall,
 );
 
-// Operator: accept an incoming call
+// Operator (Media Station accounts only): accept an incoming call
 router.post(
   "/accept",
-  auth(UserRole.MEDIA_STATION, UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
+  auth(UserRole.MEDIA_STATION),
   validateRequest(CallDto.acceptCall),
   CallController.acceptCall,
 );
@@ -31,10 +31,10 @@ router.post(
   CallController.joinCall,
 );
 
-// Either party: end an active call
+// Either party: end an active call (the listener or the Media Station that handles it)
 router.post(
   "/end",
-  auth(UserRole.USER, UserRole.MEDIA_STATION, UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
+  auth(UserRole.USER, UserRole.MEDIA_STATION),
   validateRequest(CallDto.endCall),
   CallController.endCall,
 );
@@ -47,10 +47,10 @@ router.post(
   CallController.cancelCall,
 );
 
-// Operator: cut/decline an incoming call
+// Operator (Media Station accounts only): cut/decline an incoming call
 router.post(
   "/reject",
-  auth(UserRole.MEDIA_STATION, UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),
+  auth(UserRole.MEDIA_STATION),
   validateRequest(CallDto.rejectCall),
   CallController.rejectCall,
 );

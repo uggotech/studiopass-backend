@@ -96,6 +96,8 @@ const auth =
       }
 
       req.user = user;
+      // Session id of the JWT (the user document does not carry it) — needed by logout
+      (req as any).sessionId = verifyUser?.sid;
 
       const effectiveRole = user.role || UserRole.USER;
 

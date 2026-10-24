@@ -159,8 +159,7 @@ const sumCreditsForPeriod = async (
     }
 
     if (scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)) {
-      const stationUsers = await User.find({ stationId: scope.stationId }).select("_id").lean();
-      matchFilter.user = { $in: stationUsers.map((u: any) => u._id) };
+      matchFilter.station = new mongoose.Types.ObjectId(scope.stationId);
     } else if (scope?.partnerId && mongoose.Types.ObjectId.isValid(scope.partnerId)) {
       const partnerStations = await Station.find({ partner: scope.partnerId }).select("country").lean();
       const countryIds = [...new Set(partnerStations.map((s: any) => s.country?.toString()).filter(Boolean))];
@@ -209,8 +208,20 @@ const getStats = async (
     : (role === "partner_admin" || role === "customer_care") ? scope?.partnerId
     : "global";
   const cacheRole = role || "super_admin";
+  // Every filter that changes the numbers is part of the key, otherwise changing the country,
+  // station or date range would keep returning the previous (cached) result for 2 minutes.
+  const cacheKeyScope = [
+    cacheScopeId || "global",
+    scope?.stationId || "",
+    scope?.country || "",
+    scope?.dateRange || "",
+    scope?.startDate || "",
+    scope?.endDate || "",
+    period || "",
+    timezone || "",
+  ].join("|");
 
-  const cached = await DashboardCache.getStats(cacheRole, cacheScopeId || "global");
+  const cached = await DashboardCache.getStats(cacheRole, cacheKeyScope);
   if (cached) return cached;
 
   // Build filters based on role scope
@@ -320,7 +331,7 @@ const getStats = async (
       Follow.distinct("user", { station: sid }),
       CreditTransaction.distinct("user", { station: sid, type: { $in: deductionTypes } }),
     ]).then(([msg, call, follow, credit]) => {
-      return new Set([...msg, ...call, ...follow, ...credit].filter(Boolean)).size;
+      return new Set([...msg, ...call, ...follow, ...credit].filter(Boolean).map((id: any) => id.toString())).size;
     }).catch(() => 0);
 
     // Active: same sources but with 7-day time filter
@@ -330,7 +341,7 @@ const getStats = async (
       Follow.distinct("user", { station: sid }),
       CreditTransaction.distinct("user", { station: sid, type: { $in: deductionTypes }, createdAt: { $gte: sevenDaysAgo } }),
     ]).then(([msg, call, follow, credit]) => {
-      return new Set([...msg, ...call, ...follow, ...credit].filter(Boolean)).size;
+      return new Set([...msg, ...call, ...follow, ...credit].filter(Boolean).map((id: any) => id.toString())).size;
     }).catch(() => 0);
 
   } else if ((role === "partner_admin" || role === "customer_care") && scope?.partnerId) {
@@ -342,12 +353,13 @@ const getStats = async (
 
     activeListenersPromise = partnerCountryPromise.then(async (partner) => {
       if (!partner?.country) return 0;
-      const countryUsers = await User.find({ countryId: partner.country, role: "user" }).select("_id").lean();
-      if (countryUsers.length === 0) return 0;
-      return Auth.countDocuments({
-        _id: { $in: countryUsers.map((u) => u._id) },
-        lastLogin: { $gte: sevenDaysAgo },
-      });
+      const active = await User.aggregate([
+        { $match: { countryId: partner.country, role: "user" } },
+        { $lookup: { from: Auth.collection.name, localField: "auth", foreignField: "_id", as: "authDoc" } },
+        { $match: { "authDoc.lastLogin": { $gte: sevenDaysAgo } } },
+        { $count: "total" },
+      ]);
+      return active[0]?.total ?? 0;
     }).catch(() => 0);
 
   } else {
@@ -397,8 +409,7 @@ const getStats = async (
       status: "completed",
     };
     if (scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)) {
-      const stationUsers = await User.find({ stationId: scope.stationId }).select("_id").lean();
-      hourlyMatchFilter.user = { $in: stationUsers.map((u: any) => u._id) };
+      hourlyMatchFilter.station = new mongoose.Types.ObjectId(scope.stationId);
     } else if (scope?.partnerId && mongoose.Types.ObjectId.isValid(scope.partnerId)) {
       const partnerStations = await Station.find({ partner: scope.partnerId }).select("country").lean();
       const countryIds = [...new Set(partnerStations.map((s: any) => s.country?.toString()).filter(Boolean))];
@@ -498,8 +509,7 @@ const getStats = async (
       status: "completed",
     };
     if (scope?.stationId && mongoose.Types.ObjectId.isValid(scope.stationId)) {
-      const stationUsers = await User.find({ stationId: scope.stationId }).select("_id").lean();
-      dailyMatchFilter.user = { $in: stationUsers.map((u: any) => u._id) };
+      dailyMatchFilter.station = new mongoose.Types.ObjectId(scope.stationId);
     } else if (scope?.partnerId && mongoose.Types.ObjectId.isValid(scope.partnerId)) {
       const partnerStations = await Station.find({ partner: scope.partnerId }).select("country").lean();
       const countryIds = [...new Set(partnerStations.map((s: any) => s.country?.toString()).filter(Boolean))];
@@ -562,7 +572,7 @@ const getStats = async (
   };
 
   // Cache the result (120s TTL)
-  await DashboardCache.setStats(cacheRole, cacheScopeId || "global", result);
+  await DashboardCache.setStats(cacheRole, cacheKeyScope, result);
 
   return result;
 };
@@ -734,21 +744,6 @@ const getStationOverview = async (scope?: { partnerId?: string; stationId?: stri
   const dateMatchCall = resolveDateRangeFilter(scope?.dateRange, "startedAt");
   const now = new Date();
 
-  // Diagnostic logging
-  try {
-    const rawStatuses = await Status.find({}).select("_id station content viewCount expiresAt createdAt").lean();
-    console.log("================== [DASHBOARD DIAGNOSTIC] ==================");
-    console.log("[getStationOverview] Scope:", JSON.stringify(scope));
-    console.log("[getStationOverview] Station Filter:", JSON.stringify(filter));
-    console.log("[getStationOverview] Status.collection.name:", Status.collection.name);
-    console.log("[getStationOverview] Total Statuses in DB:", rawStatuses.length);
-    rawStatuses.forEach((st, i) => {
-      console.log(`  [Status #${i + 1}] ID: ${st._id}, Station: ${st.station} (Type: ${typeof st.station}, IsObjectId: ${st.station instanceof mongoose.Types.ObjectId}), ViewCount: ${st.viewCount}, ExpiresAt: ${st.expiresAt}, IsExpired: ${st.expiresAt ? new Date(st.expiresAt) <= now : 'N/A'}`);
-    });
-  } catch (err) {
-    console.error("[getStationOverview] Diagnostic error:", err);
-  }
-
   // Use aggregation to get stations + counts in a single pipeline (no N+1)
   const overview = await Station.aggregate([
     { $match: filter },
@@ -884,12 +879,6 @@ const getStationOverview = async (scope?: { partnerId?: string; stationId?: stri
       },
     },
   ]);
-
-  console.log("[getStationOverview] Overview Result Stations Count:", overview.length);
-  overview.forEach((s: any) => {
-    console.log(`  -> Station: ${s.stationName} (ID: ${s.stationId}), ActiveCampaigns: ${s.activeCampaigns}, TotalCampaignViews: ${s.totalCampaignViews}`);
-  });
-  console.log("============================================================");
 
   return overview;
 };
@@ -1109,11 +1098,11 @@ const getRecentUsers = async (
 };
 
 const getCreditStats = async (scope?: { partnerId?: string; stationId?: string }) => {
-  // Build user filter based on scope (not station filter, since purchases/admin_grants have no station field)
+  // Station scope filters on the station of the transaction (message / call spending). Purchases and
+  // admin grants carry no station, so they only count for partner / global scope.
   const userFilter: Record<string, unknown> = {};
   if (scope?.stationId) {
-    const stationUsers = await User.find({ stationId: scope.stationId }).select("_id").lean();
-    userFilter.user = { $in: stationUsers.map((u) => u._id) };
+    userFilter.station = new mongoose.Types.ObjectId(scope.stationId);
   } else if (scope?.partnerId) {
     const partnerStations = await Station.find({ partner: scope.partnerId }).select("country").lean();
     const countryIds = [...new Set(partnerStations.map((s) => s.country?.toString()).filter(Boolean))];

@@ -33,5 +33,8 @@ creditTransactionSchema.index({ station: 1, createdAt: -1, type: 1, isFree: 1 })
 creditTransactionSchema.index({ type: 1, paymentProvider: 1 });
 creditTransactionSchema.index({ country: 1, type: 1 });
 creditTransactionSchema.index({ resourceId: 1, type: 1 });
+creditTransactionSchema.index({ user: 1, type: 1, createdAt: -1 }); // free-credit checks on every message / call
+creditTransactionSchema.index({ type: 1, createdAt: -1 }); // dashboard cash-flow aggregates
+creditTransactionSchema.index({ paymentReference: 1 }, { sparse: true }); // idempotency check on purchases / grants
 
 export const CreditTransaction = model<TCreditTransaction>("CreditTransaction", creditTransactionSchema);

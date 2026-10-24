@@ -140,7 +140,7 @@ const refundCredits = async (
     ? "poll_deduction"
     : "call_deduction";
 
-  const originalTx = await CreditRepository.getTransactionByResource(resourceId, originalTxType);
+  const originalTx = await CreditRepository.getTransactionByResource(resourceId, originalTxType, userId);
   const isFree = originalTx?.isFree ?? false;
 
   const updated = await CreditRepository.incrementBalance(userId, amount, isFree, session);

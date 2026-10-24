@@ -164,6 +164,7 @@ callSchema.index({ station: 1, status: 1, startedAt: -1 }); // Call history by s
 callSchema.index({ station: 1, show: 1, startedAt: -1 }); // Show-specific calls
 callSchema.index({ startedBy: 1, startedAt: -1 }); // User's call history
 callSchema.index({ status: 1, startedAt: -1 }); // Global call queue
+callSchema.index({ handledBy: 1, status: 1 }); // Operator's live call lookup (Redis-down fallback)
 // Prevent duplicate active calls per user (partial unique index)
 callSchema.index(
   { startedBy: 1 },

@@ -68,5 +68,6 @@ userSchema.index({ isDeleted: 1 });
 userSchema.index({ role: 1, partnerId: 1, isDeleted: 1 });
 userSchema.index({ role: 1, stationId: 1, isDeleted: 1 });
 userSchema.index({ countryId: 1, role: 1, isDeleted: 1 });
+userSchema.index({ fcmToken: 1 }, { sparse: true }); // unique-token cleanup on login
 
 export const User = model<TUser>("User", userSchema);

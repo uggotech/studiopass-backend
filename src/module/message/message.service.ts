@@ -11,7 +11,7 @@ import { Country } from "../country/country.model";
 import { User } from "../user/user.model";
 import { NotificationService } from "../notification/notification.service";
 import MessageTemplate from "../messageTemplate/messageTemplate.model";
-import { emitToStation, emitToShow, emitToUser, checkAndEmitShowTransition } from "../../socket";
+import { emitToStationStaff, emitToShow, emitToUser, checkAndEmitShowTransition } from "../../socket";
 import { ListenerStatementService } from "../listenerStatement/listenerStatement.service";
 import { maskMsisdn, shouldMaskMsisdn } from "../../shared/maskMsisdn";
 import { logger } from "../../logger/logger";
@@ -178,12 +178,12 @@ const sendUserMessage = async (
     // Uses "new-user-message" so clients can distinguish from station replies
     try {
       const normalized = normalizeMessage(message, activeShow?.name);
-      emitToStation(stationId, "new-user-message", { message: normalized });
+      emitToStationStaff(stationId, "new-user-message", { message: normalized });
       emitToUser(userId, "new-message", { message: normalized });
 
       // Check if the active show transitioned (for show-started/show-ended events)
       if (activeShow) {
-        checkAndEmitShowTransition(stationId, activeShow._id.toString(), activeShow.name);
+        void checkAndEmitShowTransition(stationId, activeShow._id.toString(), activeShow.name).catch(() => {});
       }
     } catch {
       // socket failure should not block the response
@@ -311,14 +311,29 @@ const sendStationReply = async (
   // Consolidate user lookups — single query for both socket + notification
   let listenerUser: any = null;
   try {
-    listenerUser = await User.findOne({ phone: msisdn }).select("_id fcmToken").lean();
+    // Prefer the account that actually wrote to this station from this number; only fall back
+    // to a phone lookup (restricted to live listener accounts) when no such message exists.
+    const threadOwner = await Message.findOne({
+      station: stationId,
+      msisdn,
+      senderType: "user",
+      user: { $exists: true, $ne: null },
+    })
+      .sort({ createdAt: -1 })
+      .select("user")
+      .lean();
+    listenerUser = threadOwner?.user
+      ? { _id: threadOwner.user }
+      : await User.findOne({ phone: msisdn, role: "user", isDeleted: { $ne: true } })
+          .select("_id")
+          .lean();
   } catch {
     // user lookup failure should not block the response
   }
 
   try {
     const normalized = normalizeMessage(populatedMessage || message);
-    emitToStation(stationId, "new-message", { message: normalized });
+    emitToStationStaff(stationId, "new-message", { message: normalized });
     if (showId) {
       emitToShow(showId.toString(), "new-message", { message: normalized });
     }
@@ -593,7 +608,7 @@ const approveMessage = async (messageId: string, approvedBy: string) => {
   // Emit real-time update to station staff
   try {
     const normalized = normalizeMessage(updated);
-    emitToStation((message as any).station?.toString(), "message-approved", { message: normalized });
+    emitToStationStaff((message as any).station?.toString(), "message-approved", { message: normalized });
   } catch {}
 
   return normalizeMessage(updated);
@@ -613,7 +628,7 @@ const rejectMessage = async (messageId: string, rejectionReason: string) => {
   // Emit real-time update to station staff
   try {
     const normalized = normalizeMessage(updated);
-    emitToStation((message as any).station?.toString(), "message-rejected", { message: normalized });
+    emitToStationStaff((message as any).station?.toString(), "message-rejected", { message: normalized });
   } catch {}
 
   return normalizeMessage(updated);
@@ -634,7 +649,7 @@ const sendToOutput = async (messageId: string) => {
   try {
     const normalized = normalizeMessage(updated);
     const stationId = (message as any).station?.toString();
-    emitToStation(stationId, "message-sent-to-output", { message: normalized });
+    emitToStationStaff(stationId, "message-sent-to-output", { message: normalized });
     if ((message as any).show) {
       emitToShow((message as any).show.toString(), "message-sent-to-output", { message: normalized });
     }
@@ -652,7 +667,7 @@ const deleteMessage = async (messageId: string) => {
 
   try {
     const stationId = (message as any).station?.toString?.() || (message as any).station;
-    emitToStation(stationId, "message-deleted", { messageId, scope: "staff" });
+    emitToStationStaff(stationId, "message-deleted", { messageId, scope: "staff" });
     const ownerId =
       (message as any).user?._id?.toString?.() ||
       (message as any).user?.toString?.();
@@ -663,6 +678,28 @@ const deleteMessage = async (messageId: string) => {
       });
     }
   } catch {}
+};
+
+/**
+ * The listener a message belongs to: the author of a listener message, or the recipient of a
+ * station reply (resolved by the thread phone number). Used so edit / delete events reach the
+ * right listener directly instead of being broadcast to a whole station room.
+ */
+const resolveListenerUserId = async (message: any): Promise<string | null> => {
+  const direct = message.user?._id?.toString?.() || message.user?.toString?.();
+  if (direct) return direct;
+  if (!message.msisdn) return null;
+  const station = message.station?._id || message.station;
+  const owner = await Message.findOne({
+    station,
+    msisdn: message.msisdn,
+    senderType: "user",
+    user: { $exists: true, $ne: null },
+  })
+    .sort({ createdAt: -1 })
+    .select("user")
+    .lean();
+  return owner?.user ? owner.user.toString() : null;
 };
 
 const MESSAGE_EDIT_WINDOW_MINUTES = Number(process.env.MESSAGE_EDIT_WINDOW_MINUTES || 15);
@@ -726,20 +763,18 @@ const editMessage = async (
 
   try {
     const stationId = (message as any).station?.toString?.() || (message as any).station;
-    emitToStation(stationId, "message-edited", { message: normalized });
-    // Listener always gets the event for their thread (station replies too)
-    const listenerId =
-      (message as any).user?._id?.toString?.() ||
-      (message as any).user?.toString?.();
+    emitToStationStaff(stationId, "message-edited", { message: normalized });
+    // The listener always gets the event for their thread (station replies too)
+    const listenerId = await resolveListenerUserId(message);
     if (listenerId) {
       emitToUser(listenerId, "message-edited", { message: normalized });
-    } else {
-      const staffId =
-        (message as any).senderUser?._id?.toString?.() ||
-        (message as any).senderUser?.toString?.();
-      if (staffId) {
-        emitToUser(staffId, "message-edited", { message: normalized });
-      }
+    }
+    // The staff member who wrote a station reply keeps getting it on their other devices
+    const staffId =
+      (message as any).senderUser?._id?.toString?.() ||
+      (message as any).senderUser?.toString?.();
+    if (staffId && staffId !== listenerId) {
+      emitToUser(staffId, "message-edited", { message: normalized });
     }
   } catch {}
 
@@ -778,29 +813,26 @@ const deleteMessageForEveryone = async (
 
   try {
     const stationId = (message as any).station?.toString?.() || (message as any).station;
-    emitToStation(stationId, "message-deleted-for-everyone", {
+    emitToStationStaff(stationId, "message-deleted-for-everyone", {
       messageId,
       message: normalized,
     });
-    // Listener always gets the event (covers staff deleting station replies)
-    const listenerId =
-      (message as any).user?._id?.toString?.() ||
-      (message as any).user?.toString?.();
+    // The listener always gets the event (covers staff deleting station replies)
+    const listenerId = await resolveListenerUserId(message);
     if (listenerId) {
       emitToUser(listenerId, "message-deleted-for-everyone", {
         messageId,
         message: normalized,
       });
-    } else {
-      const staffId =
-        (message as any).senderUser?._id?.toString?.() ||
-        (message as any).senderUser?.toString?.();
-      if (staffId) {
-        emitToUser(staffId, "message-deleted-for-everyone", {
-          messageId,
-          message: normalized,
-        });
-      }
+    }
+    const staffId =
+      (message as any).senderUser?._id?.toString?.() ||
+      (message as any).senderUser?.toString?.();
+    if (staffId && staffId !== listenerId) {
+      emitToUser(staffId, "message-deleted-for-everyone", {
+        messageId,
+        message: normalized,
+      });
     }
   } catch {}
 
@@ -881,7 +913,7 @@ const getPendingMessages = async (
 
   // Search filter
   if (options?.search?.trim()) {
-    const searchRegex = new RegExp(options.search.trim(), "i");
+    const searchRegex = new RegExp(options.search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     const searchCondition = [
       { content: searchRegex },
       { msisdn: searchRegex },
@@ -910,12 +942,12 @@ const getPendingMessages = async (
 };
 
 const exportMessages = async (
-  stationId: string | undefined,
+  stationId: string | string[] | undefined,
   format: string,
   role?: string,
 ) => {
   const filter: Record<string, unknown> = { senderType: "user", isDeleted: { $ne: true } };
-  if (stationId) filter.station = stationId;
+  if (stationId) filter.station = Array.isArray(stationId) ? { $in: stationId } : stationId;
 
   const messages = await Message.find(filter)
     .populate("show", "name")
@@ -951,14 +983,14 @@ const exportMessages = async (
 
 const searchMessages = async (
   query: string,
-  stationId: string | undefined,
+  stationId: string | string[] | undefined,
   page: number,
   limit: number,
 ) => {
   const skip = (page - 1) * limit;
   const filter: Record<string, unknown> = {};
 
-  if (stationId) filter.station = stationId;
+  if (stationId) filter.station = Array.isArray(stationId) ? { $in: stationId } : stationId;
 
   // Use regex for content search (works without text index)
   if (query) {
@@ -984,7 +1016,7 @@ const searchMessages = async (
 };
 
 const getAllMessages = async (
-  stationId: string | undefined,
+  stationId: string | string[] | undefined,
   page: number,
   limit: number,
   filters?: {
@@ -996,7 +1028,7 @@ const getAllMessages = async (
 ) => {
   const skip = (page - 1) * limit;
   const filter: Record<string, unknown> = {};
-  if (stationId) filter.station = stationId;
+  if (stationId) filter.station = Array.isArray(stationId) ? { $in: stationId } : stationId;
 
   if (filters?.country) {
     if (mongoose.Types.ObjectId.isValid(filters.country)) {
@@ -1008,7 +1040,8 @@ const getAllMessages = async (
     if (mongoose.Types.ObjectId.isValid(filters.show)) {
       filter.show = new mongoose.Types.ObjectId(filters.show);
     } else {
-      const showDoc = await Show.findOne({ name: new RegExp(filters.show, "i") }).select("_id").lean();
+      const escapedShow = filters.show.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const showDoc = await Show.findOne({ name: new RegExp(escapedShow, "i") }).select("_id").lean();
       if (showDoc) filter.show = showDoc._id;
     }
   }
@@ -1029,7 +1062,7 @@ const getAllMessages = async (
   const [messages, total, stationTimezone] = await Promise.all([
     MessageRepository.findAllMessages(filter, skip, limit),
     MessageRepository.countAllMessages(filter),
-    stationId ? getStationTimezone(stationId) : Promise.resolve("UTC"),
+    typeof stationId === "string" ? getStationTimezone(stationId) : Promise.resolve("UTC"),
   ]);
 
   return {

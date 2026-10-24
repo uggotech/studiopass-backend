@@ -42,6 +42,9 @@ const paymentTransactionSchema = new Schema<TPaymentTransaction>(
       unique: true,
       index: true,
     },
+    packageId: {
+      type: String,
+    },
     referenceId: {
       type: String,
     },

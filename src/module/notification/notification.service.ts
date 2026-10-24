@@ -2,7 +2,7 @@ import { StatusCodes } from "http-status-codes";
 import AppError from "../../errors/AppError";
 import { NotificationRepository } from "./notification.repository";
 import { Notification } from "./notification.model";
-import { sendFirebaseNotification } from "../../util/firebasePushNotification";
+import { sendFirebaseNotification, sendFirebaseMulticastNotification } from "../../util/firebasePushNotification";
 import { emitToUser } from "../../socket";
 import { User } from "../user/user.model";
 import { logger } from "logger/logger";
@@ -136,6 +136,12 @@ const deleteNotification = async (id: string, userId: string) => {
   return { success: true };
 };
 
+/**
+ * Send the SAME notification to many users.
+ * Per chunk of 500 users this makes a fixed number of calls — one insertMany, one user query,
+ * one FCM multicast and one status update — instead of 3 database operations + 1 FCM request per
+ * user (which exhausted the database pool and slowed down every other request).
+ */
 const sendBulkNotifications = async (
   userIds: string[],
   title: string,
@@ -143,16 +149,67 @@ const sendBulkNotifications = async (
   type: "system" | "announcement" | "reply" = "system",
   data: Record<string, unknown> = {},
 ) => {
+  const uniqueUserIds = [...new Set(userIds.map((id) => String(id)))];
   const CHUNK_SIZE = 500;
-  for (let i = 0; i < userIds.length; i += CHUNK_SIZE) {
-    const chunk = userIds.slice(i, i + CHUNK_SIZE);
-    await Promise.all(
-      chunk.map((userId) =>
-        createNotification({ userId, title, body, type, data }).catch(() => null),
-      ),
-    );
+
+  for (let i = 0; i < uniqueUserIds.length; i += CHUNK_SIZE) {
+    const chunk = uniqueUserIds.slice(i, i + CHUNK_SIZE);
+    try {
+      // 1) Save all notifications at once
+      const docs = await Notification.insertMany(
+        chunk.map((userId) => ({ user: userId, type, title, body, data, deliveryStatus: "pending" })),
+        { ordered: false },
+      );
+
+      // 2) In-app toast for users that are online (in-memory, cheap)
+      for (const doc of docs) {
+        try {
+          emitToUser(String(doc.user), "new-notification", {
+            notification: {
+              id: doc._id,
+              type,
+              title,
+              body,
+              data,
+              isRead: false,
+              createdAt: doc.createdAt,
+            },
+          });
+        } catch {
+          // socket failure must not block
+        }
+      }
+
+      // 3) One query for tokens + push preferences, one multicast push
+      const users = await User.find({ _id: { $in: chunk } }).select("fcmToken preferences").lean();
+      const recipients = users.filter(
+        (u: any) => u.fcmToken && u.preferences?.notificationsEnabled !== false,
+      );
+      if (recipients.length === 0) continue;
+
+      const result = await sendFirebaseMulticastNotification(
+        recipients.map((u: any) => u.fcmToken as string),
+        { title, body, data },
+      );
+
+      // 4) One status update for everyone who had a push token
+      if (result.successCount > 0 || result.failureCount > 0) {
+        const recipientIds = new Set(recipients.map((u: any) => String(u._id)));
+        const notificationIds = docs
+          .filter((doc) => recipientIds.has(String(doc.user)))
+          .map((doc) => doc._id);
+        await Notification.updateMany(
+          { _id: { $in: notificationIds } },
+          result.successCount > 0
+            ? { $set: { deliveryStatus: "sent" } }
+            : { $set: { deliveryStatus: "failed", errorMessage: "FCM delivery failed" } },
+        );
+      }
+    } catch (err) {
+      logger.error("[Notification] Bulk notification chunk failed", { error: err });
+    }
   }
-  return { success: true, count: userIds.length };
+  return { success: true, count: uniqueUserIds.length };
 };
 
 export const NotificationService = {

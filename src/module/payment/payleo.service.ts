@@ -2,7 +2,12 @@ import crypto from "crypto";
 import { XMLParser } from "fast-xml-parser";
 import config from "../../config";
 import { logger } from "../../logger/logger";
-import { PayLeoCallbackParsed } from "./payment.interface";
+import { PayLeoCallbackParsed, PayLeoForwardedCallback } from "./payment.interface";
+
+export function isPayLeoConfigured(): boolean {
+  const { merchant_code, consumer_key, consumer_secret } = config.payleo;
+  return Boolean(merchant_code && consumer_key && consumer_secret);
+}
 
 /**
  * Generates a 15-digit numeric transaction ID formatted for PayLeo.
@@ -27,23 +32,26 @@ export function generatePayLeoSignature(
   amount: number | string,
   transactionId: string,
   narration: string,
+  opts: { signatureUrl?: string; merchantCode?: string; consumerSecret?: string } = {},
 ): string {
-  const signatureUrl = config.payleo.signature_url;
-  const merchantCode = config.payleo.merchant_code;
-  const consumerSecret = config.payleo.consumer_secret;
+  const signatureUrl = opts.signatureUrl ?? config.payleo.signature_url;
+  const merchantCode = opts.merchantCode ?? config.payleo.merchant_code;
+  const consumerSecret = opts.consumerSecret ?? config.payleo.consumer_secret;
 
   const data = `${signatureUrl}&${msisdn}&${amount}&${merchantCode}&${transactionId}&${narration}`;
-  const signature = crypto.createHmac("sha256", consumerSecret).update(data).digest("hex");
-  logger.info(`[PayLeo Signature] Generating HMAC-SHA256 signature:
-  • Signature URL: ${signatureUrl}
-  • MSISDN: ${msisdn}
-  • Amount: ${amount}
-  • Merchant Code: ${merchantCode}
-  • Transaction ID: ${transactionId}
-  • Narration: "${narration}"
-  • Base String: "${data}"
-  • Resulting Signature: "${signature}"`);
-  return signature;
+  return crypto.createHmac("sha256", consumerSecret).update(data).digest("hex");
+}
+
+/**
+ * PayLeo can answer HTTP 200 with {"status":"FAILED","code":204,...} (MerchantsAPIExtension.pdf §2.3.3).
+ * Treat the push as failed when the body explicitly says so; documented success is {"status":"OK","code":100}.
+ */
+export function isPayLeoPushRejected(body: any): boolean {
+  if (!body || typeof body !== "object") return false;
+  const status = String(body.status ?? "").toUpperCase();
+  if (["FAILED", "FAIL", "ERROR", "REJECTED", "FALSE"].includes(status)) return true;
+  if (body.status === false || body.success === false) return true;
+  return Number(body.code) === 204;
 }
 
 /**
@@ -59,12 +67,7 @@ export async function initiatePayLeoDeposit(params: {
   const merchantCode = config.payleo.merchant_code;
   const consumerKey = config.payleo.consumer_key;
 
-  const auth_signature = generatePayLeoSignature(
-    msisdn,
-    amount,
-    transactionId,
-    narration,
-  );
+  const auth_signature = generatePayLeoSignature(msisdn, amount, transactionId, narration);
 
   const payload = {
     msisdn,
@@ -76,15 +79,7 @@ export async function initiatePayLeoDeposit(params: {
     auth_signature,
   };
 
-  logger.info(`[PayLeo Push] >>> OUTGOING DEPOSIT PUSH REQUEST >>>
-  • URL: ${config.payleo.deposit_url}
-  • Transaction ID: ${transactionId}
-  • MSISDN: ${msisdn}
-  • Amount: ${amount} UGX
-  • Merchant Code: ${merchantCode}
-  • Consumer Key: ${consumerKey}
-  • Narration: "${narration}"
-  • Payload: ${JSON.stringify(payload, null, 2)}`);
+  logger.info(`[PayLeo Push] >>> Deposit push: txId=${transactionId}, msisdn=${msisdn}, amount=${amount} UGX, merchant=${merchantCode}`);
 
   const startTime = Date.now();
   try {
@@ -106,22 +101,15 @@ export async function initiatePayLeoDeposit(params: {
       responseData = { raw: text };
     }
 
-    logger.info(`[PayLeo Push] <<< GATEWAY RESPONSE RECEIVED <<< (${elapsed}ms)
-  • HTTP Status: ${response.status} ${response.statusText}
-  • Body: ${JSON.stringify(responseData, null, 2)}`);
+    logger.info(`[PayLeo Push] <<< HTTP ${response.status} (${elapsed}ms) txId=${transactionId} body=${JSON.stringify(responseData)}`);
 
-    if (response.ok) {
-      logger.info(`[PayLeo Push] ✅ True African gateway accepted deposit push for txId: ${transactionId}`);
+    if (response.ok && !isPayLeoPushRejected(responseData)) {
       return { success: true, data: responseData };
-    } else {
-      const errorMsg = responseData.message || `PayLeo responded with HTTP ${response.status}`;
-      logger.warn(`[PayLeo Push] ❌ True African gateway rejected deposit push for txId: ${transactionId}. Reason: ${errorMsg}`);
-      return {
-        success: false,
-        error: errorMsg,
-        data: responseData,
-      };
     }
+
+    const errorMsg = responseData.message || `PayLeo responded with HTTP ${response.status}`;
+    logger.warn(`[PayLeo Push] ❌ Deposit push rejected for txId ${transactionId}: ${errorMsg}`);
+    return { success: false, error: errorMsg, data: responseData };
   } catch (err: any) {
     const elapsed = Date.now() - startTime;
     logger.error(`[PayLeo Push] 💥 Network/Gateway Exception for txId ${transactionId} after ${elapsed}ms:`, err);
@@ -133,9 +121,12 @@ export async function initiatePayLeoDeposit(params: {
  * Parses inbound XML callback from PayLeo securely without external entities.
  */
 export function parsePayLeoXmlCallback(xmlBody: string): PayLeoCallbackParsed | null {
-  logger.info(`[PayLeo Callback] Inbound Raw XML (${xmlBody?.length || 0} bytes):\n${xmlBody}`);
   if (!xmlBody || typeof xmlBody !== "string") {
     logger.warn("[PayLeo Callback] Inbound XML is empty or not a string");
+    return null;
+  }
+  if (/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xmlBody)) {
+    logger.warn("[PayLeo Callback] XML with DOCTYPE/ENTITY declarations rejected");
     return null;
   }
 
@@ -144,11 +135,12 @@ export function parsePayLeoXmlCallback(xmlBody: string): PayLeoCallbackParsed | 
       ignoreAttributes: true,
       trimValues: true,
       processEntities: false, // Prevents XXE injection
+      parseTagValue: false, // Keep transactionId/amount as strings (no number coercion)
     });
 
     const parsed = parser.parse(xmlBody.trim());
     if (!parsed || !parsed.request) {
-      logger.warn(`[PayLeo Callback] Root node <request> missing in XML payload: ${JSON.stringify(parsed)}`);
+      logger.warn("[PayLeo Callback] Root node <request> missing in XML payload");
       return null;
     }
 
@@ -163,19 +155,42 @@ export function parsePayLeoXmlCallback(xmlBody: string): PayLeoCallbackParsed | 
       narration: req.narration != null ? String(req.narration) : undefined,
       message: req.message != null ? String(req.message) : undefined,
     };
-    logger.info(`[PayLeo Callback] Successfully parsed XML callback fields:
-  • Method: "${result.method}"
-  • Transaction ID: "${result.transactionId}"
-  • Reference ID: "${result.referenceId || "none"}"
-  • MSISDN: "${result.msisdn}"
-  • Amount: "${result.amount}"
-  • Client Transaction: "${result.client_transaction || "none"}"
-  • Message: "${result.message || "none"}"`);
+    logger.info(`[PayLeo Callback] Parsed: method="${result.method}", txId="${result.transactionId}", clientTx="${result.client_transaction || "none"}", amount="${result.amount}"`);
     return result;
   } catch (error) {
     logger.error("[PayLeo Callback] XML Parse Error:", error);
     return null;
   }
+}
+
+/**
+ * Maps the JSON forwarded by the client's payleo_callback.php into the XML callback shape.
+ */
+export function fromForwardedPayLeoCallback(body: PayLeoForwardedCallback): PayLeoCallbackParsed | null {
+  if (!body || typeof body !== "object" || !body.transactionId) return null;
+  return {
+    method: String(body.method || (body.status === "SUCCESS" ? "receivePayment" : "notifyFailedPayment")),
+    msisdn: String(body.msisdn || ""),
+    transactionId: String(body.transactionId),
+    referenceId: body.referenceId ? String(body.referenceId) : undefined,
+    amount: String(body.amount || ""),
+    client_transaction: body.client_transaction ? String(body.client_transaction) : undefined,
+    narration: body.narration ? String(body.narration) : undefined,
+    message: body.message ? String(body.message) : undefined,
+  };
+}
+
+/**
+ * Verifies X-StudioPass-Signature = hex(HMAC-SHA256(rawJson, PAYLEO_FORWARD_SECRET)),
+ * exactly as computed in by client/working payleo api/payleo_callback.php.
+ */
+export function verifyPayLeoForwardSignature(rawBody: string, signature: string | undefined): boolean {
+  const secret = config.payleo.forward_secret;
+  if (!secret || !signature) return false;
+  const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const a = Buffer.from(expected);
+  const b = Buffer.from(String(signature).trim().toLowerCase());
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 /**
@@ -190,7 +205,5 @@ export function buildPayLeoXmlResponse(code: number, message: string): string {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<request><code>${code}</code><message>${safeMessage}</message></request>`;
-  logger.info(`[PayLeo Callback] Outgoing Acknowledgment XML to True African (code: ${code}):\n${xml}`);
-  return xml;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<request><code>${code}</code><message>${safeMessage}</message></request>`;
 }

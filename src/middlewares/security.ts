@@ -32,6 +32,21 @@ export const generalLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  // Provider callbacks (e.g. Airtel) all come from one IP; they are guarded by allowlists instead
+  skip: (req: Request) => req.originalUrl.includes("/webhook/"),
+});
+
+// Per-user limit on mobile money push requests (each one triggers a PIN prompt on a phone)
+export const paymentInitiateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  keyGenerator: (req: Request) => String((req as any).user?.id || (req as any).user?._id || "anonymous"),
+  message: {
+    success: false,
+    message: "Too many payment attempts. Please wait a few minutes and try again.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 export const authLimiter = rateLimit({

@@ -9,6 +9,7 @@ const createStatus = catchAsync(async (req, res) => {
   const createdBy = req.user!._id.toString();
   const callerRole = req.user!.role;
   const userPartnerId = req.user!.partnerId?.toString();
+  const userStationId = req.user!.stationId?.toString();
 
   let stationId = req.body.stationId;
   if (!stationId) {
@@ -29,6 +30,7 @@ const createStatus = catchAsync(async (req, res) => {
     expiresAt,
     callerRole,
     userPartnerId,
+    userStationId,
   });
 
   sendResponse(res, {
@@ -92,7 +94,7 @@ const deleteStatus = catchAsync(async (req, res) => {
   const callerRole = req.user!.role;
   const userPartnerId = req.user!.partnerId?.toString();
 
-  await StatusService.deleteStatus(id, callerRole, userPartnerId);
+  await StatusService.deleteStatus(id, callerRole, userPartnerId, req.user!.stationId?.toString());
 
   sendResponse(res, {
     success: true,

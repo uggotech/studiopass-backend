@@ -17,7 +17,7 @@ export default {
   // ============================================================================
   database_url: process.env.DATABASE_URL,
   database: {
-    max_pool_size: process.env.DB_MAX_POOL_SIZE || "10",
+    max_pool_size: process.env.DB_MAX_POOL_SIZE || "50",
     server_selection_timeout_ms: process.env.DB_SERVER_SELECTION_TIMEOUT_MS || "5000",
     socket_timeout_ms: process.env.DB_SOCKET_TIMEOUT_MS || "30000",
     wait_queue_timeout_ms: process.env.DB_WAIT_QUEUE_TIMEOUT_MS || "10000",
@@ -170,27 +170,65 @@ export default {
   // ============================================================================
   // MOBILE MONEY - PAYLEO (MTN UGANDA)
   // ============================================================================
+  // Credentials have no fallbacks: set them in .env. Payments return 503 until they are present.
   payleo: {
     deposit_url: process.env.PAYLEO_DEPOSIT_URL || "https://vendors.pay-leo.com/api/v2/live/deposit/",
     signature_url: process.env.PAYLEO_SIGNATURE_URL || "https://vendors.pay-leo.com/api/v2/live/deposit",
-    merchant_code: process.env.PAYLEO_MERCHANT_CODE || "38280",
-    consumer_key: process.env.PAYLEO_CONSUMER_KEY || "wjZ1voCA2mGspP6FFLVcwXLsLQ1724061291",
-    consumer_secret: process.env.PAYLEO_CONSUMER_SECRET || "NrMKhZPOtSkN7Z2IY37PWRbx6J1724061291",
+    merchant_code: process.env.PAYLEO_MERCHANT_CODE || "",
+    consumer_key: process.env.PAYLEO_CONSUMER_KEY || "",
+    consumer_secret: process.env.PAYLEO_CONSUMER_SECRET || "",
+    // Comma-separated source IPs allowed to call the PayLeo webhook (empty = allow all, log warning)
+    callback_ips: process.env.PAYLEO_CALLBACK_IPS || "",
+    // Shared secret used by the client's payleo_callback.php forwarder (X-StudioPass-Signature)
+    forward_secret: process.env.PAYLEO_FORWARD_SECRET || "",
+    // Pending PayLeo payments older than this are marked failed by the reconciler
+    pending_timeout_minutes: Number(process.env.PAYLEO_PENDING_TIMEOUT_MINUTES) || 30,
   },
 
   // ============================================================================
   // MOBILE MONEY - AIRTEL OPENAPI (AIRTEL UGANDA)
   // ============================================================================
   airtel: {
-    client_id: process.env.AIRTEL_CLIENT_ID || "2c6b3011-1432-4eff-888d-9462e3c258b5",
-    client_secret: process.env.AIRTEL_CLIENT_SECRET || "1ede7a51-af6a-4dab-ad66-b0006dc599af",
+    client_id: process.env.AIRTEL_CLIENT_ID || "",
+    client_secret: process.env.AIRTEL_CLIENT_SECRET || "",
     country: process.env.AIRTEL_COUNTRY || "UG",
     currency: process.env.AIRTEL_CURRENCY || "UGX",
     token_url: process.env.AIRTEL_TOKEN_URL || "https://openapi.airtel.africa/auth/oauth2/token",
     collection_url: process.env.AIRTEL_COLLECTION_URL || "https://openapi.airtel.africa/merchant/v2/payments/",
-    merchant_code: process.env.AIRTEL_MERCHANT_CODE || "JN0YO40R",
-    application_name: process.env.AIRTEL_APPLICATION_NAME || "farmora_connect",
+    status_url: process.env.AIRTEL_STATUS_URL || "https://openapi.airtel.africa/standard/v1/payments/",
+    merchant_code: process.env.AIRTEL_MERCHANT_CODE || "",
+    application_name: process.env.AIRTEL_APPLICATION_NAME || "",
     callback_url: process.env.AIRTEL_CALLBACK_URL || "https://api.studiopass.africa/api/v1/payment/webhook/airtel",
+    // Comma-separated source IPs allowed to call the Airtel webhook (empty = allow all, log warning)
+    callback_ips: process.env.AIRTEL_CALLBACK_IPS || "",
+    // Hash Key from the Airtel app's Security settings (HMAC-SHA256 key for the callback "hash" field)
+    callback_hash_key: process.env.AIRTEL_CALLBACK_HASH_KEY || "",
+    // off | log (verify + log, never reject) | enforce (reject bad/missing hash, trust a valid one)
+    callback_auth_mode: process.env.AIRTEL_CALLBACK_AUTH_MODE || "log",
+  },
+
+  // Credit packages as JSON: [{"id":"pkg_500","amountUgx":500,"credits":1,"label":"Starter"}]
+  payment_packages: process.env.PAYMENT_PACKAGES || "",
+
+  // ============================================================================
+  // PRIZE PAYOUTS (challenge winners: mobile money / airtime)
+  // ============================================================================
+  payout: {
+    // Hard cap per winner for automated money prizes; challenges above it are rejected
+    max_per_winner_ugx: Number(process.env.PAYOUT_MAX_PER_WINNER_UGX) || 200000,
+    // Total automated mobile money paid out per day (Africa/Kampala); 0 = no limit
+    daily_limit_ugx: Number(process.env.PAYOUT_DAILY_LIMIT_UGX) || 0,
+    // Airtel Money disbursement (B2C). Needs a disbursement-enabled Airtel app (same client id/secret
+    // as above unless overridden), the disbursement wallet PIN and the app's RSA public key.
+    airtel_disbursement_url:
+      process.env.AIRTEL_DISBURSEMENT_URL || "https://openapi.airtel.africa/standard/v2/disbursements/",
+    airtel_disbursement_status_url:
+      process.env.AIRTEL_DISBURSEMENT_STATUS_URL || "https://openapi.airtel.africa/standard/v2/disbursements/",
+    // PIN encryption key is fetched from Airtel (valid for a limited time); the env key is only a fallback
+    airtel_encryption_keys_url:
+      process.env.AIRTEL_ENCRYPTION_KEYS_URL || "https://openapi.airtel.africa/v1/rsa/encryption-keys",
+    airtel_disbursement_pin: process.env.AIRTEL_DISBURSEMENT_PIN || "",
+    airtel_disbursement_public_key: process.env.AIRTEL_DISBURSEMENT_PUBLIC_KEY || "",
   },
 
   // ============================================================================
@@ -292,8 +330,9 @@ export default {
   // CALL SETTINGS
   // ============================================================================
   calls: {
-    // Timeout (ms) for queued calls nobody accepts — auto-flip to missed
-    queue_timeout_ms: Number(process.env.CALL_QUEUE_TIMEOUT_MS) || 90_000,
+    // Timeout (ms) for queued calls nobody accepts — auto-flip to missed.
+    // 5 minutes by default so callers can wait while the presenter talks to another caller.
+    queue_timeout_ms: Number(process.env.CALL_QUEUE_TIMEOUT_MS) || 300_000,
     // Timeout (ms) after accept for user to confirm Agora join — auto-end if no join
     join_confirmation_timeout_ms: Number(process.env.CALL_JOIN_CONFIRMATION_TIMEOUT_MS) || 15_000,
     // Grace period (ms) after socket disconnect before ending active call — allows mobile reconnection

@@ -28,8 +28,10 @@ const ALLOWED_MIME_TYPES = new Set([
   "audio/webm",
 ]);
 
-const MULTER_MAX_FILE_SIZE = 150 * 1024 * 1024; // 150MB
+const STATUS_UPLOAD_MAX_FILE_SIZE = 150 * 1024 * 1024; // 150MB (status videos only)
+const GENERAL_UPLOAD_MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB for every other route
 const MESSAGE_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const STATUS_IMAGE_MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB (status posts)
 const GENERAL_MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 const VIDEO_MAX_FILE_SIZE = 150 * 1024 * 1024; // 150MB
 const AUDIO_MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
@@ -46,21 +48,36 @@ const fileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFil
   cb(null, true);
 };
 
-const upload = multer({
-  storage,
-  fileFilter,
-  limits: { fileSize: MULTER_MAX_FILE_SIZE },
-}).fields([
+// Only the status routes accept video (and need the large size limit). Every other route
+// (listener chat images / voice notes, avatars, logos, support) is capped at 25MB and cannot
+// send a video, so a single request can no longer hold hundreds of MB in memory or start ffmpeg.
+const baseFields = [
   { name: "logo", maxCount: 1 },
   { name: "coverImage", maxCount: 1 },
   { name: "image", maxCount: 1 },
   { name: "avatar", maxCount: 1 },
   { name: "optionImage", maxCount: 10 },
-  { name: "video", maxCount: 1 },
   { name: "audio", maxCount: 1 },
-]);
+];
+
+const uploadStatus = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: STATUS_UPLOAD_MAX_FILE_SIZE, files: 4 },
+}).fields([...baseFields, { name: "video", maxCount: 1 }]);
+
+const uploadGeneral = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: GENERAL_UPLOAD_MAX_FILE_SIZE, files: 12 },
+}).fields(baseFields);
+
+const isStatusRoute = (req: Request): boolean => /\/status\//.test(req.originalUrl || "");
 
 const processAndUpload = async (req: Request, _res: Response, next: NextFunction) => {
+  const statusRoute = isStatusRoute(req);
+  const upload = statusRoute ? uploadStatus : uploadGeneral;
+
   upload(req, _res, async (err: unknown) => {
     if (err) {
       console.log("[processAndUpload] multer error:", err);
@@ -74,7 +91,10 @@ const processAndUpload = async (req: Request, _res: Response, next: NextFunction
     try {
       for (const [fieldName, fileArray] of Object.entries(files)) {
         for (const file of fileArray) {
-          if (fieldName === "image" && file.size > MESSAGE_MAX_FILE_SIZE) {
+          if (fieldName === "image" && statusRoute && file.size > STATUS_IMAGE_MAX_FILE_SIZE) {
+            return next(new AppError(StatusCodes.BAD_REQUEST, "Status image file size must not exceed 20MB"));
+          }
+          if (fieldName === "image" && !statusRoute && file.size > MESSAGE_MAX_FILE_SIZE) {
             return next(new AppError(StatusCodes.BAD_REQUEST, "Message image file size must not exceed 10MB"));
           }
           if (fieldName === "video" && file.size > VIDEO_MAX_FILE_SIZE) {
@@ -174,6 +194,10 @@ const processAndUpload = async (req: Request, _res: Response, next: NextFunction
             } else if (fieldName === "coverImage") {
               resizeOptions = { width: 1600, height: 900, fit: "inside", withoutEnlargement: true };
               quality = 80;
+            } else if (fieldName === "image" && statusRoute) {
+              // Status posts: keep detail and orientation (portrait stays portrait, landscape stays landscape)
+              resizeOptions = { width: 2560, height: 2560, fit: "inside", withoutEnlargement: true };
+              quality = 93;
             } else if (fieldName === "image") {
               resizeOptions = { width: 1920, height: 1920, fit: "inside", withoutEnlargement: true };
               quality = 90;

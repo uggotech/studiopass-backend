@@ -71,6 +71,15 @@ const normalizeMediaStation = (u: any) => ({
   updatedAt: u.updatedAt,
 });
 
+/**
+ * Add an extra condition to a list filter WITHOUT replacing what the role scope already put there.
+ * (Assigning filter.$or for a search used to overwrite the partner / station scope.)
+ */
+const andCondition = (filter: Record<string, unknown>, condition: Record<string, unknown>) => {
+  const existing = (filter.$and as Record<string, unknown>[] | undefined) ?? [];
+  filter.$and = [...existing, condition];
+};
+
 const getAllStationAdmins = async (query: Record<string, unknown>, scope?: { partnerId?: string }) => {
   const filter: Record<string, unknown> = { role: "station_admin" };
 
@@ -291,16 +300,24 @@ const getAllMediaStationUsers = async (query: Record<string, unknown>, scope?: {
   }
 
   if (query.station) {
-    filter.stationId = query.station;
+    if (scope?.stationId) {
+      // Station-scoped caller: the scope already fixes the station, a query value must not change it
+    } else if (scope?.partnerId) {
+      andCondition(filter, { stationId: query.station }); // still limited to the partner's stations
+    } else {
+      filter.stationId = query.station;
+    }
   }
 
   if (query.search) {
     const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
-    filter.$or = [
-      { fullName: searchRegex },
-      { email: searchRegex },
-      { phone: searchRegex },
-    ];
+    andCondition(filter, {
+      $or: [
+        { fullName: searchRegex },
+        { email: searchRegex },
+        { phone: searchRegex },
+      ],
+    });
   }
 
   const page = Math.max(1, Number(query.page) || 1);
@@ -487,7 +504,17 @@ const updateMyProfile = async (
   const updateData: Record<string, unknown> = {};
   if (data.fullName !== undefined) updateData.fullName = data.fullName;
   if (data.email !== undefined) updateData.email = data.email;
-  if (data.phone !== undefined) updateData.phone = data.phone;
+  if (data.phone !== undefined && data.phone !== user.phone) {
+    // Listener conversations are keyed by phone number. Letting a listener switch to somebody
+    // else's number (without any verification) would hand them that person's message history.
+    if (user.role === "user") {
+      throw new AppError(
+        StatusCodes.FORBIDDEN,
+        "Your phone number cannot be changed here. Please contact support.",
+      );
+    }
+    updateData.phone = data.phone;
+  }
   if (data.countryId !== undefined) updateData.countryId = data.countryId;
   if (data.avatar !== undefined) updateData.avatar = data.avatar;
 
@@ -526,7 +553,16 @@ const updateMyProfile = async (
   };
 };
 
-const updateFcmToken = async (userId: string, fcmToken: string) => {
+const updateFcmToken = async (userId: string, fcmToken: string | null) => {
+  // A push token belongs to exactly one account: when a phone is handed to a different user
+  // (re-login, shared device), remove the token from every other account first so their
+  // notifications can never show up on this phone.
+  if (fcmToken) {
+    await User.updateMany(
+      { fcmToken, _id: { $ne: userId } },
+      { $unset: { fcmToken: 1 } },
+    );
+  }
   await UserRepository.updateById(userId, { fcmToken } as any);
   return { success: true };
 };
@@ -671,17 +707,25 @@ const getAllPresenters = async (query: Record<string, unknown>, scope?: { partne
   }
 
   if (query.station) {
-    filter.stationId = query.station;
+    if (scope?.stationId) {
+      // Station-scoped caller: the scope already fixes the station, a query value must not change it
+    } else if (scope?.partnerId) {
+      andCondition(filter, { stationId: query.station }); // still limited to the partner's stations
+    } else {
+      filter.stationId = query.station;
+    }
   }
 
   if (query.search) {
     const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
-    filter.$or = [
-      { fullName: searchRegex },
-      { username: searchRegex },
-      { email: searchRegex },
-      { phone: searchRegex },
-    ];
+    andCondition(filter, {
+      $or: [
+        { fullName: searchRegex },
+        { username: searchRegex },
+        { email: searchRegex },
+        { phone: searchRegex },
+      ],
+    });
   }
 
   const page = Math.max(1, Number(query.page) || 1);
@@ -760,18 +804,21 @@ const getAllListeners = async (
     filter.isBlocked = query.isActive === "false";
   }
 
-  if (query.country) {
+  if (query.country && !scope?.partnerId) {
+    // (a partner admin stays limited to the partner's own country)
     filter.countryId = query.country;
   }
 
   if (query.search) {
     const searchRegex = new RegExp(escapeRegex(query.search as string), "i");
-    filter.$or = [
-      { fullName: searchRegex },
-      { phone: searchRegex },
-      { email: searchRegex },
-      { countryName: searchRegex },
-    ];
+    andCondition(filter, {
+      $or: [
+        { fullName: searchRegex },
+        { phone: searchRegex },
+        { email: searchRegex },
+        { countryName: searchRegex },
+      ],
+    });
   }
 
   const page = Math.max(1, Number(query.page) || 1);
@@ -1139,7 +1186,7 @@ const getTopFanById = async (fanUserId: string, scope?: { stationId?: string }) 
       ? new mongoose.Types.ObjectId(scope.stationId)
       : null;
 
-  const msgFilter: Record<string, unknown> = { user: fanUserId, senderType: "user" };
+  const msgFilter: Record<string, unknown> = { user: new mongoose.Types.ObjectId(fanUserId), senderType: "user" };
   const callFilter: Record<string, unknown> = { startedBy: fanUserId };
   if (stationOid) {
     msgFilter.station = stationOid;

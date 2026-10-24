@@ -285,6 +285,7 @@ const createStatus = async (data: {
     expiresAt?: string;
     callerRole?: string;
     userPartnerId?: string;
+    userStationId?: string;
 }) => {
     const station = await StationRepository.findById(data.stationId);
     if (!station) {
@@ -299,6 +300,13 @@ const createStatus = async (data: {
     if (data.callerRole === UserRole.PARTNER_ADMIN) {
         const stationPartnerId = (station as any).partner?._id?.toString() || (station as any).partner?.toString();
         if (stationPartnerId !== data.userPartnerId) {
+            throw new AppError(StatusCodes.FORBIDDEN, "You don't have permission to create statuses for this station");
+        }
+    }
+
+    // A station admin can only post for their own station
+    if (data.callerRole === UserRole.STATION_ADMIN) {
+        if (!data.userStationId || data.userStationId !== data.stationId) {
             throw new AppError(StatusCodes.FORBIDDEN, "You don't have permission to create statuses for this station");
         }
     }
@@ -441,6 +449,7 @@ const deleteStatus = async (
     id: string,
     callerRole?: string,
     userPartnerId?: string,
+    userStationId?: string,
 ) => {
     const status = await StatusRepository.findById(id);
     if (!status) {
@@ -452,6 +461,14 @@ const deleteStatus = async (
         const station = await StationRepository.findById(status.station._id?.toString() || status.station.toString());
         const stationPartnerId = (station as any)?.partner?._id?.toString() || (station as any)?.partner?.toString();
         if (stationPartnerId !== userPartnerId) {
+            throw new AppError(StatusCodes.FORBIDDEN, "You don't have permission to delete statuses for this station");
+        }
+    }
+
+    // A station admin can only delete statuses of their own station
+    if (callerRole === UserRole.STATION_ADMIN) {
+        const statusStationId = status.station._id?.toString() || status.station.toString();
+        if (!userStationId || statusStationId !== userStationId) {
             throw new AppError(StatusCodes.FORBIDDEN, "You don't have permission to delete statuses for this station");
         }
     }

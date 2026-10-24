@@ -1,5 +1,7 @@
 import Message from "../module/message/message.model";
 
+const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
  * Mask a phone number for display to restricted roles.
  * "+8801815635091" → "+8801****091"
@@ -27,6 +29,8 @@ export const shouldMaskMsisdn = (role: string): boolean => {
  *
  * @param maskedMsisdn - The masked phone string containing "****"
  * @param stationId - Station scope to narrow the search
+ * Known limitation: several listeners can share the same mask; the most recent one is used.
+ *
  * @returns The real msisdn, or the original string if not masked / not found
  */
 export const resolveMsisdn = async (
@@ -38,8 +42,12 @@ export const resolveMsisdn = async (
   const starIdx = maskedMsisdn.indexOf("****");
   const prefix = maskedMsisdn.substring(0, starIdx).replace("+", "");
   const suffix = maskedMsisdn.substring(starIdx + 4);
-  const regex = new RegExp(`^\\+?${prefix}.*${suffix}$`);
+  // prefix / suffix come from the client: never put them into a regex unescaped
+  const regex = new RegExp(`^\\+?${escapeRegex(prefix)}.*${escapeRegex(suffix)}$`);
 
+  // Latest conversation that fits the mask.
+  // NOTE: a mask (4 leading + 3 trailing digits) is not unique. A real fix needs the dashboard to send
+  // an opaque thread reference instead of the masked number (tracked in the audit as ID-02).
   const userMsg = await Message.findOne({
     station: stationId,
     senderType: "user",

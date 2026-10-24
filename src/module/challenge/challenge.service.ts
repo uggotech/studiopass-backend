@@ -6,8 +6,49 @@ import { StationRepository } from "../station/station.repository";
 import { ChallengeParticipationRepository } from "../challengeParticipation/challengeParticipation.repository";
 import { DisbursementRepository } from "../disbursement/disbursement.repository";
 import { CreditService } from "../credit/credit.service";
-import { emitToStation } from "../../socket";
+import { emitToStationStaff } from "../../socket";
 import { normalizeHhMm, zonedDateTimeToUtc } from "./challengeTime";
+import { PrizeTypeRepository } from "../prizeType/prizeType.repository";
+import config from "../../config";
+
+const AMOUNT_PRIZES = ["mobile_money", "airtime", "bonus_credits"];
+const PHONE_PAYOUT_PRIZES = ["mobile_money", "airtime"];
+
+/**
+ * Prizes are paid out automatically when a challenge ends, so they must be valid
+ * up front: an active prize type, a numeric amount for money/credit prizes, and
+ * money prizes within the per-winner payout cap. Returns the normalized prize value.
+ */
+async function validatePrize(prize: { prizeTypeKey?: string; prizeValue?: string; currency?: string }) {
+  const { prizeTypeKey, prizeValue, currency } = prize;
+  if (!prizeTypeKey) return prizeValue;
+
+  const prizeType = await PrizeTypeRepository.findByKey(prizeTypeKey);
+  if (!prizeType) {
+    throw new AppError(StatusCodes.BAD_REQUEST, `Prize type "${prizeTypeKey}" is not available.`);
+  }
+
+  if (!AMOUNT_PRIZES.includes(prizeTypeKey)) return prizeValue;
+
+  const normalized = String(prizeValue ?? "").replace(/[,\s]/g, "");
+  const amount = Number(normalized);
+  if (!normalized || !Number.isFinite(amount) || amount <= 0 || !Number.isInteger(amount)) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Prize amount must be a whole number greater than zero.");
+  }
+
+  if (PHONE_PAYOUT_PRIZES.includes(prizeTypeKey)) {
+    if (prizeTypeKey === "mobile_money" && (currency || "UGX") !== "UGX") {
+      throw new AppError(StatusCodes.BAD_REQUEST, "Mobile money prizes are currently available for Uganda (UGX) only.");
+    }
+    if (amount > config.payout.max_per_winner_ugx) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        `Prize amount exceeds the maximum of ${config.payout.max_per_winner_ugx} per winner.`,
+      );
+    }
+  }
+  return normalized;
+}
 
 /** Strip isCorrect from challenge questions so app users cannot cheat. */
 function stripCorrectAnswers(challenge: any) {
@@ -78,6 +119,7 @@ const createChallenge = async (
   }
 
   const currency = data.currency || station.country?.currency || "UGX";
+  const prizeValue = await validatePrize({ prizeTypeKey: data.prizeTypeKey, prizeValue: data.prizeValue, currency });
 
   let timezone = "UTC";
   try {
@@ -132,7 +174,7 @@ const createChallenge = async (
     prizeType: data.prizeType,
     prizeTypeKey: data.prizeTypeKey,
     prizeLabel: data.prizeLabel,
-    prizeValue: data.prizeValue,
+    prizeValue,
     currency,
     numberOfWinners: data.numberOfWinners || 1,
     sponsorName: data.sponsorName,
@@ -335,7 +377,7 @@ const participateInChallenge = async (
 
     // Emit socket event
     try {
-      emitToStation(challenge.station.toString(), "challenge-participation", {
+      emitToStationStaff(challenge.station.toString(), "challenge-participation", {
         challengeId,
         userId,
         score,
@@ -521,6 +563,21 @@ const updateChallenge = async (id: string, updates: Record<string, unknown>) => 
   const challenge = await ChallengeRepository.findById(id);
   if (!challenge) {
     throw new AppError(StatusCodes.NOT_FOUND, "Challenge not found");
+  }
+
+  const touchesPrize = ["prizeTypeKey", "prizeValue", "currency", "numberOfWinners"].some(
+    (k) => updates[k] !== undefined,
+  );
+  if (touchesPrize) {
+    if (challenge.status === "completed") {
+      throw new AppError(StatusCodes.BAD_REQUEST, "Prizes cannot be changed after a challenge has completed.");
+    }
+    const prizeValue = await validatePrize({
+      prizeTypeKey: (updates.prizeTypeKey as string | undefined) ?? challenge.prizeTypeKey,
+      prizeValue: (updates.prizeValue as string | undefined) ?? challenge.prizeValue,
+      currency: (updates.currency as string | undefined) ?? challenge.currency,
+    });
+    if (updates.prizeValue !== undefined) updates.prizeValue = prizeValue;
   }
 
   // Prevent editing questions on active/completed/cancelled challenges

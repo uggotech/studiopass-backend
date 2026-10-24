@@ -22,6 +22,20 @@ const getDisbursements = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const retryDisbursement = catchAsync(async (req: Request, res: Response) => {
+  const partnerId = req.user?.partnerId ? String(req.user.partnerId) : undefined;
+  const countryId = req.user?.countryId ? String(req.user.countryId) : undefined;
+
+  const result = await DisbursementService.retryDisbursement(String(req.params.id), { partnerId, countryId });
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Prize payout retried",
+    data: result,
+  });
+});
+
 const handleAfricasTalkingWebhook = async (req: Request, res: Response) => {
   const result = await DisbursementService.handleAfricasTalkingWebhook(req.body);
   res.status(StatusCodes.OK).json(result);
@@ -29,5 +43,6 @@ const handleAfricasTalkingWebhook = async (req: Request, res: Response) => {
 
 export const DisbursementController = {
   getDisbursements,
+  retryDisbursement,
   handleAfricasTalkingWebhook,
 };

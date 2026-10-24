@@ -97,6 +97,11 @@ const findThreadsByStation = (
         stationId: { $first: "$station" },
       },
     },
+    // Sort + page right after grouping: the three lookups below then run for at most `limit`
+    // threads instead of for every listener of the station (10k listeners = 30k lookups per poll)
+    { $sort: { lastTime: -1, _id: 1 } },
+    { $skip: skip },
+    { $limit: limit },
     {
       $lookup: {
         from: "shows",
@@ -218,9 +223,7 @@ const findThreadsByStation = (
       },
     },
     { $project: { showDoc: 0, stationDoc: 0, userDoc: 0 } },
-    { $sort: { lastTime: -1 } },
-    { $skip: skip },
-    { $limit: limit },
+    { $sort: { lastTime: -1, _id: 1 } },
   ]);
 };
 
@@ -231,15 +234,19 @@ const countThreadsByStation = (
 ) => {
   const filter: Record<string, unknown> = { senderType: "user", isDeleted: { $ne: true } };
   if (stationId) {
-    filter.station = stationId;
+    filter.station = new mongoose.Types.ObjectId(stationId);
   }
   if (showId) {
-    filter.show = showId;
+    filter.show = new mongoose.Types.ObjectId(showId);
   }
   if (sinceDate) {
     filter.createdAt = { $gte: sinceDate };
   }
-  return Message.distinct("msisdn", filter).then((res) => res.length);
+  return Message.aggregate([
+    { $match: filter },
+    { $group: { _id: "$msisdn" } },
+    { $count: "total" },
+  ]).then((res) => (res[0]?.total as number | undefined) ?? 0);
 };
 
 const markAsReplied = (

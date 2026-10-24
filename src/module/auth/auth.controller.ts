@@ -155,7 +155,7 @@ const disable2FA = catchAsync(async (req: Request, res: Response) => {
 });
 
 const logout = catchAsync(async (req: Request, res: Response) => {
-  const sessionId = (req.user as any)?.sid as string | undefined;
+  const sessionId = (req as any).sessionId as string | undefined;
   const userId = req.user!._id.toString();
 
   if (sessionId) {
