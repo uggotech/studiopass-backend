@@ -1,57 +1,84 @@
-import config from "../../config";
-import { logger } from "../../logger/logger";
+import mongoose from "mongoose";
+import { StatusCodes } from "http-status-codes";
+import AppError from "../../errors/AppError";
+import { CreditPackage, TCreditPackage } from "./payment.package.model";
 
-export interface CreditPackage {
+/** What the app sees: only active packages, only the fields it needs. */
+export interface CreditPackageView {
   id: string;
   amountUgx: number;
   credits: number;
   label: string;
 }
 
-/**
- * PLACEHOLDER credit values, derived from the Uganda credit price (500 UGX per credit).
- * Replace via the PAYMENT_PACKAGES env var once the client confirms the packages (questionnaire PK-1).
- */
-const DEFAULT_PACKAGES: CreditPackage[] = [
-  { id: "pkg_500", amountUgx: 500, credits: 1, label: "Starter" },
-  { id: "pkg_1000", amountUgx: 1000, credits: 2, label: "Basic" },
-  { id: "pkg_2000", amountUgx: 2000, credits: 4, label: "Standard" },
-  { id: "pkg_5000", amountUgx: 5000, credits: 10, label: "Premium" },
-];
-
-const isValidPackage = (p: any): p is CreditPackage =>
-  p &&
-  typeof p.id === "string" &&
-  p.id.length > 0 &&
-  Number.isInteger(p.amountUgx) &&
-  p.amountUgx > 0 &&
-  Number.isInteger(p.credits) &&
-  p.credits > 0 &&
-  typeof p.label === "string";
-
-let cached: CreditPackage[] | null = null;
-
-export function getCreditPackages(): CreditPackage[] {
-  if (cached) return cached;
-
-  const raw = config.payment_packages;
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0 && parsed.every(isValidPackage)) {
-        cached = parsed;
-        return cached;
-      }
-      logger.error("[Payment Packages] PAYMENT_PACKAGES is not a valid package array. Falling back to defaults.");
-    } catch {
-      logger.error("[Payment Packages] PAYMENT_PACKAGES is not valid JSON. Falling back to defaults.");
-    }
-  }
-
-  cached = DEFAULT_PACKAGES;
-  return cached;
+/** What the Super Admin dashboard sees. */
+export interface CreditPackageAdminView extends CreditPackageView {
+  isActive: boolean;
+  sortOrder: number;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
-export function findCreditPackage(packageId: string): CreditPackage | undefined {
-  return getCreditPackages().find((p) => p.id === packageId);
+const toView = (p: Pick<TCreditPackage, "_id" | "amountUgx" | "credits" | "label">): CreditPackageView => ({
+  id: String(p._id),
+  amountUgx: p.amountUgx,
+  credits: p.credits,
+  label: p.label,
+});
+
+const toAdminView = (p: TCreditPackage): CreditPackageAdminView => ({
+  ...toView(p),
+  isActive: p.isActive,
+  sortOrder: p.sortOrder,
+  createdAt: p.createdAt,
+  updatedAt: p.updatedAt,
+});
+
+/** Active packages for the app, cheapest first within the same sort order. */
+export async function getCreditPackages(): Promise<CreditPackageView[]> {
+  const rows = await CreditPackage.find({ isActive: true }).sort({ sortOrder: 1, amountUgx: 1 }).lean();
+  return rows.map(toView);
+}
+
+/** An ACTIVE package by id (the id sent by the app). Inactive or unknown ids return undefined. */
+export async function findCreditPackage(packageId: string): Promise<CreditPackageView | undefined> {
+  if (!mongoose.isValidObjectId(packageId)) return undefined;
+  const row = await CreditPackage.findOne({ _id: packageId, isActive: true }).lean();
+  return row ? toView(row) : undefined;
+}
+
+// ── Super Admin management ──────────────────────────────────────────────────
+
+export async function listAllCreditPackages(): Promise<CreditPackageAdminView[]> {
+  const rows = await CreditPackage.find({}).sort({ isActive: -1, sortOrder: 1, amountUgx: 1 }).lean();
+  return rows.map(toAdminView);
+}
+
+export type CreditPackageInput = {
+  label: string;
+  amountUgx: number;
+  credits: number;
+  isActive?: boolean;
+  sortOrder?: number;
+};
+
+export async function createCreditPackage(input: CreditPackageInput): Promise<CreditPackageAdminView> {
+  const created = await CreditPackage.create(input);
+  return toAdminView(created.toObject());
+}
+
+export async function updateCreditPackage(
+  packageId: string,
+  patch: Partial<CreditPackageInput>,
+): Promise<CreditPackageAdminView> {
+  if (!mongoose.isValidObjectId(packageId)) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Credit package not found");
+  }
+  const updated = await CreditPackage.findByIdAndUpdate(
+    packageId,
+    { $set: patch },
+    { returnDocument: "after", runValidators: true },
+  ).lean();
+  if (!updated) throw new AppError(StatusCodes.NOT_FOUND, "Credit package not found");
+  return toAdminView(updated);
 }

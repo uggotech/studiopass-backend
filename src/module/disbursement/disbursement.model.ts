@@ -17,6 +17,9 @@ const disbursementSchema = new Schema<TDisbursement>(
     providerRequestId: { type: String, trim: true, index: true },
     // Operator receipt id once paid (e.g. airtel_money_id)
     providerReference: { type: String, trim: true },
+    markedPaidBy: { type: Schema.Types.ObjectId, ref: "User" },
+    markedPaidAt: { type: Date },
+    manualNote: { type: String, trim: true, maxlength: 300 },
     status: {
       type: String,
       enum: ["pending", "processing", "successful", "failed", "cancelled"],

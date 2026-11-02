@@ -45,8 +45,8 @@ const countries = [
     currency: "UGX",
     currencySymbol: "USh",
     timezone: "Africa/Kampala",
-    messageCreditPrice: 500,
-    callCreditPrice: 500,
+    messageCreditPrice: 250,
+    callCreditPrice: 250,
     smsProviders: ["africas_talking"],
     isActive: true,
   },
@@ -125,10 +125,12 @@ const countries = [
 ];
 
 const seedCountries = async () => {
+  // Runs at every server start: only creates missing countries, so prices and
+  // active status set in the dashboard survive a restart.
   for (const c of countries) {
-    await Country.findOneAndUpdate({ code: c.code }, c, { upsert: true, returnDocument: "after" });
+    await Country.findOneAndUpdate({ code: c.code }, { $setOnInsert: c }, { upsert: true, returnDocument: "after" });
   }
-  logger.info(`[seed] Seeded and updated ${countries.length} countries with 500 UGX equivalent prices`);
+  logger.info(`[seed] Checked ${countries.length} countries; existing ones left unchanged`);
 };
 
 export default seedCountries;

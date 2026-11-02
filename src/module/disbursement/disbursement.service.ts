@@ -12,7 +12,6 @@ import { logger } from "../../logger/logger";
 import { sendAirtime } from "../../util/africasTalkingAirtime";
 import { StatusCodes } from "http-status-codes";
 import AppError from "../../errors/AppError";
-import config from "../../config";
 import { normalizeUgandaPhone } from "../../shared/telecom/ugandaPhone.util";
 import {
   generateAirtelId,
@@ -20,6 +19,7 @@ import {
   initiateAirtelDisbursement,
   getAirtelDisbursementStatus,
 } from "../payment/airtel.service";
+import { PayoutLimits, getPayoutLimits } from "../payment/payout.settings";
 
 const PHYSICAL_PRIZES = ["merchandise_tshirt", "merchandise_hoodie", "merchandise_cap", "external_gift", "other"];
 
@@ -28,6 +28,44 @@ const AIRTIME_RETRY_MIN_AGE_MS = 5 * 60 * 1000;
 const newTxRef = () => `DISB-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
 
 const parsePrizeAmount = (prizeValue: string) => Number(String(prizeValue).replace(/[^\d.]/g, "")) || 0;
+
+const DAILY_LIMIT_REASON = "Daily payout limit reached; will be paid automatically when the limit resets";
+
+/** Start of today in Africa/Kampala (UTC+3, no DST) */
+const startOfKampalaDay = () => {
+  const offsetMs = 3 * 60 * 60 * 1000;
+  const local = new Date(Date.now() + offsetMs);
+  local.setUTCHours(0, 0, 0, 0);
+  return new Date(local.getTime() - offsetMs);
+};
+
+/**
+ * Daily payout limit for a row that is ALREADY claimed (status "processing", processedAt set).
+ * Mobile money and airtime prizes share one daily total; manually paid rows are not counted.
+ * Rows are ordered by claim time, and a row only counts the rows claimed before it plus itself, so
+ * two payouts claimed at the same moment can never both squeeze under the limit: the earlier one
+ * passes, the later one waits for the next run.
+ */
+const withinDailyLimit = async (claimed: { _id: unknown }, limits: PayoutLimits): Promise<boolean> => {
+  if (limits.dailyLimitUgx <= 0) return true;
+
+  const rows = await Disbursement.find({
+    prizeTypeKey: { $in: ["mobile_money", "airtime"] },
+    provider: { $ne: "manual" },
+    status: { $in: ["processing", "successful"] },
+    processedAt: { $gte: startOfKampalaDay() },
+  })
+    .select("prizeValue")
+    .sort({ processedAt: 1, _id: 1 })
+    .lean();
+
+  let total = 0;
+  for (const r of rows) {
+    total += parsePrizeAmount(r.prizeValue);
+    if (String(r._id) === String(claimed._id)) return total <= limits.dailyLimitUgx;
+  }
+  return false;
+};
 
 const notifySafely = async (payload: Parameters<typeof NotificationService.createNotification>[0]) => {
   try {
@@ -111,6 +149,28 @@ const dispatchAirtime = async (row: TDisbursement, currency: string) => {
     return;
   }
 
+  const limits = await getPayoutLimits();
+  if (airtimeAmount > limits.maxPerWinnerUgx) {
+    await Disbursement.updateOne(
+      { _id: row._id },
+      {
+        $set: {
+          status: "failed",
+          failureReason: `Prize exceeds the per-winner payout cap (${limits.maxPerWinnerUgx} UGX)`,
+        },
+      },
+    );
+    return;
+  }
+  if (!(await withinDailyLimit(claimed, limits))) {
+    // Nothing was sent: put the row back in the queue (the payout job retries it)
+    await Disbursement.updateOne(
+      { _id: row._id, status: "processing" },
+      { $set: { status: "pending", failureReason: DAILY_LIMIT_REASON }, $unset: { processedAt: 1 } },
+    );
+    return;
+  }
+
   try {
     const atResult = await sendAirtime({
       phoneNumber: row.phone,
@@ -169,25 +229,6 @@ const routeMobileMoneyPayout = (phone: string): PayoutRoute => {
   return { kind: "reject", reason: `Mobile money payouts are not available for ${info.carrier} numbers` };
 };
 
-/** Start of today in Africa/Kampala (UTC+3, no DST) */
-const startOfKampalaDay = () => {
-  const offsetMs = 3 * 60 * 60 * 1000;
-  const local = new Date(Date.now() + offsetMs);
-  local.setUTCHours(0, 0, 0, 0);
-  return new Date(local.getTime() - offsetMs);
-};
-
-const mobileMoneyPaidToday = async () => {
-  const rows = await Disbursement.find({
-    prizeTypeKey: "mobile_money",
-    status: { $in: ["processing", "successful"] },
-    processedAt: { $gte: startOfKampalaDay() },
-  })
-    .select("prizeValue")
-    .lean();
-  return rows.reduce((sum, r) => sum + parsePrizeAmount(r.prizeValue), 0);
-};
-
 const notifyMobileMoneyPaid = (row: Pick<TDisbursement, "winnerUser" | "prizeValue" | "challenge">) =>
   notifySafely({
     userId: String(row.winnerUser),
@@ -212,22 +253,15 @@ const dispatchMobileMoney = async (row: TDisbursement) => {
 
   if (!row.phone) return fail("User has no phone number on profile");
   if (amount <= 0) return fail("Invalid mobile money prize value");
-  if (amount > config.payout.max_per_winner_ugx) {
-    return fail(`Prize exceeds the per-winner payout cap (${config.payout.max_per_winner_ugx} UGX)`);
+  const limits = await getPayoutLimits();
+  if (amount > limits.maxPerWinnerUgx) {
+    return fail(`Prize exceeds the per-winner payout cap (${limits.maxPerWinnerUgx} UGX)`);
   }
 
   const route = routeMobileMoneyPayout(row.phone);
   if (route.kind === "reject") return fail(route.reason);
   if (route.kind === "wait") {
     await Disbursement.updateOne({ _id: row._id, status: "pending" }, { $set: { failureReason: route.reason } });
-    return;
-  }
-
-  if (config.payout.daily_limit_ugx > 0 && (await mobileMoneyPaidToday()) + amount > config.payout.daily_limit_ugx) {
-    await Disbursement.updateOne(
-      { _id: row._id, status: "pending" },
-      { $set: { failureReason: "Daily payout limit reached; will retry automatically" } },
-    );
     return;
   }
 
@@ -245,6 +279,18 @@ const dispatchMobileMoney = async (row: TDisbursement) => {
     { returnDocument: "after" },
   ).lean();
   if (!claimed || !claimed.txRef) return;
+
+  // Checked AFTER claiming so two payouts running at once cannot both pass; nothing was sent yet
+  if (!(await withinDailyLimit(claimed, limits))) {
+    await Disbursement.updateOne(
+      { _id: row._id, status: "processing" },
+      {
+        $set: { status: "pending", provider: "mobile_money", failureReason: DAILY_LIMIT_REASON },
+        $unset: { providerRequestId: 1, processedAt: 1 },
+      },
+    );
+    return;
+  }
 
   const result = await initiateAirtelDisbursement({
     msisdn: route.msisdn,
@@ -296,12 +342,10 @@ const reconcileMobileMoneyPayouts = async () => {
   }
 };
 
-/**
- * Admin action: put a FAILED automated prize back in the payout queue
- * (e.g. after topping up the payout wallet or fixing the winner's phone).
- * A new transaction id is used because the old one is final at the operator.
- */
-const retryDisbursement = async (id: string, scope?: { partnerId?: string; countryId?: string }) => {
+type AdminScope = { partnerId?: string; countryId?: string };
+
+/** Loads a row and hides it (404) from admins whose partner/country scope does not cover its station. */
+const findRowInScope = async (id: string, scope?: AdminScope) => {
   const row = await Disbursement.findById(id).lean();
   if (!row) throw new AppError(StatusCodes.NOT_FOUND, "Disbursement not found");
   if (scope?.partnerId || scope?.countryId) {
@@ -313,6 +357,61 @@ const retryDisbursement = async (id: string, scope?: { partnerId?: string; count
       throw new AppError(StatusCodes.NOT_FOUND, "Disbursement not found");
     }
   }
+  return row;
+};
+
+/**
+ * Admin action: record that accounts paid a mobile money prize outside the system
+ * (typically an MTN winner while MTN payouts are not automated). Only pending or failed
+ * rows qualify; a row that is in flight ("processing") or already paid is never touched,
+ * so the automatic payout job and a manual payment can never both pay the same winner.
+ */
+const markPaidManually = async (
+  id: string,
+  input: { reference: string; note?: string },
+  adminUserId: string,
+  scope?: AdminScope,
+) => {
+  const row = await findRowInScope(id, scope);
+  if (row.prizeTypeKey !== "mobile_money") {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Only mobile money prizes can be marked as paid manually");
+  }
+
+  const $set: Record<string, unknown> = {
+    status: "successful",
+    provider: "manual",
+    providerReference: input.reference,
+    markedPaidBy: adminUserId,
+    markedPaidAt: new Date(),
+    processedAt: new Date(),
+    failureReason: null,
+  };
+  if (input.note) $set.manualNote = input.note;
+
+  const updated = await Disbursement.findOneAndUpdate(
+    { _id: id, status: { $in: ["pending", "failed"] } },
+    { $set },
+    { returnDocument: "after" },
+  ).lean();
+  if (!updated) {
+    throw new AppError(
+      StatusCodes.CONFLICT,
+      "This prize is already paid or a payout is in progress. Please refresh.",
+    );
+  }
+
+  logger.info(`[Disbursement] Row ${id} marked paid manually by user ${adminUserId} (ref ${input.reference})`);
+  await notifyMobileMoneyPaid(updated as unknown as TDisbursement);
+  return updated;
+};
+
+/**
+ * Admin action: put a FAILED automated prize back in the payout queue
+ * (e.g. after topping up the payout wallet or fixing the winner's phone).
+ * A new transaction id is used because the old one is final at the operator.
+ */
+const retryDisbursement = async (id: string, scope?: AdminScope) => {
+  const row = await findRowInScope(id, scope);
   if (!["mobile_money", "airtime", "bonus_credits"].includes(row.prizeTypeKey)) {
     throw new AppError(StatusCodes.BAD_REQUEST, "Only automated prizes can be retried");
   }
@@ -635,4 +734,5 @@ export const DisbursementService = {
   handleAfricasTalkingWebhook,
   processPendingPayouts,
   retryDisbursement,
+  markPaidManually,
 };

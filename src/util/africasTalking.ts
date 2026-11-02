@@ -52,6 +52,33 @@ const getAtClient = () => {
 
 // ─── SMS Sender ───────────────────────────────────────────────────────────────
 
+export interface SmsSendResult {
+  ok: boolean;
+  detail?: string;
+}
+
+/**
+ * Sends one plain SMS through Africa's Talking using the default sender ID.
+ * Africa's Talking answers HTTP 2xx even when a recipient is rejected, so the
+ * per-recipient status is checked (statusCode 100-102 = accepted).
+ * Never throws: callers (e.g. payment receipts) must not fail because an SMS failed.
+ */
+export const sendSms = async (phone: string, message: string): Promise<SmsSendResult> => {
+  try {
+    const at = getAtClient();
+    const result: any = await at.SMS.send({ to: [phone], message, from: "" });
+    const recipient = result?.SMSMessageData?.Recipients?.[0];
+    const code = Number(recipient?.statusCode);
+    if (code >= 100 && code <= 102) return { ok: true, detail: recipient?.messageId };
+    const detail = recipient?.status || result?.SMSMessageData?.Message || "Unknown Africa's Talking response";
+    logger.warn(`[AT SMS] SMS to ${phone} not accepted: ${detail}`);
+    return { ok: false, detail };
+  } catch (error: any) {
+    logger.error(`[AT SMS] Failed to send SMS to ${phone}`, { error });
+    return { ok: false, detail: error?.message || "SMS request failed" };
+  }
+};
+
 export const sendAtOtp = async (phone: string, otp: string): Promise<void> => {
   const message = `Your StudioPass verification code is: ${otp}. Valid for 30 minutes. Do not share this code.`;
 

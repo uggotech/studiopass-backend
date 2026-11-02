@@ -21,7 +21,7 @@ const getPackages = catchAsync(async (_req: Request, res: Response) => {
     statusCode: StatusCodes.OK,
     success: true,
     message: "Credit packages retrieved",
-    data: PaymentService.getPackages(),
+    data: await PaymentService.getPackages(),
   });
 });
 

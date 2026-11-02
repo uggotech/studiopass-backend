@@ -74,7 +74,7 @@ const assertMessageAccess = async (req: any, message: any, ownMessageError: stri
 };
 
 const sendMessage = catchAsync(async (req, res) => {
-  const { stationId, content, imageUrl, videoUrl, audioUrl, audioDuration, waveform, mediaType, stickerUrl } = req.body;
+  const { stationId, content, imageUrl, videoUrl, audioUrl, audioDuration, waveform, mediaType, stickerUrl, clientMessageId } = req.body;
   const userId = req.user!._id.toString();
 
   const result = await MessageService.sendUserMessage(
@@ -88,6 +88,7 @@ const sendMessage = catchAsync(async (req, res) => {
     waveform,
     mediaType,
     stickerUrl,
+    clientMessageId,
   );
 
   sendResponse(res, {

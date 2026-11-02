@@ -15,6 +15,8 @@ const sendMessage = z.object({
     audioDuration: z.number().optional(),
     waveform: z.array(z.number().min(0).max(1)).max(128).optional(),
     mediaType: z.enum(["text", "image", "video", "audio", "sticker"]).optional(),
+    // Unique per send attempt; lets a retry after a lost response return the saved message without a second charge
+    clientMessageId: z.string().trim().min(8).max(64).optional(),
   }).refine(data => (data.content && data.content.length > 0) || data.imageUrl || data.audioUrl || data.videoUrl || data.stickerUrl, {
     message: "Either content, imageUrl, audioUrl, videoUrl, or stickerUrl is required",
   }),

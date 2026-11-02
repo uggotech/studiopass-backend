@@ -946,23 +946,14 @@ const getListenerById = async (id: string, callerRole?: string) => {
         $group: {
           _id: null,
           totalLocalSpend: { $sum: { $ifNull: ["$localAmount", 0] } },
-          totalCreditsPurchased: { $sum: "$amount" },
         },
       },
     ]),
     CreditBalance.findOne({ user: userIdObj }).lean(),
   ]);
 
-  let totalSpend = 0;
-  if (spendResult.length > 0) {
-    if (callerRole === "super_admin") {
-      totalSpend = spendResult[0].totalCreditsPurchased * 500;
-    } else {
-      totalSpend = spendResult[0].totalLocalSpend > 0
-        ? spendResult[0].totalLocalSpend
-        : spendResult[0].totalCreditsPurchased;
-    }
-  }
+  // The money actually paid, as stored on each purchase
+  const totalSpend = spendResult[0]?.totalLocalSpend ?? 0;
 
   return {
     ...normalizeListener(user),

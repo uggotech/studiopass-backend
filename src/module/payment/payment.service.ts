@@ -15,6 +15,7 @@ import {
   PaymentProvider,
   TPaymentTransaction,
 } from "./payment.interface";
+import { sendSms } from "../../util/africasTalking";
 import { getCreditPackages, findCreditPackage } from "./payment.packages";
 import {
   generatePayLeoTransactionId,
@@ -38,6 +39,42 @@ async function invalidateCreditBalanceCache(userId: string) {
 
 const getPackages = () => getCreditPackages();
 
+// ── SMS receipt ─────────────────────────────────────────────────────────────
+export type ReceiptSender = (to: string, message: string) => Promise<unknown>;
+
+// Skips quietly when Africa's Talking is not configured (e.g. local/test environments)
+let receiptSender: ReceiptSender = (to, message) =>
+  config.africas_talking.api_key ? sendSms(to, message) : Promise.resolve();
+
+/** Test hook: replace the SMS sender so tests never reach Africa's Talking. */
+export const setReceiptSender = (sender: ReceiptSender) => {
+  receiptSender = sender;
+};
+
+export const buildReceiptSms = (
+  payment: Pick<TPaymentTransaction, "amount" | "creditsToGrant" | "transactionId">,
+  balance: number,
+) => {
+  const credits = payment.creditsToGrant;
+  return (
+    `StudioPass: UGX ${payment.amount.toLocaleString("en-US")} received. ` +
+    `${credits} ${credits === 1 ? "credit" : "credits"} added. Balance: ${balance}. Ref ${payment.transactionId.slice(-6)}`
+  );
+};
+
+/** Never throws and is never awaited by the payment flow: a failed SMS must not affect the payment. */
+const sendReceiptSms = async (
+  payment: Pick<TPaymentTransaction, "amount" | "creditsToGrant" | "transactionId" | "phoneNumber">,
+  balance: number,
+) => {
+  if (!config.payment_receipt_sms || !payment.phoneNumber) return;
+  try {
+    await receiptSender(payment.phoneNumber, buildReceiptSms(payment, balance));
+  } catch (err) {
+    logger.warn(`[Payment] Receipt SMS failed for txId=${payment.transactionId}:`, err);
+  }
+};
+
 /**
  * Initiates mobile money collection (C2B push) for purchasing a credit package.
  * Amount and credits come from the server-side package table, never from the client.
@@ -46,9 +83,9 @@ const getPackages = () => getCreditPackages();
  * - Airtel Uganda -> Airtel OpenAPI
  */
 const initiatePayment = async (userId: string, data: InitiatePaymentDTO) => {
-  const pkg = findCreditPackage(data.packageId);
+  const pkg = await findCreditPackage(data.packageId);
   if (!pkg) {
-    throw new AppError(StatusCodes.BAD_REQUEST, "Unknown credit package");
+    throw new AppError(StatusCodes.BAD_REQUEST, "This credit package is not available");
   }
 
   const user = await User.findById(userId).select("_id").lean();
@@ -208,6 +245,7 @@ const completePaymentOnce = async (params: CompletePaymentParams): Promise<Compl
   const { transactionId, provider } = params;
   const session = await mongoose.startSession();
   let payment: TPaymentTransaction | null = null;
+  let balanceAfter = 0;
 
   try {
     session.startTransaction();
@@ -239,6 +277,7 @@ const completePaymentOnce = async (params: CompletePaymentParams): Promise<Compl
       throw new Error(`Credit balance update returned nothing for user ${userId}`);
     }
     const newBalance = updated.balance;
+    balanceAfter = newBalance;
     const previousBalance = newBalance - payment.creditsToGrant;
 
     const userDoc = await User.findById(userId).select("countryId").session(session).lean();
@@ -284,6 +323,8 @@ const completePaymentOnce = async (params: CompletePaymentParams): Promise<Compl
   } catch (err) {
     logger.warn(`[Payment] Notification failed for txId=${transactionId}:`, err);
   }
+  // Only reached once per payment (the conditional status update above), so one receipt per purchase
+  void sendReceiptSms(payment, balanceAfter);
   return "credited";
 };
 

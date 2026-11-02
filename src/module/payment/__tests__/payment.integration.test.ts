@@ -12,7 +12,11 @@ import mongoose from "mongoose";
 import config from "../../../config";
 import app from "../../../app";
 import { PaymentTransaction } from "../payment.model";
-import { PaymentService } from "../payment.service";
+import { PaymentService, setReceiptSender } from "../payment.service";
+import { PaymentAdminService } from "../payment.admin.service";
+import { CreditPackage } from "../payment.package.model";
+import { findCreditPackage } from "../payment.packages";
+import { getPayoutLimits } from "../payout.settings";
 import { CreditBalance } from "../../creditBalance/creditBalance.model";
 import { CreditTransaction } from "../../creditTransaction/creditTransaction.model";
 import { User } from "../../user/user.model";
@@ -72,10 +76,17 @@ const payleoXml = (method: string, txId: string, amount: string) =>
 
 async function main() {
   await mongoose.connect(MONGO_URL as string);
-  await Promise.all([PaymentTransaction.init(), CreditBalance.init(), CreditTransaction.init(), User.init()]);
+  await Promise.all([PaymentTransaction.init(), CreditBalance.init(), CreditTransaction.init(), User.init(), CreditPackage.init()]);
   await Promise.all(
-    [PaymentTransaction, CreditBalance, CreditTransaction, User].map((m: any) => m.deleteMany({})),
+    [PaymentTransaction, CreditBalance, CreditTransaction, User, CreditPackage].map((m: any) => m.deleteMany({})),
   );
+
+  // Never reach Africa's Talking from a test: capture receipts instead
+  const receipts: { to: string; message: string }[] = [];
+  setReceiptSender(async (to, message) => {
+    receipts.push({ to, message });
+  });
+  const settle = () => new Promise((r) => setTimeout(r, 150)); // receipts are sent in the background
 
   const mockBase = await listen(airtelMock);
   (config.airtel as any).token_url = `${mockBase}/auth/oauth2/token`;
@@ -104,13 +115,97 @@ async function main() {
       status: "pending",
     });
 
-  console.log("Initiate validation (no network)");
-  try {
-    await PaymentService.initiatePayment(userId, { packageId: "pkg_fake", phoneNumber: "0771819679" });
-    assert(false, "unknown package rejected");
-  } catch (e: any) {
-    assert(e.statusCode === 400 || e.status === 400, "unknown package rejected with 400");
+  console.log("Credit packages (managed by the Super Admin, nothing hard-coded)");
+  const actor = { userId };
+  assert((await PaymentService.getPackages()).length === 0, "no packages exist until the Super Admin creates one");
+
+  const pStarter = await PaymentAdminService.createPackage({ label: "Starter", amountUgx: 500, credits: 1 }, actor);
+  const pBig = await PaymentAdminService.createPackage({ label: "Big", amountUgx: 10000, credits: 20, sortOrder: 5 }, actor);
+  const pMid = await PaymentAdminService.createPackage({ label: "Mid", amountUgx: 2000, credits: 4 }, actor);
+  let shown = await PaymentService.getPackages();
+  assert(
+    shown.length === 3 && shown[0].amountUgx === 500 && shown[1].amountUgx === 2000 && shown[2].amountUgx === 10000,
+    "app sees the packages ordered by sort order then price",
+  );
+  assert(
+    Object.keys(shown[0]).sort().join() === "amountUgx,credits,id,label",
+    "app only receives id, amountUgx, credits, label",
+  );
+
+  for (const [bad, why] of [
+    [{ label: "x", amountUgx: 50, credits: 1 }, "price below UGX 100"],
+    [{ label: "x", amountUgx: 500.5, credits: 1 }, "fractional price"],
+    [{ label: "x", amountUgx: 500, credits: 0 }, "zero credits"],
+    [{ label: "x", amountUgx: 500, credits: 1.5 }, "fractional credits"],
+  ] as const) {
+    try {
+      await PaymentAdminService.createPackage(bad as any, actor);
+      assert(false, `rejects ${why}`);
+    } catch {
+      assert(true, `rejects ${why}`);
+    }
   }
+  assert((await CreditPackage.countDocuments({})) === 3, "rejected packages are not saved");
+
+  await PaymentAdminService.updatePackage(pMid.id, { amountUgx: 2500, credits: 5 }, actor);
+  const edited = await findCreditPackage(pMid.id);
+  assert(edited?.amountUgx === 2500 && edited.credits === 5, "price and credits can be edited");
+
+  await PaymentAdminService.updatePackage(pBig.id, { isActive: false }, actor);
+  shown = await PaymentService.getPackages();
+  assert(shown.length === 2 && !shown.some((p) => p.id === pBig.id), "deactivated package disappears from the app");
+  assert((await PaymentAdminService.listPackages()).length === 3, "Super Admin still sees deactivated packages");
+  assert((await findCreditPackage(pBig.id)) === undefined, "a deactivated package cannot be bought");
+
+  await PaymentAdminService.updatePackage(pBig.id, { isActive: true }, actor);
+  assert((await findCreditPackage(pBig.id))?.credits === 20, "package can be re-activated");
+
+  try {
+    await PaymentAdminService.updatePackage(String(new mongoose.Types.ObjectId()), { label: "Ghost" }, actor);
+    assert(false, "editing an unknown package fails");
+  } catch (e: any) {
+    assert((e.statusCode || e.status) === 404, "editing an unknown package returns 404");
+  }
+
+  console.log("Initiate validation (no network)");
+  await PaymentAdminService.updatePackage(pBig.id, { isActive: false }, actor);
+  for (const [id, why] of [
+    ["pkg_500", "old-style package id"],
+    [String(new mongoose.Types.ObjectId()), "unknown package id"],
+    [pBig.id, "deactivated package"],
+  ] as const) {
+    try {
+      await PaymentService.initiatePayment(userId, { packageId: id, phoneNumber: "0771819679" });
+      assert(false, `${why} rejected`);
+    } catch (e: any) {
+      assert((e.statusCode || e.status) === 400, `${why} rejected with 400`);
+    }
+  }
+  assert((await PaymentTransaction.countDocuments({})) === 0, "rejected purchases create no payment records");
+
+  console.log("Payout limits (Super Admin)");
+  const defaults = await getPayoutLimits();
+  assert(defaults.maxPerWinnerUgx === 200000 && defaults.dailyLimitUgx === 500000, "defaults are 200,000 per winner and 500,000 per day");
+  const updatedLimits = await PaymentAdminService.updateLimits({ dailyLimitUgx: 750000 }, actor);
+  assert(updatedLimits.dailyLimitUgx === 750000 && updatedLimits.maxPerWinnerUgx === 200000, "daily limit can be changed on its own");
+  assert((await getPayoutLimits()).dailyLimitUgx === 750000, "new limit is used immediately");
+  for (const [patch, why] of [
+    [{ maxPerWinnerUgx: 0 }, "zero per-winner cap"],
+    [{ maxPerWinnerUgx: 1000.5 }, "fractional cap"],
+    [{ dailyLimitUgx: -1 }, "negative daily limit"],
+    [{ dailyLimitUgx: 100000 }, "daily limit below the per-winner cap"],
+  ] as const) {
+    try {
+      await PaymentAdminService.updateLimits(patch, actor);
+      assert(false, `rejects ${why}`);
+    } catch (e: any) {
+      assert((e.statusCode || e.status) === 400, `rejects ${why}`);
+    }
+  }
+  assert((await getPayoutLimits()).dailyLimitUgx === 750000, "rejected limits change nothing");
+  await PaymentAdminService.updateLimits({ dailyLimitUgx: 0 }, actor);
+  assert((await getPayoutLimits()).dailyLimitUgx === 0, "0 means no daily limit");
+  await PaymentAdminService.updateLimits({ dailyLimitUgx: 500000 }, actor);
 
   console.log("PayLeo webhook over HTTP");
   const tx1 = "100000000000001";
@@ -138,6 +233,17 @@ async function main() {
   assert(results.every((x) => x.status === 200), "all 5 concurrent callbacks acknowledged");
   assert((await balanceOf(userId)) === 1, "5 concurrent callbacks credit exactly once");
   assert((await purchaseCount(tx1)) === 1, "exactly one purchase ledger row");
+  await settle();
+  assert(receipts.length === 1, "5 concurrent callbacks send exactly one SMS receipt");
+  assert(
+    receipts[0]?.to === "+256771819679" &&
+      receipts[0].message.includes("UGX 500 received") &&
+      receipts[0].message.includes("1 credit added") &&
+      receipts[0].message.includes("Balance: 1") &&
+      receipts[0].message.includes(`Ref ${tx1.slice(-6)}`) &&
+      receipts[0].message.length <= 160,
+    "receipt goes to the paying number, states amount, credits and new balance, fits one SMS",
+  );
   assert(r.headers.get("content-type")?.includes("application/xml") === true, "response is application/xml");
 
   r = await fetch(`${api}/api/v1/payment/webhook/payleo`, {
@@ -297,6 +403,50 @@ async function main() {
   let allowed = false;
   mw({ ip: "::ffff:41.223.87.244" } as any, {} as any, () => { allowed = true; });
   assert(allowed, "allowlisted IP passes (IPv4-mapped form)");
+
+  console.log("SMS receipt never affects the payment");
+  const receiptsBefore = receipts.length;
+  setReceiptSender(async () => {
+    throw new Error("Africa's Talking is down");
+  });
+  const txR1 = "100000000000011";
+  await newPayment("payleo", txR1);
+  const balR = await balanceOf(userId);
+  r = await fetch(`${api}/api/v1/payment/webhook/payleo`, {
+    method: "POST",
+    headers: { "Content-Type": "text/xml" },
+    body: payleoXml("receivePayment", txR1, "500"),
+  });
+  await settle();
+  assert(
+    r.status === 200 && (await balanceOf(userId)) === balR + 1 && (await PaymentTransaction.findOne({ transactionId: txR1 }).lean())?.status === "completed",
+    "a failing SMS provider does not stop the payment from completing",
+  );
+
+  setReceiptSender(async (to, message) => {
+    receipts.push({ to, message });
+  });
+  (config as any).payment_receipt_sms = false;
+  const txR2 = "100000000000012";
+  await newPayment("payleo", txR2);
+  await fetch(`${api}/api/v1/payment/webhook/payleo`, {
+    method: "POST",
+    headers: { "Content-Type": "text/xml" },
+    body: payleoXml("receivePayment", txR2, "500"),
+  });
+  await settle();
+  assert(receipts.length === receiptsBefore, "PAYMENT_RECEIPT_SMS=false sends no receipt");
+  (config as any).payment_receipt_sms = true;
+  const txR3 = "100000000000013";
+  await newPayment("payleo", txR3);
+  await fetch(`${api}/api/v1/payment/webhook/payleo`, {
+    method: "POST",
+    headers: { "Content-Type": "text/xml" },
+    body: payleoXml("receivePayment", txR3, "500"),
+  });
+  await settle();
+  assert(receipts.length === receiptsBefore + 1, "receipts resume when switched back on");
+  assert(!receipts.some((x) => x.message.includes(txR2.slice(-6)) && x.message.includes("Ref 000012")), "no receipt for the payment completed while switched off");
 
   try {
     const { default: redisClient } = await import("../../../redis/redisClient");

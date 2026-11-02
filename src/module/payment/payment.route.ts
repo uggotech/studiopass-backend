@@ -2,12 +2,14 @@ import { Router } from "express";
 import auth from "../../middlewares/auth";
 import validateRequest from "../../middlewares/validateRequest";
 import { paymentInitiateLimiter } from "../../middlewares/security";
+import { UserRole } from "../../shared/roles";
 import { PaymentController } from "./payment.controller";
+import { PaymentAdminController } from "./payment.admin.controller";
 import { PaymentValidation } from "./payment.validation";
 
 const router = Router();
 
-// Credit packages offered for purchase (prices and credits are server-defined)
+// Active credit packages offered for purchase (prices and credits are server-defined)
 router.get("/packages", auth(), PaymentController.getPackages);
 
 // Initiate Mobile Money Collection (C2B Push)
@@ -24,6 +26,29 @@ router.post("/webhook/payleo", PaymentController.ipAllowlist("payleo"), PaymentC
 
 // Webhook for Airtel OpenAPI - Airtel Uganda (receives JSON)
 router.post("/webhook/airtel", PaymentController.ipAllowlist("airtel"), PaymentController.handleAirtelWebhook);
+
+// ── Super Admin: credit packages and prize payout limits ────────────────────
+// (two path segments, so they never collide with GET /:transactionId below)
+router.get("/admin/packages", auth(UserRole.SUPER_ADMIN), PaymentAdminController.listPackages);
+router.post(
+  "/admin/packages",
+  auth(UserRole.SUPER_ADMIN),
+  validateRequest(PaymentValidation.createPackage),
+  PaymentAdminController.createPackage,
+);
+router.patch(
+  "/admin/packages/:id",
+  auth(UserRole.SUPER_ADMIN),
+  validateRequest(PaymentValidation.updatePackage),
+  PaymentAdminController.updatePackage,
+);
+router.get("/admin/payout-limits", auth(UserRole.SUPER_ADMIN), PaymentAdminController.getLimits);
+router.patch(
+  "/admin/payout-limits",
+  auth(UserRole.SUPER_ADMIN),
+  validateRequest(PaymentValidation.updatePayoutLimits),
+  PaymentAdminController.updateLimits,
+);
 
 // Status of one of the current user's payments (app polls this after initiate)
 router.get(

@@ -207,17 +207,19 @@ export default {
     callback_auth_mode: process.env.AIRTEL_CALLBACK_AUTH_MODE || "log",
   },
 
-  // Credit packages as JSON: [{"id":"pkg_500","amountUgx":500,"credits":1,"label":"Starter"}]
-  payment_packages: process.env.PAYMENT_PACKAGES || "",
+  // Credit packages are managed by the Super Admin in the dashboard (CreditPackage collection).
+  // Send an SMS receipt (Africa's Talking) after each successful credit purchase; set PAYMENT_RECEIPT_SMS=false to disable
+  payment_receipt_sms: process.env.PAYMENT_RECEIPT_SMS !== "false",
 
   // ============================================================================
   // PRIZE PAYOUTS (challenge winners: mobile money / airtime)
   // ============================================================================
   payout: {
-    // Hard cap per winner for automated money prizes; challenges above it are rejected
+    // DEFAULTS only. The Super Admin sets the live values in the dashboard (stored in the database);
+    // these apply until the first save. Hard cap per winner for automated prizes (mobile money + airtime)
     max_per_winner_ugx: Number(process.env.PAYOUT_MAX_PER_WINNER_UGX) || 200000,
-    // Total automated mobile money paid out per day (Africa/Kampala); 0 = no limit
-    daily_limit_ugx: Number(process.env.PAYOUT_DAILY_LIMIT_UGX) || 0,
+    // Total automated prizes (mobile money + airtime) paid per day (Africa/Kampala); 0 = no limit
+    daily_limit_ugx: process.env.PAYOUT_DAILY_LIMIT_UGX ? Number(process.env.PAYOUT_DAILY_LIMIT_UGX) : 500000,
     // Airtel Money disbursement (B2C). Needs a disbursement-enabled Airtel app (same client id/secret
     // as above unless overridden), the disbursement wallet PIN and the app's RSA public key.
     airtel_disbursement_url:

@@ -9,6 +9,7 @@ import mongoose from "mongoose";
 import * as airtimeModule from "../../../util/africasTalkingAirtime";
 import * as airtelModule from "../../payment/airtel.service";
 import config from "../../../config";
+import { getPayoutLimits, updatePayoutLimits } from "../../payment/payout.settings";
 import { DisbursementService } from "../disbursement.service";
 import { Disbursement } from "../disbursement.model";
 import { Challenge } from "../../challenge/challenge.model";
@@ -204,6 +205,143 @@ async function main() {
   await DisbursementService.createDisbursementsForChallenge(mmBig);
   rows = await Disbursement.find({ challenge: mmBig }).lean();
   assert(rows.every((r) => r.status === "failed" && /cap/.test(r.failureReason || "")) && airtelPayouts.length === sentBeforeBig, "amount above the per-winner cap is never sent");
+
+  // 6) Daily payout limit: airtime and mobile money share ONE daily total
+  console.log("Daily payout limit (airtime + mobile money share one total)");
+  const kampalaStart = () => {
+    const off = 3 * 60 * 60 * 1000;
+    const local = new Date(Date.now() + off);
+    local.setUTCHours(0, 0, 0, 0);
+    return new Date(local.getTime() - off);
+  };
+  const amountOf = (v: string) => Number(String(v).replace(/[^\d.]/g, "")) || 0;
+  const countedToday = async () =>
+    (
+      await Disbursement.find({
+        prizeTypeKey: { $in: ["mobile_money", "airtime"] },
+        provider: { $ne: "manual" },
+        status: { $in: ["processing", "successful"] },
+        processedAt: { $gte: kampalaStart() },
+      }).lean()
+    ).reduce((sum, r) => sum + amountOf(r.prizeValue), 0);
+  const oid = (id: string) => new mongoose.Types.ObjectId(id);
+  const makeOld = (filter: Record<string, unknown>) => {
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    return Disbursement.collection.updateMany(filter, { $set: { createdAt: old, updatedAt: old } });
+  };
+
+  const used = await countedToday();
+  await updatePayoutLimits({ maxPerWinnerUgx: 1000, dailyLimitUgx: used + 1500 });
+
+  const dailyA = await makeChallenge("airtime", "1000"); // two winners (u1 MTN number, u2 Airtel number)
+  const sentBeforeA = sent.length;
+  await DisbursementService.createDisbursementsForChallenge(dailyA);
+  rows = await Disbursement.find({ challenge: dailyA }).lean();
+  assert(sent.length === sentBeforeA + 1 && rows.filter((r) => r.status === "processing").length === 1, "first airtime prize within the daily limit is sent");
+  const heldAirtime = rows.find((r) => r.status === "pending");
+  assert(
+    !!heldAirtime && /Daily payout limit/.test(heldAirtime.failureReason || "") && !heldAirtime.processedAt && !heldAirtime.providerRequestId,
+    "airtime prize over the daily limit is held (pending, not sent, nothing recorded as in flight)",
+  );
+
+  const dailyB = await makeChallenge("mobile_money", "1000");
+  const payoutsBeforeB = airtelPayouts.length;
+  await DisbursementService.createDisbursementsForChallenge(dailyB);
+  rows = await Disbursement.find({ challenge: dailyB }).lean();
+  const heldMoney = rows.find((r) => String(r.winnerUser) === String(u2))!;
+  assert(
+    airtelPayouts.length === payoutsBeforeB && heldMoney.status === "pending" && /Daily payout limit/.test(heldMoney.failureReason || "") && !heldMoney.providerRequestId,
+    "a mobile money prize counts against the same daily total as airtime",
+  );
+
+  await updatePayoutLimits({ dailyLimitUgx: (await countedToday()) + 5000 });
+  await makeOld({ challenge: { $in: [oid(dailyA), oid(dailyB)] }, status: "pending" });
+  const sentBeforeRelease = sent.length;
+  const payoutsBeforeRelease = airtelPayouts.length;
+  await DisbursementService.processPendingPayouts();
+  assert(sent.length === sentBeforeRelease + 1, "held airtime prize is sent automatically once the limit allows it");
+  assert(airtelPayouts.length === payoutsBeforeRelease + 1, "held mobile money prize is paid automatically once the limit allows it");
+
+  // The per-winner cap now comes from the Super Admin setting and also covers airtime
+  const capChallenge = await makeChallenge("airtime", "1001");
+  const sentBeforeCap = sent.length;
+  await DisbursementService.createDisbursementsForChallenge(capChallenge);
+  rows = await Disbursement.find({ challenge: capChallenge }).lean();
+  assert(
+    rows.length === 2 && rows.every((r) => r.status === "failed" && /cap/.test(r.failureReason || "")) && sent.length === sentBeforeCap,
+    "airtime above the per-winner cap (set by the Super Admin) is never sent",
+  );
+
+  // 7) Manual "mark as paid" (MTN winners until MTN payouts are automated)
+  console.log("Manual 'mark as paid'");
+  const adminId = String(new mongoose.Types.ObjectId());
+  const marked: any = await DisbursementService.markPaidManually(
+    String(mtnRow._id),
+    { reference: "MTN-TXN-12345", note: "Paid by accounts" },
+    adminId,
+  );
+  assert(
+    marked.status === "successful" && marked.provider === "manual" && marked.providerReference === "MTN-TXN-12345" &&
+      String(marked.markedPaidBy) === adminId && marked.markedPaidAt && marked.manualNote === "Paid by accounts",
+    "pending MTN prize can be recorded as paid, with reference, note and who did it",
+  );
+  try {
+    await DisbursementService.markPaidManually(String(mtnRow._id), { reference: "AGAIN-999" }, adminId);
+    assert(false, "marking an already-paid prize again is blocked");
+  } catch (e: any) {
+    assert((e.statusCode || e.status) === 409, "marking an already-paid prize again is blocked (409)");
+  }
+  assert((await Disbursement.findById(mtnRow._id).lean())?.providerReference === "MTN-TXN-12345", "the original payment reference is untouched");
+
+  const inFlightRow = await Disbursement.create({
+    challenge: new mongoose.Types.ObjectId(), winnerUser: u2, winnerName: "Winner Two", phone: "0701234567", station,
+    prizeTypeKey: "mobile_money", prizeLabel: "Cash", prizeValue: "UGX 100", txRef: "PRZ-inflight", provider: "airtel_money",
+    providerRequestId: "PRZ-inflight", status: "processing", processedAt: new Date(),
+  });
+  try {
+    await DisbursementService.markPaidManually(String(inFlightRow._id), { reference: "NOPE-123" }, adminId);
+    assert(false, "a payout that is in flight cannot be marked paid");
+  } catch (e: any) {
+    assert((e.statusCode || e.status) === 409, "a payout that is in flight cannot be marked paid (no double payment)");
+  }
+  try {
+    await DisbursementService.markPaidManually(String(heldAirtime!._id), { reference: "NOPE-123" }, adminId);
+    assert(false, "only mobile money prizes can be marked paid");
+  } catch (e: any) {
+    assert((e.statusCode || e.status) === 400, "airtime prizes cannot be marked paid manually");
+  }
+  const otherPartnerRow = (await Disbursement.find({ challenge: dailyB, prizeTypeKey: "mobile_money" }).lean()).find((r) => r.status === "pending");
+  if (otherPartnerRow) {
+    try {
+      await DisbursementService.markPaidManually(String(otherPartnerRow._id), { reference: "SCOPE-123" }, adminId, { partnerId: String(new mongoose.Types.ObjectId()) });
+      assert(false, "admins cannot touch prizes outside their partner");
+    } catch (e: any) {
+      assert((e.statusCode || e.status) === 404, "admins cannot touch prizes outside their partner (404)");
+    }
+  }
+
+  // 8) Manual payments are not counted, and two payout runs at once cannot exceed the limit
+  console.log("Concurrent payout runs");
+  await updatePayoutLimits({ dailyLimitUgx: (await countedToday()) + 1000 });
+  const raceRows = await Disbursement.insertMany(
+    [1, 2].map((n) => ({
+      challenge: new mongoose.Types.ObjectId(), winnerUser: u1, winnerName: "Winner One", phone: "0771819679", station,
+      prizeTypeKey: "airtime", prizeLabel: "Airtime", prizeValue: "UGX 1000", txRef: `DISB-race-${n}`, provider: "africas_talking", status: "pending",
+    })),
+  );
+  await makeOld({ _id: { $in: raceRows.map((r) => r._id) } });
+  const sentBeforeRace = sent.length;
+  await Promise.all([DisbursementService.processPendingPayouts(), DisbursementService.processPendingPayouts()]);
+  const afterRace = await Disbursement.find({ _id: { $in: raceRows.map((r) => r._id) } }).lean();
+  assert(
+    sent.length === sentBeforeRace + 1,
+    "with room for exactly one prize, two payout runs at once send exactly one (manual payments are not counted)",
+  );
+  assert(
+    afterRace.filter((r) => r.status === "processing").length === 1 && afterRace.filter((r) => r.status === "pending").length === 1,
+    "the other prize waits for the next run",
+  );
+  assert((await countedToday()) <= (await getPayoutLimits()).dailyLimitUgx, "the daily total never exceeds the limit");
 
   await mongoose.connection.db!.dropDatabase();
   await mongoose.disconnect();

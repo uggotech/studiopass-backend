@@ -19,7 +19,7 @@ import {
   parseAirtelKeyExpiry,
 } from "../airtel.service";
 import { stripHashMember, verifyAirtelCallbackHash } from "../airtel.signature";
-import { getCreditPackages, findCreditPackage } from "../payment.packages";
+import { buildReceiptSms } from "../payment.service";
 import { normalizeUgandaPhone } from "../../../shared/telecom/ugandaPhone.util";
 
 let passed = 0;
@@ -151,11 +151,13 @@ assert(encryptAirtelPin("1234", AIRTEL_DOC_KEY) !== encPin, "PKCS1 padding is ra
 assert(parseAirtelKeyExpiry("12-08-2024 21:29:26") === Date.UTC(2024, 7, 12, 21, 29, 26), "key expiry parsed (dd-MM-yyyy HH:mm:ss)");
 assert(parseAirtelKeyExpiry("garbage") === null, "bad expiry ignored");
 
-console.log("Credit packages");
-const pkgs = getCreditPackages();
-assert(pkgs.length > 0 && pkgs.every((p) => p.amountUgx > 0 && p.credits > 0), "packages are positive");
-assert(findCreditPackage("pkg_500")?.amountUgx === 500, "pkg_500 costs 500 UGX");
-assert(findCreditPackage("pkg_does_not_exist") === undefined, "unknown package rejected");
+// Credit packages live in the database now: covered by payment.integration.test.ts
+
+console.log("SMS receipt text");
+const receiptText = buildReceiptSms({ amount: 10000, creditsToGrant: 20, transactionId: "104829104829104" }, 25);
+assert(receiptText === "StudioPass: UGX 10,000 received. 20 credits added. Balance: 25. Ref 829104", "receipt wording with thousands separator");
+assert(buildReceiptSms({ amount: 500, creditsToGrant: 1, transactionId: "TXN1779114705A2A8F1" }, 1).includes("1 credit added"), "singular 'credit' for 1");
+assert(receiptText.length <= 160, "fits a single SMS");
 
 console.log("Uganda phone routing");
 assert(normalizeUgandaPhone("0771819679").carrier === "MTN", "077 -> MTN");

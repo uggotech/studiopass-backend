@@ -6,6 +6,7 @@ import Message from "./message.model";
 import { Show } from "../show/show.model";
 import { ShowRepository } from "../show/show.repository";
 import { CreditService } from "../credit/credit.service";
+import { CreditRepository } from "../credit/credit.repository";
 import { StationRepository } from "../station/station.repository";
 import { Country } from "../country/country.model";
 import { User } from "../user/user.model";
@@ -34,6 +35,19 @@ const getStationTimezone = async (stationId: string): Promise<string> => {
   return "UTC";
 };
 
+/** The listener's already-saved message for this clientMessageId, in the same shape as a fresh send. */
+const findAlreadySent = async (userId: string, clientMessageId: string) => {
+  const existing: any = await Message.findOne({ user: userId, clientMessageId }).populate("show", "name").lean();
+  if (!existing) return null;
+  const balance = await CreditRepository.getBalance(userId);
+  logger.info(`[Message] Duplicate send ignored for user ${userId} (clientMessageId ${clientMessageId}); returning message ${existing._id}`);
+  return {
+    message: normalizeMessage(existing, existing.show?.name),
+    remainingBalance: balance?.balance ?? 0,
+    duplicate: true,
+  };
+};
+
 const sendUserMessage = async (
   stationId: string,
   content: string | undefined,
@@ -45,7 +59,15 @@ const sendUserMessage = async (
   waveform?: number[],
   mediaType?: "text" | "image" | "video" | "audio" | "sticker",
   stickerUrl?: string,
+  clientMessageId?: string,
 ) => {
+  // A retry of a send that already succeeded (e.g. the response was lost on a slow network):
+  // return the saved message. No second message, no second credit.
+  if (clientMessageId) {
+    const already = await findAlreadySent(userId, clientMessageId);
+    if (already) return already;
+  }
+
   const station = await StationRepository.findById(stationId);
   if (!station) {
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
@@ -153,6 +175,7 @@ const sendUserMessage = async (
       country: user.countryId,
       creditsUsed: 1,
       operator: CarrierService.detectOperator(user.phone, country?.code || "UG") || undefined,
+      clientMessageId: clientMessageId || undefined,
     }, session);
 
     // 2. Deduct credits via CreditService (handles isFree detection + transaction record)
@@ -193,8 +216,14 @@ const sendUserMessage = async (
       message: normalizeMessage(message, activeShow?.name),
       remainingBalance: updatedBalance,
     };
-  } catch (error) {
+  } catch (error: any) {
     await session.abortTransaction();
+    // Two identical sends at the same moment: the loser hits the unique index (or a write conflict).
+    // If the winner has committed by now, answer with its message instead of failing.
+    if (clientMessageId && (error?.code === 11000 || error?.code === 112 || error?.hasErrorLabel?.("TransientTransactionError"))) {
+      const already = await findAlreadySent(userId, clientMessageId);
+      if (already) return already;
+    }
     throw error;
   } finally {
     session.endSession();

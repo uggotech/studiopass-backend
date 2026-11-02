@@ -9,7 +9,7 @@ import { CreditService } from "../credit/credit.service";
 import { emitToStationStaff } from "../../socket";
 import { normalizeHhMm, zonedDateTimeToUtc } from "./challengeTime";
 import { PrizeTypeRepository } from "../prizeType/prizeType.repository";
-import config from "../../config";
+import { getPayoutLimits } from "../payment/payout.settings";
 
 const AMOUNT_PRIZES = ["mobile_money", "airtime", "bonus_credits"];
 const PHONE_PAYOUT_PRIZES = ["mobile_money", "airtime"];
@@ -40,10 +40,11 @@ async function validatePrize(prize: { prizeTypeKey?: string; prizeValue?: string
     if (prizeTypeKey === "mobile_money" && (currency || "UGX") !== "UGX") {
       throw new AppError(StatusCodes.BAD_REQUEST, "Mobile money prizes are currently available for Uganda (UGX) only.");
     }
-    if (amount > config.payout.max_per_winner_ugx) {
+    const { maxPerWinnerUgx } = await getPayoutLimits();
+    if (amount > maxPerWinnerUgx) {
       throw new AppError(
         StatusCodes.BAD_REQUEST,
-        `Prize amount exceeds the maximum of ${config.payout.max_per_winner_ugx} per winner.`,
+        `Prize amount exceeds the maximum of ${maxPerWinnerUgx} per winner.`,
       );
     }
   }

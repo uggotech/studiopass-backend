@@ -39,6 +39,9 @@ export interface TMessage {
   // Cost tracking (only for user messages)
   creditsUsed?: number;
   creditTransaction?: Types.ObjectId; // → CreditTransaction
+  // Unique id the app creates per send attempt: a retry with the same id returns the saved message
+  // instead of creating (and charging for) a second one
+  clientMessageId?: string;
 
   // Flags (only for user messages)
   isReplied: boolean; // default: false — fast stats query

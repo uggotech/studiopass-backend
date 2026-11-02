@@ -115,6 +115,11 @@ const messageSchema = new Schema<IMessage>(
       type: Schema.Types.ObjectId,
       ref: "CreditTransaction",
     },
+    clientMessageId: {
+      type: String,
+      trim: true,
+      maxlength: 64,
+    },
     isReplied: {
       type: Boolean,
       default: false,
@@ -164,6 +169,11 @@ messageSchema.index({ station: 1, show: 1, createdAt: -1 });
 messageSchema.index({ station: 1, senderType: 1, isDeleted: 1, createdAt: -1 });
 messageSchema.index({ status: 1, createdAt: -1 });
 messageSchema.index({ user: 1, createdAt: -1 });
+// One message per (listener, clientMessageId). Partial: older messages and station replies have none.
+messageSchema.index(
+  { user: 1, clientMessageId: 1 },
+  { unique: true, partialFilterExpression: { clientMessageId: { $type: "string" } } },
+);
 
 const Message = mongoose.model<IMessage>("Message", messageSchema);
 

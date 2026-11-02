@@ -16,6 +16,10 @@ export interface TDisbursement {
   provider?: string;
   providerRequestId?: string;
   providerReference?: string;
+  // Set when accounts paid the prize outside the system (e.g. MTN) and recorded it in the dashboard
+  markedPaidBy?: Types.ObjectId;
+  markedPaidAt?: Date;
+  manualNote?: string;
   status: DisbursementStatus;
   failureReason?: string;
   processedAt?: Date;
