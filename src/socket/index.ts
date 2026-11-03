@@ -389,12 +389,17 @@ export function initSocket(server: http.Server): Server {
             startedBy: disconnectUserId,
             status: { $in: ["queued", "answered"] },
           })
-            .select("_id")
+            .select("_id status")
             .lean();
 
           if (activeCall) {
             const activeCallId = activeCall._id.toString();
-            logger.info(`[Call] User ${disconnectUserId} disconnected — starting ${graceMs}ms grace for call ${activeCallId}`);
+            // A caller still WAITING in the queue (phone locked, app switched, weak signal) gets a longer
+            // grace: nobody is on air with them yet, the app re-attaches through /call/active, and if the
+            // operator accepts while they are away the join timeout ends the call and refunds it.
+            const userGraceMs =
+              activeCall.status === "queued" ? Math.max(graceMs, config.calls.queued_disconnect_grace_ms) : graceMs;
+            logger.info(`[Call] User ${disconnectUserId} disconnected — starting ${userGraceMs}ms grace for ${activeCall.status} call ${activeCallId}`);
 
             const graceTimer = setTimeout(async () => {
               disconnectGraceTimers.delete(disconnectUserId);
@@ -413,7 +418,7 @@ export function initSocket(server: http.Server): Server {
               } catch (err) {
                 logger.error(`[Call] User grace expiry error for call ${activeCallId}:`, err);
               }
-            }, graceMs);
+            }, userGraceMs);
 
             setDisconnectGraceTimer(disconnectUserId, graceTimer);
           }

@@ -17,6 +17,7 @@ import { ListenerStatementService } from "../listenerStatement/listenerStatement
 import { maskMsisdn, shouldMaskMsisdn } from "../../shared/maskMsisdn";
 import { logger } from "../../logger/logger";
 import { CarrierService } from "../../shared/telecom/carrier.service";
+import { runTransaction, isTransientTransactionError } from "../../shared/runTransaction";
 
 // ─── Timezone Helper ───────────────────────────────────────────────────────
 // Fetches the station's country timezone. Returns "UTC" on failure.
@@ -139,10 +140,8 @@ const sendUserMessage = async (
   // TV stations require approval; radio/channel deliver immediately
   const messageStatus = station.category === "tv" ? "pending" : "delivered";
 
-  // Use MongoDB transaction for atomicity: message + credit deduction
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
+  // Use MongoDB transaction for atomicity: message + credit deduction.
+  // Retried on write conflicts: two sends of one listener at the same moment both touch their balance.
   try {
     const detectedMediaType =
       mediaType ||
@@ -156,39 +155,40 @@ const sendUserMessage = async (
               ? "image"
               : "text");
 
-    // 1. Create message (within transaction)
-    const message = await MessageRepository.createMessage({
-      station: stationId,
-      show: activeShow?._id || undefined,
-      senderType: "user",
-      user: userId,
-      msisdn: user.phone,
-      content: content || '',
-      imageUrl: imageUrl || undefined,
-      videoUrl: videoUrl || undefined,
-      audioUrl: audioUrl || undefined,
-      stickerUrl: stickerUrl || undefined,
-      audioDuration: audioDuration || undefined,
-      waveform: waveform || undefined,
-      mediaType: detectedMediaType,
-      status: messageStatus,
-      country: user.countryId,
-      creditsUsed: 1,
-      operator: CarrierService.detectOperator(user.phone, country?.code || "UG") || undefined,
-      clientMessageId: clientMessageId || undefined,
-    }, session);
+    const { message, updatedBalance, isFree } = await runTransaction(async (session) => {
+      // 1. Create message (within transaction)
+      const message = await MessageRepository.createMessage({
+        station: stationId,
+        show: activeShow?._id || undefined,
+        senderType: "user",
+        user: userId,
+        msisdn: user.phone,
+        content: content || '',
+        imageUrl: imageUrl || undefined,
+        videoUrl: videoUrl || undefined,
+        audioUrl: audioUrl || undefined,
+        stickerUrl: stickerUrl || undefined,
+        audioDuration: audioDuration || undefined,
+        waveform: waveform || undefined,
+        mediaType: detectedMediaType,
+        status: messageStatus,
+        country: user.countryId,
+        creditsUsed: 1,
+        operator: CarrierService.detectOperator(user.phone, country?.code || "UG") || undefined,
+        clientMessageId: clientMessageId || undefined,
+      }, session);
 
-    // 2. Deduct credits via CreditService (handles isFree detection + transaction record)
-    const { balance: updatedBalance, isFree } = await CreditService.deductCredits(
-      userId,
-      1,
-      stationId,
-      message._id.toString(),
-      "message",
-      session,
-    );
-
-    await session.commitTransaction();
+      // 2. Deduct credits via CreditService (handles isFree detection + transaction record)
+      const { balance: updatedBalance, isFree } = await CreditService.deductCredits(
+        userId,
+        1,
+        stationId,
+        message._id.toString(),
+        "message",
+        session,
+      );
+      return { message, updatedBalance, isFree };
+    });
 
     // Post-transaction: create listener statement (non-critical, outside transaction).
     // Not awaited: the listener must not wait for a reporting write.
@@ -216,16 +216,13 @@ const sendUserMessage = async (
       remainingBalance: updatedBalance,
     };
   } catch (error: any) {
-    await session.abortTransaction();
     // Two identical sends at the same moment: the loser hits the unique index (or a write conflict).
     // If the winner has committed by now, answer with its message instead of failing.
-    if (clientMessageId && (error?.code === 11000 || error?.code === 112 || error?.hasErrorLabel?.("TransientTransactionError"))) {
+    if (clientMessageId && (error?.code === 11000 || isTransientTransactionError(error))) {
       const already = await findAlreadySent(userId, clientMessageId);
       if (already) return already;
     }
     throw error;
-  } finally {
-    session.endSession();
   }
 };
 
@@ -292,13 +289,9 @@ const sendStationReply = async (
 
   const detectedMediaType = mediaType || (audioUrl ? "audio" : (imageUrl ? "image" : "text"));
 
-  // Use transaction for atomicity: message creation + markAsReplied
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  let message;
-  try {
-    message = await MessageRepository.createMessage({
+  // Use transaction for atomicity: message creation + markAsReplied (retried on write conflicts)
+  const message = await runTransaction(async (session) => {
+    const created = await MessageRepository.createMessage({
       station: stationId,
       show: showId || undefined,
       senderType: "station",
@@ -316,14 +309,8 @@ const sendStationReply = async (
 
     // Mark preceding user messages as replied (scoped to show if available)
     await MessageRepository.markAsReplied(stationId, msisdn, showId?.toString(), session);
-
-    await session.commitTransaction();
-  } catch (error) {
-    await session.abortTransaction();
-    throw error;
-  } finally {
-    session.endSession();
-  }
+    return created;
+  });
 
   // Re-fetch with populated fields for response and socket emission
   let populatedMessage;

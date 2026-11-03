@@ -146,7 +146,8 @@ const votePoll = async (pollId: string, optionIndex: number, userId: string) => 
   }
 
   try {
-    emitToStation((poll as any).station.toString(), "poll-updated", { poll: updated });
+    // findById populates the station: use its id, not the object (which emitted to "station:[object Object]")
+    emitToStation(String((poll as any).station?._id ?? (poll as any).station), "poll-updated", { poll: updated });
   } catch {}
 
   // Return updated poll with isVotedByMe = true

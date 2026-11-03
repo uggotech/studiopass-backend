@@ -10,6 +10,7 @@ import { emitToStationStaff } from "../../socket";
 import { normalizeHhMm, zonedDateTimeToUtc } from "./challengeTime";
 import { PrizeTypeRepository } from "../prizeType/prizeType.repository";
 import { getPayoutLimits } from "../payment/payout.settings";
+import { runTransaction } from "../../shared/runTransaction";
 
 const AMOUNT_PRIZES = ["mobile_money", "airtime", "bonus_credits"];
 const PHONE_PAYOUT_PRIZES = ["mobile_money", "airtime"];
@@ -278,103 +279,103 @@ const participateInChallenge = async (
   answers: { questionIndex: number; selectedOption: number }[],
   timeTaken: number,
 ) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
+  // Charge and participation commit together (retried on write conflicts); a second submit of the
+  // same user hits the unique {challenge, user} index and is answered with 409, never a second charge.
   try {
-    const challenge = await ChallengeRepository.findById(challengeId);
-    if (!challenge) {
-      throw new AppError(StatusCodes.NOT_FOUND, "Challenge not found");
-    }
+    const { participation, challenge, score } = await runTransaction(async (session) => {
+      const challenge = await ChallengeRepository.findById(challengeId);
+      if (!challenge) {
+        throw new AppError(StatusCodes.NOT_FOUND, "Challenge not found");
+      }
 
-    if (challenge.status !== "active") {
-      throw new AppError(StatusCodes.BAD_REQUEST, "This challenge is not active.");
-    }
+      if (challenge.status !== "active") {
+        throw new AppError(StatusCodes.BAD_REQUEST, "This challenge is not active.");
+      }
 
-    // Belt-and-suspenders: exact UTC window when present (station-local converted at create)
-    const nowCheck = new Date();
-    if (challenge.startsAt && nowCheck < new Date(challenge.startsAt)) {
-      throw new AppError(StatusCodes.BAD_REQUEST, "This challenge has not started yet.");
-    }
-    if (challenge.endsAt && nowCheck >= new Date(challenge.endsAt)) {
-      throw new AppError(StatusCodes.BAD_REQUEST, "This challenge has ended.");
-    }
+      // Belt-and-suspenders: exact UTC window when present (station-local converted at create)
+      const nowCheck = new Date();
+      if (challenge.startsAt && nowCheck < new Date(challenge.startsAt)) {
+        throw new AppError(StatusCodes.BAD_REQUEST, "This challenge has not started yet.");
+      }
+      if (challenge.endsAt && nowCheck >= new Date(challenge.endsAt)) {
+        throw new AppError(StatusCodes.BAD_REQUEST, "This challenge has ended.");
+      }
 
-    // Check if user already participated inside transaction
-    const existing = await ChallengeParticipationRepository.findByChallengeAndUser(challengeId, userId);
-    if (existing) {
-      throw new AppError(StatusCodes.CONFLICT, "You have already participated in this challenge.");
-    }
+      // Check if user already participated inside transaction
+      const existing = await ChallengeParticipationRepository.findByChallengeAndUser(challengeId, userId);
+      if (existing) {
+        throw new AppError(StatusCodes.CONFLICT, "You have already participated in this challenge.");
+      }
 
-    // All types may have multiple questions — require a complete set before charging
-    const questionCount = challenge.questions?.length || 0;
-    if (questionCount < 1) {
-      throw new AppError(StatusCodes.BAD_REQUEST, "This challenge has no questions.");
-    }
-    const answeredIndexes = new Set(answers.map((a) => a.questionIndex));
-    for (let i = 0; i < questionCount; i++) {
-      if (!answeredIndexes.has(i)) {
-        throw new AppError(
-          StatusCodes.BAD_REQUEST,
-          "Please answer all questions before submitting.",
+      // All types may have multiple questions — require a complete set before charging
+      const questionCount = challenge.questions?.length || 0;
+      if (questionCount < 1) {
+        throw new AppError(StatusCodes.BAD_REQUEST, "This challenge has no questions.");
+      }
+      const answeredIndexes = new Set(answers.map((a) => a.questionIndex));
+      for (let i = 0; i < questionCount; i++) {
+        if (!answeredIndexes.has(i)) {
+          throw new AppError(
+            StatusCodes.BAD_REQUEST,
+            "Please answer all questions before submitting.",
+          );
+        }
+        const question = challenge.questions[i];
+        const selected = answers.find((a) => a.questionIndex === i)?.selectedOption;
+        if (selected == null || !question?.options?.[selected]) {
+          throw new AppError(StatusCodes.BAD_REQUEST, "Invalid answer selected.");
+        }
+      }
+
+      // Check billing — only after complete answers so incomplete play is never charged
+      if (challenge.billingMode === "credits" && challenge.creditCost > 0) {
+        await CreditService.deductCredits(
+          userId,
+          challenge.creditCost,
+          challenge.station.toString(),
+          challengeId,
+          "challenge",
+          session,
         );
       }
-      const question = challenge.questions[i];
-      const selected = answers.find((a) => a.questionIndex === i)?.selectedOption;
-      if (selected == null || !question?.options?.[selected]) {
-        throw new AppError(StatusCodes.BAD_REQUEST, "Invalid answer selected.");
-      }
-    }
 
-    // Check billing — only after complete answers so incomplete play is never charged
-    if (challenge.billingMode === "credits" && challenge.creditCost > 0) {
-      await CreditService.deductCredits(
-        userId,
-        challenge.creditCost,
-        challenge.station.toString(),
-        challengeId,
-        "challenge",
-        session,
-      );
-    }
+      // Calculate score: +1 per correct (default); no custom per-question points yet
+      let score = 0;
+      let correctCount = 0;
+      const evaluatedAnswers = answers.map((answer) => {
+        const question = challenge.questions[answer.questionIndex];
+        if (!question) return { ...answer, isCorrect: false };
+        const isCorrect = question.options[answer.selectedOption]?.isCorrect || false;
+        if (isCorrect) {
+          score++;
+          correctCount++;
+        }
+        return { ...answer, isCorrect };
+      });
 
-    // Calculate score: +1 per correct (default); no custom per-question points yet
-    let score = 0;
-    let correctCount = 0;
-    const evaluatedAnswers = answers.map((answer) => {
-      const question = challenge.questions[answer.questionIndex];
-      if (!question) return { ...answer, isCorrect: false };
-      const isCorrect = question.options[answer.selectedOption]?.isCorrect || false;
-      if (isCorrect) {
-        score++;
-        correctCount++;
+      // Speed bonus only for a perfect fastest_answer run — never on wrong answers
+      if (
+        challenge.type === "fastest_answer" &&
+        timeTaken > 0 &&
+        correctCount === questionCount
+      ) {
+        const speedBonus = Math.max(0, 5 - Math.floor(timeTaken / 10));
+        score += speedBonus;
       }
-      return { ...answer, isCorrect };
+
+      const participation = await ChallengeParticipationRepository.create({
+        challenge: challengeId,
+        user: userId,
+        answers: evaluatedAnswers,
+        score,
+        timeTaken,
+        submittedAt: new Date(),
+      }, session);
+      return { participation, challenge, score };
     });
 
-    // Speed bonus only for a perfect fastest_answer run — never on wrong answers
-    if (
-      challenge.type === "fastest_answer" &&
-      timeTaken > 0 &&
-      correctCount === questionCount
-    ) {
-      const speedBonus = Math.max(0, 5 - Math.floor(timeTaken / 10));
-      score += speedBonus;
-    }
-
-    const participation = await ChallengeParticipationRepository.create({
-      challenge: challengeId,
-      user: userId,
-      answers: evaluatedAnswers,
-      score,
-      timeTaken,
-      submittedAt: new Date(),
-    });
-
-    // Increment participant count
+    // Increment participant count (outside the transaction: a counter every participant touches)
     await ChallengeRepository.incrementParticipants(challengeId);
-
-    await session.commitTransaction();
 
     // Emit socket event
     try {
@@ -386,11 +387,11 @@ const participateInChallenge = async (
     } catch {}
 
     return participation;
-  } catch (err) {
-    await session.abortTransaction();
+  } catch (err: any) {
+    if (err?.code === 11000) {
+      throw new AppError(StatusCodes.CONFLICT, "You have already participated in this challenge.");
+    }
     throw err;
-  } finally {
-    session.endSession();
   }
 };
 

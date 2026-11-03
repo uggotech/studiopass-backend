@@ -1,4 +1,3 @@
-import mongoose from "mongoose";
 import { StatusCodes } from "http-status-codes";
 import { RtcTokenBuilder, RtcRole } from "agora-token";
 import AppError from "../../errors/AppError";
@@ -20,6 +19,7 @@ import {
 } from "../../socket";
 import { ListenerStatementService } from "../listenerStatement/listenerStatement.service";
 import { CarrierService } from "../../shared/telecom/carrier.service";
+import { runTransaction } from "../../shared/runTransaction";
 
 // ─── Shared Call Helpers ────────────────────────────────────────────────────
 // Single source of truth for refund, statement, and notification logic.
@@ -435,66 +435,79 @@ const requestCall = async (userId: string, stationId: string) => {
   // 6. Deduct credit (call reached the station → credit cut)
   const agoraChannelId = `c_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  const callerUser = await User.findById(userId).select("fullName phone").lean();
+  const operator = CarrierService.detectOperator(callerUser?.phone, country?.code || "UG") || undefined;
 
+  // Retried on write conflicts (a message sent at the same moment also touches the balance)
+  let created;
   try {
-    const callerUser = await User.findById(userId).select("phone").lean();
-    const operator = CarrierService.detectOperator(callerUser?.phone, country?.code || "UG") || undefined;
+    created = await runTransaction(async (session) => {
+      const call = await Call.create(
+        [{
+          station: stationId,
+          show: activeShow._id,
+          startedBy: userId,
+          agoraChannelId,
+          status: "queued",
+          creditsUsed: 1,
+          country: countryId,
+          operator,
+          waitStartedAt: new Date(),
+          startedAt: new Date(),
+        }],
+        { session },
+      );
 
-    const call = await Call.create(
-      [{
-        station: stationId,
-        show: activeShow._id,
-        startedBy: userId,
-        agoraChannelId,
-        status: "queued",
-        creditsUsed: 1,
-        country: countryId,
-        operator,
-        waitStartedAt: new Date(),
-        startedAt: new Date(),
-      }],
-      { session },
-    );
-
-    const { balance: updatedBalance } = await CreditService.deductCredits(
-      userId,
-      1,
-      stationId,
-      call[0]!._id.toString(),
-      "call",
-      session,
-    );
-
-    await session.commitTransaction();
-
-    // Start queue timeout
-    startQueueTimeout(call[0]!._id.toString(), userId, stationId);
-
-    // Emit incoming-call to station room (all operators see it)
-    const user = await User.findById(userId).select("fullName phone").lean();
-    emitToStationCalls(stationId, "incoming-call", {
-      callId: call[0]!._id.toString(),
-      callerName: user?.fullName || "Unknown",
-      callerPhone: user?.phone || "",
-      showName: activeShow.name,
+      const { balance: updatedBalance } = await CreditService.deductCredits(
+        userId,
+        1,
+        stationId,
+        call[0]!._id.toString(),
+        "call",
+        session,
+      );
+      return { callId: call[0]!._id.toString(), updatedBalance };
     });
-
-    logger.info(`[Call] Call requested: ${call[0]!._id} by user ${userId} to station ${stationId}`);
-
-    return {
-      callId: call[0]!._id.toString(),
-      channelName: agoraChannelId,
-      status: "queued",
-      remainingBalance: updatedBalance,
-    };
-  } catch (error) {
-    await session.abortTransaction();
+  } catch (error: any) {
+    // Two requests at the same moment (double tap, retry on a slow network): the unique
+    // "one live call per user" index stops the second one. Answer it like a repeat request.
+    if (error?.code === 11000) {
+      const winner = await Call.findOne({ startedBy: userId, status: "queued", station: stationId }).lean();
+      if (winner) {
+        const current = await CreditRepository.getBalance(userId);
+        return {
+          callId: winner._id.toString(),
+          channelName: winner.agoraChannelId,
+          status: "queued",
+          remainingBalance: current?.balance ?? 0,
+          duplicate: true,
+        };
+      }
+      throw new AppError(StatusCodes.CONFLICT, "You already have an active call. End it before starting a new one.");
+    }
     throw error;
-  } finally {
-    session.endSession();
   }
+  const { callId, updatedBalance } = created;
+
+  // Start queue timeout
+  startQueueTimeout(callId, userId, stationId);
+
+  // Emit incoming-call to station room (all operators see it)
+  emitToStationCalls(stationId, "incoming-call", {
+    callId,
+    callerName: callerUser?.fullName || "Unknown",
+    callerPhone: callerUser?.phone || "",
+    showName: activeShow.name,
+  });
+
+  logger.info(`[Call] Call requested: ${callId} by user ${userId} to station ${stationId}`);
+
+  return {
+    callId,
+    channelName: agoraChannelId,
+    status: "queued",
+    remainingBalance: updatedBalance,
+  };
 };
 
 /** The listener's current call (queued or answered), or null. Lets the app recover after a lost response. */

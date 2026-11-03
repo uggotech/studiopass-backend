@@ -339,6 +339,8 @@ export default {
     join_confirmation_timeout_ms: Number(process.env.CALL_JOIN_CONFIRMATION_TIMEOUT_MS) || 45_000,
     // Grace period (ms) after socket disconnect before ending active call — allows mobile reconnection
     socket_disconnect_grace_ms: Number(process.env.CALL_DISCONNECT_GRACE_MS) || 20_000,
+    // Grace for a listener whose call is still queued (no one on air with them yet).
+    queued_disconnect_grace_ms: Number(process.env.CALL_QUEUED_DISCONNECT_GRACE_MS) || 120_000,
   },
 
   // ============================================================================

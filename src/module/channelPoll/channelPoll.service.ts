@@ -1,3 +1,4 @@
+import { runTransaction } from "../../shared/runTransaction";
 import { StatusCodes } from "http-status-codes";
 import AppError from "../../errors/AppError";
 import { ChannelPollRepository } from "./channelPoll.repository";
@@ -86,7 +87,8 @@ const createPoll = async (
       const followerIds = follows.map((f: any) => String(f.user));
       if (followerIds.length > 0) {
         const stationName = (station as any).name || "the channel";
-        await NotificationService.sendBulkNotifications(
+        // Not awaited: the push to every follower must not hold up the request
+        void NotificationService.sendBulkNotifications(
           followerIds,
           "New Channel Poll",
           `Voting is open: "${data.title}" on ${stationName}.`,
@@ -98,7 +100,7 @@ const createPoll = async (
             kind: "channel_poll",
             route: `/channel-polls/${(poll as any)._id}`,
           },
-        );
+        ).catch((e) => logger.error("[Notify] Follower push failed", e));
       }
     } catch (err) {
       logger.error("[ChannelPoll] Failed to notify followers on create", err);
@@ -240,7 +242,6 @@ const votePoll = async (
   nomineeIndex: number,
   userId: string,
 ) => {
-  const mongoose = await import("mongoose");
   const poll = await ChannelPollRepository.findById(pollId);
   if (!poll) {
     throw new AppError(StatusCodes.NOT_FOUND, "Poll not found");
@@ -274,52 +275,49 @@ const votePoll = async (
     throw new AppError(StatusCodes.BAD_REQUEST, "Invalid nominee index.");
   }
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  // findById populates the station: take its id (toString() of the object gave "[object Object]",
+  // so every paid vote failed and the live "channel-poll-updated" event went to a room nobody is in)
+  const stationId = String((poll.station as any)?._id ?? poll.station);
 
+  // Credits + vote record commit together (retried on write conflicts). The poll counter, which every
+  // voter touches, is incremented after the commit so simultaneous voters do not conflict on it.
   try {
-    // Check if user already voted in this category inside transaction
-    const alreadyVoted = await ChannelPollRepository.hasVotedInCategory(pollId, categoryIndex, userId);
-    if (alreadyVoted) {
-      throw new AppError(StatusCodes.CONFLICT, "You have already voted in this category.");
-    }
+    await runTransaction(async (session) => {
+      // Check if user already voted in this category inside transaction
+      const alreadyVoted = await ChannelPollRepository.hasVotedInCategory(pollId, categoryIndex, userId);
+      if (alreadyVoted) {
+        throw new AppError(StatusCodes.CONFLICT, "You have already voted in this category.");
+      }
 
-    // Check billing + vote in ONE transaction (same session)
-    if (poll.billingMode === "credits" && poll.creditCost > 0) {
-      await CreditService.deductCredits(
-        userId,
-        poll.creditCost,
-        poll.station.toString(),
-        pollId,
-        "poll",
-        session,
-      );
-    }
+      // Check billing + vote in ONE transaction (same session)
+      if (poll.billingMode === "credits" && poll.creditCost > 0) {
+        await CreditService.deductCredits(
+          userId,
+          poll.creditCost,
+          stationId,
+          pollId,
+          "poll",
+          session,
+        );
+      }
 
-    const updated = await ChannelPollRepository.vote(
-      pollId,
-      categoryIndex,
-      nomineeIndex,
-      userId,
-      session,
-    );
-    if (!updated || (updated as any).alreadyVoted) {
-      throw new AppError(StatusCodes.CONFLICT, "You have already voted in this category.");
-    }
+      await ChannelPollRepository.addVote(pollId, categoryIndex, nomineeIndex, userId, session);
+    });
 
-    await session.commitTransaction();
+    const updated = await ChannelPollRepository.incrementTotalVotes(pollId);
 
     // Emit socket event
     try {
-      emitToStation(poll.station.toString(), "channel-poll-updated", { pollId });
+      emitToStation(stationId, "channel-poll-updated", { pollId });
     } catch {}
 
     return updated;
-  } catch (err) {
-    await session.abortTransaction();
+  } catch (err: any) {
+    // The vote index caught a second vote of the same user in this category
+    if (err?.code === 11000) {
+      throw new AppError(StatusCodes.CONFLICT, "You have already voted in this category.");
+    }
     throw err;
-  } finally {
-    session.endSession();
   }
 };
 

@@ -362,13 +362,14 @@ const createStatus = async (data: {
                 ? `${data.content.substring(0, 100)}...`
                 : data.content;
 
-            await NotificationService.sendBulkNotifications(
+            // Not awaited: the push to every follower must not hold up the request
+            void NotificationService.sendBulkNotifications(
                 followerIds,
                 title,
                 body,
                 "announcement",
                 { stationId: data.stationId, statusId: (status as any)._id.toString(), type: "new_status" },
-            );
+            ).catch((e) => logger.error("[Notify] Follower push failed", e));
         }
     } catch (error) {
         logger.error("[StatusService] Failed to notify followers about new status", { error });

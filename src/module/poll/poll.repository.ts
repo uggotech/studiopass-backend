@@ -1,4 +1,3 @@
-import mongoose from "mongoose";
 import { Poll } from "./poll.model";
 import { PollVote } from "./pollVote.model";
 
@@ -89,37 +88,28 @@ const deleteById = (id: string) => {
 const vote = async (pollId: string, optionIndex: number, userId: string) => {
   // Atomic vote: create PollVote + increment poll counter
   // If the unique constraint fails (duplicate vote), return null
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
+  // No transaction: a transaction around the shared poll counter makes simultaneous voters fail with
+  // write conflicts. The vote record goes first (its unique index allows one vote per user), then one
+  // atomic increment, which concurrent voters simply queue on.
   try {
-    // Try to create the vote record (unique index enforces one-vote-per-user)
-    await PollVote.create([{
+    await PollVote.create({
       poll: pollId,
       user: userId,
       optionIndex,
-    }], { session });
-
-    // Increment poll counters
-    const updated = await Poll.findByIdAndUpdate(
+    });
+    return await Poll.findByIdAndUpdate(
       pollId,
       {
         $inc: { totalVotes: 1, [`options.${optionIndex}.votes`]: 1 },
       },
-      { returnDocument: "after", session },
+      { returnDocument: "after" },
     ).lean();
-
-    await session.commitTransaction();
-    return updated;
   } catch (error: any) {
-    await session.abortTransaction();
     // Duplicate key error = user already voted
     if (error?.code === 11000) {
       return { alreadyVoted: true };
     }
     throw error;
-  } finally {
-    session.endSession();
   }
 };
 

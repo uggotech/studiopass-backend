@@ -1,8 +1,9 @@
+import type { ClientSession } from "mongoose";
 import { ChallengeParticipation } from "./challengeParticipation.model";
 
-const create = (data: Record<string, unknown>) => {
+const create = (data: Record<string, unknown>, session?: ClientSession) => {
   const doc = new ChallengeParticipation(data);
-  return doc.save().then((d) => d.toObject());
+  return doc.save(session ? { session } : {}).then((d) => d.toObject());
 };
 
 const findById = (id: string) => {

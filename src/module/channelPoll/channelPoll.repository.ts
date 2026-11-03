@@ -59,54 +59,34 @@ const deleteById = (id: string) => {
 
 // ─── Vote operations ─────────────────────────────────────────────────────────
 
-const vote = async (
+/**
+ * Save one vote (the unique index allows one per user and category). Only the vote record is written
+ * here, inside the caller's transaction together with the credit charge; the poll's shared counter is
+ * bumped afterwards with incrementTotalVotes, so simultaneous voters never conflict on the poll document.
+ */
+const addVote = async (
   pollId: string,
   categoryIndex: number,
   nomineeIndex: number,
   userId: string,
-  session?: mongoose.ClientSession,
+  session: mongoose.ClientSession,
 ) => {
-  const run = async (s: mongoose.ClientSession | undefined) => {
-    await ChannelPollVote.create(
-      [
-        {
-          poll: pollId,
-          categoryIndex,
-          nomineeIndex,
-          user: userId,
-        },
-      ],
-      s ? { session: s } : {},
-    );
-
-    return ChannelPoll.findByIdAndUpdate(
-      pollId,
-      { $inc: { totalVotes: 1 } },
-      { returnDocument: "after", ...(s ? { session: s } : {}) },
-    ).lean();
-  };
-
-  if (session) {
-    // Caller owns the transaction (credits + vote together)
-    return run(session);
-  }
-
-  const ownSession = await mongoose.startSession();
-  ownSession.startTransaction();
-  try {
-    const updated = await run(ownSession);
-    await ownSession.commitTransaction();
-    return updated;
-  } catch (error: any) {
-    await ownSession.abortTransaction();
-    if (error?.code === 11000) {
-      return { alreadyVoted: true };
-    }
-    throw error;
-  } finally {
-    ownSession.endSession();
-  }
+  await ChannelPollVote.create(
+    [
+      {
+        poll: pollId,
+        categoryIndex,
+        nomineeIndex,
+        user: userId,
+      },
+    ],
+    { session },
+  );
 };
+
+/** One atomic increment outside any transaction: concurrent votes queue on the document instead of failing. */
+const incrementTotalVotes = (pollId: string) =>
+  ChannelPoll.findByIdAndUpdate(pollId, { $inc: { totalVotes: 1 } }, { returnDocument: "after" }).lean();
 
 const hasVotedInCategory = async (pollId: string, categoryIndex: number, userId: string) => {
   const vote = await ChannelPollVote.findOne({
@@ -168,7 +148,8 @@ export const ChannelPollRepository = {
   count,
   updateById,
   deleteById,
-  vote,
+  addVote,
+  incrementTotalVotes,
   hasVotedInCategory,
   getUserVotes,
   getResults,
