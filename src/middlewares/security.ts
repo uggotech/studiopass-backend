@@ -1,5 +1,7 @@
 import helmet from "helmet";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import jwt from "jsonwebtoken";
+import config from "../config";
 import compression from "compression";
 import { Request, Response, NextFunction, RequestHandler } from "express";
 import { logger } from "../logger/logger";
@@ -23,9 +25,34 @@ export const helmetConfig = helmet({
 });
 
 // ============ RATE LIMITERS ============
+// Many listeners share one carrier IP and a studio shares one office IP, so a pure per-IP budget
+// is hit by innocent users. A request carrying a VALID access token is counted per user instead;
+// everything else (login, anonymous, forged tokens) stays per IP. The token is verified, never
+// just decoded, so nobody can mint fresh budgets by inventing user ids.
+const RATE_LIMIT_IP_MAX = Number(process.env.RATE_LIMIT_IP_MAX) || 1000;
+const RATE_LIMIT_USER_MAX = Number(process.env.RATE_LIMIT_USER_MAX) || 3000;
+
+const verifiedUserKey = (req: Request): string | null => {
+  const cached = (req as any)._rateLimitUser;
+  if (cached !== undefined) return cached;
+  let key: string | null = null;
+  const header = req.headers.authorization;
+  if (header?.startsWith("Bearer ")) {
+    try {
+      const payload = jwt.verify(header.slice(7), config.jwt.jwt_secret as string) as any;
+      if (payload?.userId) key = `u:${payload.userId}`;
+    } catch {
+      // expired / invalid -> counted per IP
+    }
+  }
+  (req as any)._rateLimitUser = key;
+  return key;
+};
+
 export const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 1000,
+  limit: (req: Request) => (verifiedUserKey(req) ? RATE_LIMIT_USER_MAX : RATE_LIMIT_IP_MAX),
+  keyGenerator: (req: Request) => verifiedUserKey(req) ?? ipKeyGenerator(req.ip || ""),
   message: {
     success: false,
     message: "Too many requests, please try again later.",

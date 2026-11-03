@@ -23,6 +23,14 @@ router.post(
   CallController.acceptCall,
 );
 
+// Operator: new Agora token for the call they are on (the current one lasts one hour)
+router.post(
+  "/renew-token",
+  auth(UserRole.MEDIA_STATION),
+  validateRequest(CallDto.acceptCall),
+  CallController.renewToken,
+);
+
 // User: confirm joined Agora channel (clears join-confirmation timeout)
 router.post(
   "/join",
@@ -62,6 +70,9 @@ router.get(
   validateRequest(CallDto.getHistory),
   CallController.getHistory,
 );
+
+// User: the call that is currently waiting or live (app recovery after a lost response / reconnect)
+router.get("/active", auth(UserRole.USER), CallController.getActiveCall);
 
 // Dashboard: station calls
 router.get(

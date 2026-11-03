@@ -16,12 +16,12 @@ const auth =
       const tokenWithBearer = req.headers.authorization;
 
       if (!tokenWithBearer?.startsWith("Bearer ")) {
-        throw new AppError(StatusCodes.UNAUTHORIZED, "You are not authorized");
+        throw new AppError(StatusCodes.UNAUTHORIZED, "You are not authorized", { code: "AUTH_REQUIRED" });
       }
 
       const token = tokenWithBearer.split(" ")[1];
       if (!token) {
-        throw new AppError(StatusCodes.UNAUTHORIZED, "You are not authorized");
+        throw new AppError(StatusCodes.UNAUTHORIZED, "You are not authorized", { code: "AUTH_REQUIRED" });
       }
 
       const verifyUser = verifyJwtToken(token, config.jwt.jwt_secret as Secret);
@@ -32,7 +32,7 @@ const auth =
           const { default: redisClient } = await import("../redis/redisClient");
           const isActiveSession = await redisClient.get(`session:active:${verifyUser.sid}`);
           if (!isActiveSession) {
-            throw new AppError(StatusCodes.UNAUTHORIZED, "Session has expired or was revoked remotely");
+            throw new AppError(StatusCodes.UNAUTHORIZED, "Session has expired or was revoked remotely", { code: "SESSION_REVOKED" });
           }
         } catch (err: any) {
           if (err instanceof AppError) throw err;
@@ -53,11 +53,11 @@ const auth =
       }
 
       if (user.isDeleted) {
-        throw new AppError(StatusCodes.UNAUTHORIZED, "Your account has been deleted");
+        throw new AppError(StatusCodes.UNAUTHORIZED, "Your account has been deleted", { code: "ACCOUNT_DELETED" });
       }
 
       if (user.isBlocked) {
-        throw new AppError(StatusCodes.UNAUTHORIZED, "Your account has been blocked");
+        throw new AppError(StatusCodes.UNAUTHORIZED, "Your account has been blocked", { code: "ACCOUNT_BLOCKED" });
       }
 
       // Check auth account status (active/inactive/suspended)
@@ -79,7 +79,7 @@ const auth =
       }
 
       if (!authId || authStatus !== "active") {
-        throw new AppError(StatusCodes.UNAUTHORIZED, "Your account is deactivated");
+        throw new AppError(StatusCodes.UNAUTHORIZED, "Your account is deactivated", { code: "ACCOUNT_DEACTIVATED" });
       }
 
       // Normalize IDs so role scoping and filters work identically from cache or DB

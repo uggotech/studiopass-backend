@@ -190,12 +190,11 @@ const sendUserMessage = async (
 
     await session.commitTransaction();
 
-    // Post-transaction: create listener statement (non-critical, outside transaction)
-    try {
-      await ListenerStatementService.createStatementFromMessage(message._id.toString(), isFree);
-    } catch (e) {
-      console.error("Listener statement creation failed:", e);
-    }
+    // Post-transaction: create listener statement (non-critical, outside transaction).
+    // Not awaited: the listener must not wait for a reporting write.
+    void ListenerStatementService.createStatementFromMessage(message._id.toString(), isFree).catch((e) =>
+      console.error("Listener statement creation failed:", e),
+    );
 
     // Emit socket event for station staff to see new user messages (non-critical)
     // Uses "new-user-message" so clients can distinguish from station replies
@@ -386,7 +385,9 @@ const sendStationReply = async (
             ? "📷 Photo"
             : "New reply received";
 
-      await NotificationService.createNotification({
+      // Not awaited: saving + the Firebase call can take seconds and the reply is already stored and
+      // delivered over the socket. createNotification handles and logs its own FCM failures.
+      void NotificationService.createNotification({
         userId: listenerUser._id.toString(),
         type: "reply",
         title: `New reply from ${station?.name || "Station"}`,
@@ -398,7 +399,7 @@ const sendStationReply = async (
           messageId: message._id.toString(),
           showName: (populatedMessage?.show as any)?.name || null,
         },
-      });
+      }).catch((e) => console.error("Failed to send push notification:", e));
     }
   } catch (e) {
     console.error("Failed to send push notification:", e);
@@ -414,17 +415,17 @@ const getUserThread = async (
   limit: number,
   viewerUserId?: string,
   showId?: string,
+  order: "asc" | "desc" = "asc",
 ) => {
   const skip = (page - 1) * limit;
-  const messageFilter: Record<string, unknown> = { station: stationId, msisdn };
-  if (showId) {
-    messageFilter.show = showId;
-  }
-  const [messages, total, stationTimezone] = await Promise.all([
-    MessageRepository.findThread(stationId, msisdn, skip, limit, viewerUserId, showId),
-    Message.countDocuments(messageFilter).lean(),
+  const [found, total, stationTimezone] = await Promise.all([
+    MessageRepository.findThread(stationId, msisdn, skip, limit, viewerUserId, showId, order),
+    MessageRepository.countThread(stationId, msisdn, viewerUserId, showId),
     getStationTimezone(stationId),
   ]);
+
+  // "desc" fetches the newest page; hand it back oldest-first so clients render it unchanged
+  const messages = order === "desc" ? [...found].reverse() : found;
 
   return {
     messages: messages.map((msg) => normalizeMessage(msg, (msg.show as any)?.name)),
@@ -434,6 +435,7 @@ const getUserThread = async (
       limit,
       total,
       totalPage: Math.ceil(total / limit),
+      order,
     },
   };
 };

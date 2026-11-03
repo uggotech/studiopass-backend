@@ -102,6 +102,16 @@ const getHistory = catchAsync(async (req, res) => {
   });
 });
 
+const renewToken = catchAsync(async (req, res) => {
+  const result = await CallService.renewOperatorToken(req.body.callId, req.user!._id.toString());
+  sendResponse(res, { success: true, statusCode: StatusCodes.OK, message: "Token renewed", data: result });
+});
+
+const getActiveCall = catchAsync(async (req, res) => {
+  const result = await CallService.getActiveCall(req.user!._id.toString());
+  sendResponse(res, { success: true, statusCode: StatusCodes.OK, data: result.call });
+});
+
 const getStationCalls = catchAsync(async (req, res) => {
   const { stationId, showId, todayOnly, status, page = 1, limit = 20 } = req.query;
   const user = req.user!;
@@ -164,5 +174,7 @@ export const CallController = {
   cancelCall,
   rejectCall,
   getHistory,
+  getActiveCall,
+  renewToken,
   getStationCalls,
 };

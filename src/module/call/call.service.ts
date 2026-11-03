@@ -383,6 +383,18 @@ const requestCall = async (userId: string, stationId: string) => {
     status: { $in: ["queued", "answered"] },
   });
   if (existingActive) {
+    // A repeat of a request whose response was lost: hand back the call that is already waiting
+    // (no second call, no second charge) instead of leaving the caller stuck behind a 409.
+    if (existingActive.status === "queued" && existingActive.station.toString() === stationId) {
+      const current = await CreditRepository.getBalance(userId);
+      return {
+        callId: existingActive._id.toString(),
+        channelName: existingActive.agoraChannelId,
+        status: "queued",
+        remainingBalance: current?.balance ?? 0,
+        duplicate: true,
+      };
+    }
     throw new AppError(
       StatusCodes.CONFLICT,
       "You already have an active call. End it before starting a new one.",
@@ -483,6 +495,25 @@ const requestCall = async (userId: string, stationId: string) => {
   } finally {
     session.endSession();
   }
+};
+
+/** The listener's current call (queued or answered), or null. Lets the app recover after a lost response. */
+const getActiveCall = async (userId: string) => {
+  const call: any = await Call.findOne({ startedBy: userId, status: { $in: ["queued", "answered"] } })
+    .sort({ startedAt: -1 })
+    .populate("handledBy", "fullName")
+    .lean();
+  if (!call) return { call: null };
+  return {
+    call: {
+      callId: call._id.toString(),
+      status: call.status,
+      stationId: call.station.toString(),
+      channelName: call.agoraChannelId,
+      operatorName: call.handledBy?.fullName || null,
+      startedAt: call.startedAt,
+    },
+  };
 };
 
 // ─── System / forced termination ─────────────────────────────────────────────
@@ -607,6 +638,30 @@ const endAllActiveCallsForStation = async (
 
 // ─── Accept Call (Operator picks up) ─────────────────────────────────────────
 
+/** The operator's Agora uid. Stable per operator, in a range that never overlaps the listeners' (1,000,000-1,999,999). */
+const operatorUidFor = (operatorId: string): number =>
+  (operatorId.split("").reduce((acc, char) => ((acc << 5) - acc + char.charCodeAt(0)) | 0, 0) >>> 0) % 1000000 + 1000000;
+
+/**
+ * A fresh Agora token for the operator who is on this call. Tokens last one hour; without renewal a long
+ * call (or a station left on air) is cut by Agora when the token runs out.
+ */
+const renewOperatorToken = async (callId: string, operatorId: string) => {
+  const call = await Call.findById(callId).select("status handledBy agoraChannelId").lean();
+  if (!call) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Call not found");
+  }
+  if (call.status !== "answered" || call.handledBy?.toString() !== operatorId) {
+    throw new AppError(StatusCodes.FORBIDDEN, "You are not on this call.");
+  }
+  const operatorUid = operatorUidFor(operatorId);
+  return {
+    token: generateAgoraToken(call.agoraChannelId, operatorUid, true),
+    channelName: call.agoraChannelId,
+    operatorUid,
+  };
+};
+
 const acceptCall = async (callId: string, operatorId: string) => {
   const call = await Call.findById(callId);
   if (!call) {
@@ -628,7 +683,7 @@ const acceptCall = async (callId: string, operatorId: string) => {
   // Build credentials BEFORE touching any call, so a misconfiguration (or any failure here)
   // can never leave the presenter without their current caller and without the new one.
   // UID range 1000000–1999999 is disjoint from the listener range.
-  const operatorUid = (((operatorId.split("").reduce((acc, char) => ((acc << 5) - acc + char.charCodeAt(0)) | 0, 0) >>> 0) % 1000000) + 1000000);
+  const operatorUid = operatorUidFor(operatorId);
   const token = generateAgoraToken(call.agoraChannelId, operatorUid, true);
 
   // Remember the current call of this operator (if any) before we change anything
@@ -1312,6 +1367,8 @@ export const CallService = {
 
   // Queries
   getCallHistory,
+  getActiveCall,
+  renewOperatorToken,
   getStationCalls,
 
   // Token generation (exposed for socket handlers)

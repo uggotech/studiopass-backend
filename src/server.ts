@@ -31,7 +31,6 @@ async function main() {
     await seedSuperAdmin();
     await seedCountries();
     await seedPrizeTypes();
-    await ListenerStatementService.syncFreeListenerStatements();
 
     try {
       await redisClient.connect();
@@ -80,6 +79,12 @@ async function main() {
     server.listen(port, "0.0.0.0", () => {
       logger.info(`Server listening on 0.0.0.0:${port}`);
       logger.info(`Environment: ${config.node_env}`);
+
+      // Data repair that loops over users: runs after the server accepts traffic so a restart
+      // never keeps clients waiting on it (it is idempotent and logs its own errors).
+      void ListenerStatementService.syncFreeListenerStatements().catch((err) =>
+        logger.error("[Startup] syncFreeListenerStatements failed", err),
+      );
     });
   } catch (error) {
     errorLogger.error("Failed to start server", {
@@ -92,8 +97,18 @@ async function main() {
 
 main();
 
+let shuttingDown = false;
+
 async function gracefulShutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   logger.info(`${signal} received. Starting graceful shutdown...`);
+
+  // Never hang: if cleanup stalls, exit anyway so the container is restarted
+  setTimeout(() => {
+    errorLogger.error("Graceful shutdown timed out, forcing exit");
+    process.exit(1);
+  }, 10_000).unref();
 
   try {
     stopShowScheduler();
@@ -137,4 +152,18 @@ async function gracefulShutdown(signal: string) {
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// A stray rejection must be logged, not silently ignored; the process stays up.
+process.on("unhandledRejection", (reason) => {
+  errorLogger.error("Unhandled promise rejection", {
+    message: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+});
+
+// State after an uncaught exception is unknown: log, then shut down cleanly and let Docker restart us.
+process.on("uncaughtException", (error) => {
+  errorLogger.error("Uncaught exception", { message: error.message, stack: error.stack });
+  void gracefulShutdown("uncaughtException");
+});
 

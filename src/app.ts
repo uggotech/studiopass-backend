@@ -23,6 +23,10 @@ import { Morgan } from "./logger/morgan";
 import globalErrorHandler from "./middlewares/globalErrorHandler";
 const app: express.Application = express();
 
+// Request bodies are parsed in memory before validation, so keep them small. File uploads go through
+// multer (per-route limits), never through these parsers.
+const BODY_LIMIT = process.env.JSON_BODY_LIMIT || "1mb";
+
 // ============ 1. TRUST PROXY ============
 app.set("trust proxy", 1);
 
@@ -74,7 +78,7 @@ app.use(
 
 app.use(
   express.json({
-    limit: "25mb",
+    limit: BODY_LIMIT,
     verify: (req: any, _res, buf, encoding) => {
       if (req.originalUrl?.includes("/webhook")) {
         req.rawBody = buf.toString((encoding as BufferEncoding) || "utf8");
@@ -83,11 +87,11 @@ app.use(
   }),
 );
 
-app.use(express.urlencoded({ extended: true, limit: "25mb" }));
+app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
 app.use(
   express.text({
     type: ["*/xml", "application/xml", "text/xml", "text/plain"],
-    limit: "10mb",
+    limit: BODY_LIMIT,
   }),
 );
 app.use(cookieParser());
@@ -169,24 +173,6 @@ app.use("/api/v1", router);
 
 // ============ 13. ERROR HANDLING ============
 app.use(globalErrorHandler);
-
-//live response
-app.get("/", (_req: Request, res: Response) => {
-  res.send(
-    ` <div style="display: flex; align-items: center; justify-content: center; height: 100vh; background: #f5f3ff; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
-    <div style="text-align: center; padding: 2rem 3rem; background-color: #ffffff; border-radius: 16px; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08);">
-      <h1 style="font-size: 2.5rem; color: #7C3AED; margin-bottom: 1rem;">Welcome 👋</h1>
-      <p style="font-size: 1.2rem; color: #555;">I'm here to help you. How can I assist today?</p>
-      <div style="margin-top: 2rem;">
-        <p style="color: #777;">Want to see more projects or contact me?</p>
-        <a href="https://github.com/abdullahalkafi-dev" target="_blank" style="text-decoration: none; color: #fff; background-color: #6D28D9; padding: 0.75rem 1.5rem; border-radius: 8px; font-weight: bold; display: inline-block; transition: background 0.3s;">
-          Visit My GitHub 🚀
-        </a>
-      </div>
-    </div>
-  </div>`,
-  );
-});
 
 // ============ 14. 404 (must be last) ============
 app.use((req: Request, res: Response) => {

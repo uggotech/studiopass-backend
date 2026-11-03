@@ -336,7 +336,7 @@ export default {
     // 5 minutes by default so callers can wait while the presenter talks to another caller.
     queue_timeout_ms: Number(process.env.CALL_QUEUE_TIMEOUT_MS) || 300_000,
     // Timeout (ms) after accept for user to confirm Agora join — auto-end if no join
-    join_confirmation_timeout_ms: Number(process.env.CALL_JOIN_CONFIRMATION_TIMEOUT_MS) || 15_000,
+    join_confirmation_timeout_ms: Number(process.env.CALL_JOIN_CONFIRMATION_TIMEOUT_MS) || 45_000,
     // Grace period (ms) after socket disconnect before ending active call — allows mobile reconnection
     socket_disconnect_grace_ms: Number(process.env.CALL_DISCONNECT_GRACE_MS) || 20_000,
   },

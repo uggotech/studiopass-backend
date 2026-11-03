@@ -38,6 +38,7 @@ const sanitizeLogPayload = (data: any): any => {
 const globalErrorHandler: ErrorRequestHandler = (err, req, res, _next): any => {
   let statusCode = 500;
   let message = "Something went wrong!";
+  let code: string | undefined;
   let errorSources: TErrorSources = [
     {
       path: "",
@@ -68,6 +69,7 @@ const globalErrorHandler: ErrorRequestHandler = (err, req, res, _next): any => {
     errorSources = simplifiedError?.errorSources;
   } else if (err?.name === "TokenExpiredError") {
     statusCode = 401;
+    code = "TOKEN_EXPIRED";
     message = "Your session has expired. Please login again.";
     errorSources = [
       {
@@ -77,6 +79,7 @@ const globalErrorHandler: ErrorRequestHandler = (err, req, res, _next): any => {
     ];
   } else if (err?.name === "JsonWebTokenError") {
     statusCode = 401;
+    code = "INVALID_TOKEN";
     message = "Invalid token. Please login again.";
     errorSources = [
       {
@@ -87,6 +90,7 @@ const globalErrorHandler: ErrorRequestHandler = (err, req, res, _next): any => {
   } else if (err instanceof AppError) {
     statusCode = err?.statusCode;
     message = err.message;
+    code = err.code;
     errorSources = err.errorSources || [
       {
         path: "",
@@ -119,6 +123,7 @@ const globalErrorHandler: ErrorRequestHandler = (err, req, res, _next): any => {
   return res.status(statusCode).json({
     success: false,
     message,
+    ...(code ? { code } : {}),
     errorSources,
     ...(err instanceof AppError && err.details ? { details: err.details } : {}),
     stack: config.node_env === "development" ? err?.stack : null,

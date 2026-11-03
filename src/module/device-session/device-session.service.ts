@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { DeviceSession } from "./device-session.model";
 import { RegisterSessionInput } from "./device-session.interface";
 import redisClient from "../../redis/redisClient";
-import { emitToUser } from "../../socket";
+import { emitToUser, disconnectUserSockets } from "../../socket";
 import AppError from "../../errors/AppError";
 import { StatusCodes } from "http-status-codes";
 import { logger } from "../../logger/logger";
@@ -122,6 +122,7 @@ const revokeSession = async (sessionId: string) => {
       sessionId,
       reason: "This device session was terminated remotely by an administrator.",
     });
+    disconnectUserSockets(session.userId.toString(), sessionId);
   } catch (err: any) {
     logger.warn(`[DeviceSession] Failed to emit force-logout event: ${err?.message}`);
   }
@@ -156,6 +157,7 @@ const revokeAllUserSessions = async (userId: string) => {
     emitToUser(userId, "force-logout", {
       reason: "All active sessions for your account were terminated remotely.",
     });
+    disconnectUserSockets(userId);
   } catch (err: any) {
     logger.warn(`[DeviceSession] Failed to emit force-logout event: ${err?.message}`);
   }

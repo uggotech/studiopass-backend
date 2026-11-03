@@ -11,6 +11,8 @@ class RedisClient {
   private retryDelay: number = 1000; // 1 second
   private lastError: string | null = null;
   private nextRetryAllowedAt: number = 0;
+  // Once Redis has been reachable, a later outage must keep retrying forever (see reconnectStrategy)
+  private hasConnectedOnce: boolean = false;
   private readonly COOLDOWN_PERIOD = 2 * 60 * 1000; // 2 minutes cooldown (reduced from 10)
 
   constructor() {
@@ -28,7 +30,10 @@ class RedisClient {
             `Redis reconnection attempt ${this.retryCount}/${this.maxRetries}`
           );
 
-          if (this.retryCount > this.maxRetries) {
+          // Only the FIRST connection may give up (so startup falls back to MongoDB instead of hanging).
+          // After Redis was reached once, an outage must never end retrying: otherwise a 10 s Redis
+          // restart would leave sessions, operator status and the show state broken until a redeploy.
+          if (!this.hasConnectedOnce && this.retryCount > this.maxRetries) {
             console.error("Redis max reconnection attempts reached");
             return false; // Stop reconnecting
           }
@@ -63,6 +68,7 @@ class RedisClient {
 
     this.clientInstance.on("ready", () => {
       logger.info("Redis client ready");
+      this.hasConnectedOnce = true;
       this.isConnected = true;
       this.lastError = null;
     });
@@ -95,6 +101,12 @@ class RedisClient {
 
     if (this.connectionPromise) {
       return this.connectionPromise;
+    }
+
+    // Socket is open but not ready: node-redis is already reconnecting by itself. Fail fast so callers
+    // take their "Redis unavailable" fallback instead of queueing commands behind the outage.
+    if (this.clientInstance.isOpen) {
+      throw new Error("Redis is reconnecting");
     }
 
     if (Date.now() < this.nextRetryAllowedAt) {

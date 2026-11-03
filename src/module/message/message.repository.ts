@@ -19,11 +19,10 @@ const findMessageById = (id: string) => {
     .lean();
 };
 
-const findThread = (
+/** One filter for both the page query and the total, so the pagination numbers always match. */
+const buildThreadFilter = (
   stationId: string,
   msisdn: string,
-  skip: number,
-  limit: number,
   viewerUserId?: string,
   showId?: string,
 ) => {
@@ -40,12 +39,32 @@ const findThread = (
   if (showId) {
     filter.show = new mongoose.Types.ObjectId(showId);
   }
+  return filter;
+};
+
+const countThread = (
+  stationId: string,
+  msisdn: string,
+  viewerUserId?: string,
+  showId?: string,
+) => Message.countDocuments(buildThreadFilter(stationId, msisdn, viewerUserId, showId));
+
+const findThread = (
+  stationId: string,
+  msisdn: string,
+  skip: number,
+  limit: number,
+  viewerUserId?: string,
+  showId?: string,
+  order: "asc" | "desc" = "asc",
+) => {
+  const filter = buildThreadFilter(stationId, msisdn, viewerUserId, showId);
 
   return Message.find(filter)
     .populate("show", "name")
     .populate("senderUser", "fullName")
     .populate("user", "fullName avatar")
-    .sort({ createdAt: 1 })
+    .sort({ createdAt: order === "desc" ? -1 : 1 })
     .skip(skip)
     .limit(limit)
     .lean();
@@ -711,6 +730,7 @@ export const MessageRepository = {
   createMessage,
   findMessageById,
   findThread,
+  countThread,
   findThreadsByStation,
   countThreadsByStation,
   findThreadsByPresenter,

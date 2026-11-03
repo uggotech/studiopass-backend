@@ -214,6 +214,7 @@ const getThread = catchAsync(async (req, res) => {
     Number(limit),
     userRole === "user" ? req.user!._id.toString() : undefined,
     presenterShowId,
+    req.query.order === "desc" ? "desc" : "asc",
   );
 
   // msisdnMasker middleware handles masking in the response automatically

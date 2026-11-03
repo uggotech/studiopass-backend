@@ -1,5 +1,6 @@
 import { StatusCodes } from "http-status-codes";
 import bcrypt from "bcryptjs";
+import { randomUUID } from "crypto";
 import AppError from "../../errors/AppError";
 import { AuthRepository } from "./auth.repository";
 import { UserRepository } from "../user/user.repository";
@@ -48,7 +49,9 @@ const generateTokens = (
 ) => {
   const accessPayload: Record<string, any> = { userId, authId, role };
   if (sessionId) accessPayload.sid = sessionId;
-  const refreshPayload: Record<string, any> = { authId, type: "refresh" };
+  // jti makes every refresh token unique: two issued within the same second would otherwise be
+  // byte-identical, and retiring the old one would also retire the brand-new one.
+  const refreshPayload: Record<string, any> = { authId, type: "refresh", jti: randomUUID() };
   if (sessionId) refreshPayload.sid = sessionId;
 
   const accessToken = createJwtToken(
@@ -805,13 +808,16 @@ const disable2FA = async (
 
 // ─── Refresh Token ───────────────────────────────────────────────────────────
 
+// How long a used refresh token keeps returning the pair it produced (lost-response recovery)
+const REFRESH_GRACE_SECONDS = Number(process.env.REFRESH_GRACE_SECONDS) || 180;
+
 const refresh = async (refreshToken: string) => {
   let payload: any;
   try {
     const jwt = await import("jsonwebtoken");
     payload = jwt.verify(refreshToken, config.jwt.jwt_refresh_secret as string);
   } catch {
-    throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid or expired refresh token.");
+    throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid or expired refresh token.", { code: "REFRESH_INVALID" });
   }
 
   if (payload.type !== "refresh") {
@@ -824,7 +830,7 @@ const refresh = async (refreshToken: string) => {
       const { default: redisClient } = await import("../../redis/redisClient");
       const isActiveSession = await redisClient.get(`session:active:${payload.sid}`);
       if (!isActiveSession) {
-        throw new AppError(StatusCodes.UNAUTHORIZED, "Session has expired or was revoked remotely.");
+        throw new AppError(StatusCodes.UNAUTHORIZED, "Session has expired or was revoked remotely.", { code: "SESSION_REVOKED" });
       }
 
       const startedAt = await redisClient.get(`session:started:${payload.sid}`);
@@ -845,7 +851,9 @@ const refresh = async (refreshToken: string) => {
     }
   }
 
-  // Check if token has been revoked or is within concurrent grace window
+  // A token already used is answered with the pair it produced (grace window), so a client whose
+  // response was lost (weak network) can repeat the call. Only a token used longer ago than the
+  // grace window is reported as revoked.
   try {
     const { default: redisClient } = await import("../../redis/redisClient");
     const cachedGrace = await redisClient.get(`refresh_grace:${refreshToken}`);
@@ -854,10 +862,8 @@ const refresh = async (refreshToken: string) => {
     }
     const isRevoked = await redisClient.get(`revoked_token:${refreshToken}`);
     if (isRevoked) {
-      throw new AppError(StatusCodes.UNAUTHORIZED, "Refresh token has been revoked.");
+      throw new AppError(StatusCodes.UNAUTHORIZED, "Refresh token has been revoked.", { code: "REFRESH_REVOKED" });
     }
-    // Blacklist token for safety window (7 days)
-    await redisClient.set(`revoked_token:${refreshToken}`, "1", 7 * 24 * 3600).catch(() => {});
   } catch (err: any) {
     if (err instanceof AppError) throw err;
   }
@@ -876,12 +882,25 @@ const refresh = async (refreshToken: string) => {
     throw new AppError(StatusCodes.NOT_FOUND, "User profile not found.");
   }
 
+  // Blocked / deleted accounts must not keep a working session through refresh
+  if ((user as any).isBlocked) {
+    throw new AppError(StatusCodes.UNAUTHORIZED, "Your account has been blocked", { code: "ACCOUNT_BLOCKED" });
+  }
+  if ((user as any).isDeleted) {
+    throw new AppError(StatusCodes.UNAUTHORIZED, "Your account has been deleted");
+  }
+
   const tokens = generateTokens(user._id.toString(), auth._id.toString(), auth.role, payload.sid);
   const tokenResult = { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken };
 
+  // Only now, with the new pair in hand, retire the old token. Grace first, so a parallel or
+  // repeated call finds it before it finds the revoked marker.
   try {
     const { default: redisClient } = await import("../../redis/redisClient");
-    await redisClient.set(`refresh_grace:${refreshToken}`, JSON.stringify(tokenResult), 15).catch(() => {});
+    await redisClient
+      .set(`refresh_grace:${refreshToken}`, JSON.stringify(tokenResult), REFRESH_GRACE_SECONDS)
+      .catch(() => {});
+    await redisClient.set(`revoked_token:${refreshToken}`, "1", 7 * 24 * 3600).catch(() => {});
   } catch {}
 
   return tokenResult;

@@ -30,6 +30,51 @@ const disconnectGraceTimers: Map<string, NodeJS.Timeout> = new Map();
  * At "disconnect" time the closing socket has already left its rooms, so this
  * only counts the remaining connections.
  */
+/** Handshake error carrying a machine-readable code so clients know whether to refresh or log out. */
+function authError(message: string, code: string): Error {
+  const err: any = new Error(message);
+  err.data = { code };
+  return err;
+}
+
+// Browsers only (native apps send no Origin): set SOCKET_CORS_ORIGIN="https://a.com,https://b.com" to restrict.
+// Unset in production -> the same origins the REST API allows; unset elsewhere -> any.
+function socketCorsOrigin(): string | string[] {
+  const raw = (process.env.SOCKET_CORS_ORIGIN || "").trim();
+  if (raw && raw !== "*") return raw.split(",").map((o) => o.trim()).filter(Boolean);
+  if (raw === "*") return "*";
+  if (config.node_env === "production") {
+    return [
+      "https://studiopass.africa",
+      "https://www.studiopass.africa",
+      "https://ng3.studiopass.africa",
+      "https://media.studiopass.africa",
+    ];
+  }
+  return "*";
+}
+
+const MAX_ROOMS_PER_SOCKET = 30;
+
+/**
+ * Close a user's live sockets (all, or only those of one device session) after their session was
+ * revoked or the account blocked. A short delay lets a just-emitted "force-logout" reach the client.
+ */
+export function disconnectUserSockets(userId: string, sessionId?: string): void {
+  if (!io) return;
+  const server = io;
+  setTimeout(() => {
+    const room = server.sockets.adapter.rooms.get(`user:${userId}`);
+    if (!room) return;
+    for (const sid of room) {
+      const s: any = server.sockets.sockets.get(sid);
+      if (!s) continue;
+      if (sessionId && s.sessionId && s.sessionId !== sessionId) continue;
+      s.disconnect(true);
+    }
+  }, 500);
+}
+
 function userHasLiveSocket(userId: string): boolean {
   if (!io) return false;
   const room = io.sockets.adapter.rooms.get(`user:${userId}`);
@@ -48,7 +93,7 @@ export function initSocket(server: http.Server): Server {
     transports: ["websocket", "polling"],
     allowUpgrades: true,
     cors: {
-      origin: "*",
+      origin: socketCorsOrigin(),
       methods: ["GET", "POST"],
       credentials: true,
     },
@@ -59,13 +104,13 @@ export function initSocket(server: http.Server): Server {
     try {
       const token = socket.handshake.auth?.token;
       if (!token) {
-        return next(new Error("Authentication required"));
+        return next(authError("Authentication required", "AUTH_REQUIRED"));
       }
 
       const payload = verifyJwtToken(token, config.jwt.jwt_secret as string);
       const user = await UserRepository.findById(payload.userId);
       if (!user || user.isDeleted || user.isBlocked) {
-        return next(new Error("Invalid or blocked account"));
+        return next(authError("Invalid or blocked account", "ACCOUNT_BLOCKED"));
       }
 
       // Reject sockets for revoked/expired sessions
@@ -74,21 +119,23 @@ export function initSocket(server: http.Server): Server {
           const { default: redisClient } = await import("../redis/redisClient");
           const isActiveSession = await redisClient.get(`session:active:${payload.sid}`);
           if (!isActiveSession) {
-            return next(new Error("Session revoked or expired"));
+            return next(authError("Session revoked or expired", "SESSION_REVOKED"));
           }
         } catch {
           // Redis unavailable — allow connection (fail open for live ops)
         }
       }
 
+      (socket as any).sessionId = payload.sid || null;
       (socket as any).userId = user._id.toString();
       (socket as any).userRole = user.role;
       (socket as any).stationId = user.stationId?.toString() || null;
       (socket as any).showIds = [];
 
       next();
-    } catch {
-      next(new Error("Invalid token"));
+    } catch (err: any) {
+      const expired = err?.name === "TokenExpiredError";
+      next(authError("Invalid token", expired ? "TOKEN_EXPIRED" : "INVALID_TOKEN"));
     }
   });
 
@@ -113,6 +160,8 @@ export function initSocket(server: http.Server): Server {
       const ioServer = io!;
       for (const [sid, s] of ioServer.sockets.sockets) {
         if ((s as any).userId === userId && sid !== socket.id) {
+          // Tell the evicted client why, so it does not blindly reconnect and loop
+          s.emit("server-disconnect-reason", { reason: "too_many_connections" });
           // The evicted socket's own "disconnect" handler decrements the counter
           s.disconnect(true);
           break;
@@ -132,6 +181,11 @@ export function initSocket(server: http.Server): Server {
     }
     // Authorization: staff can only join their own station room; listeners can join station room for public show/poll events
     socket.on("join-station", (stationId: string) => {
+      if (typeof stationId !== "string" || !stationId) return;
+      if (socket.rooms.size >= MAX_ROOMS_PER_SOCKET) {
+        socket.emit("error", { message: "Too many rooms joined", code: "ROOM_LIMIT" });
+        return;
+      }
       const userRole = (socket as any).userRole;
       const userStationId = (socket as any).stationId as string | null;
 

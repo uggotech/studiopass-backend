@@ -21,6 +21,7 @@ import config from "../../config";
 import { UserCache } from "./user.cacheManage";
 import { CarrierService } from "../../shared/telecom/carrier.service";
 import { AuditLogService } from "../auditLog/auditLog.service";
+import { emitToUser, disconnectUserSockets } from "../../socket";
 
 const BCRYPT_SALT_ROUNDS = Number(config.bcrypt_salt_rounds) || 10;
 
@@ -140,6 +141,13 @@ const deactivateUser = async (id: string) => {
     await UserCache.invalidateAuthStatus(authId);
   }
   UserCache.invalidateProfile(id);
+  // A blocked user must not keep receiving live data through an already-open socket
+  try {
+    emitToUser(id, "force-logout", { reason: "Your account has been deactivated." });
+    disconnectUserSockets(id);
+  } catch {
+    // sockets not initialised (scripts/tests) -- nothing to close
+  }
   return normalizeUser(updated!);
 };
 

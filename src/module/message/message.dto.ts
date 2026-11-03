@@ -47,6 +47,8 @@ const getThread = z.object({
     msisdn: z.string().min(1, "Phone number is required"),
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(50),
+    // "asc" (default, dashboard): page 1 = oldest. "desc" (app): page 1 = newest, older pages after it.
+    order: z.enum(["asc", "desc"]).default("asc"),
   }),
 });
 
