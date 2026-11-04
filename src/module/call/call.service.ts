@@ -1037,11 +1037,14 @@ const getCallHistory = async (
   userId: string,
   page: number = 1,
   limit: number = 20,
+  stationId?: string,
 ) => {
   const skip = (page - 1) * limit;
+  const filter: Record<string, unknown> = { startedBy: userId };
+  if (stationId) filter.station = stationId;
 
   const [calls, total] = await Promise.all([
-    Call.find({ startedBy: userId })
+    Call.find(filter)
       .populate("station", "name stationCode category logo country isActive isVerified")
       .populate("show", "name")
       .populate("handledBy", "fullName")
@@ -1049,7 +1052,7 @@ const getCallHistory = async (
       .skip(skip)
       .limit(limit)
       .lean(),
-    Call.countDocuments({ startedBy: userId }),
+    Call.countDocuments(filter),
   ]);
 
   // Batch-fetch timezones for unique countries (avoids N+1)

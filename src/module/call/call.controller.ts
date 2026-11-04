@@ -90,9 +90,14 @@ const rejectCall = catchAsync(async (req, res) => {
 
 const getHistory = catchAsync(async (req, res) => {
   const userId = req.user!._id.toString();
-  const { page = 1, limit = 20 } = req.query;
+  const { page = 1, limit = 20, stationId } = req.query;
 
-  const result = await CallService.getCallHistory(userId, Number(page), Number(limit));
+  const result = await CallService.getCallHistory(
+    userId,
+    Number(page),
+    Number(limit),
+    typeof stationId === "string" ? stationId : undefined,
+  );
 
   sendResponse(res, {
     success: true,

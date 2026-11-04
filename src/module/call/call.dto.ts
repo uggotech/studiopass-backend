@@ -43,6 +43,8 @@ const getHistory = z.object({
   query: z.object({
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(20),
+    // Optional: only the calls with one station (the chat timeline shows them between the messages)
+    stationId: z.string().regex(objectIdRegex, "Invalid station ID format").optional(),
   }),
 });
 
