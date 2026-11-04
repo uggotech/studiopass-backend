@@ -635,12 +635,30 @@ const getDisbursements = async (
   _scope?: { partnerId?: string; countryId?: string },
 ) => {
   const filter: Record<string, unknown> = {};
+  const nothing = { $in: [] };
+  const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  const countryQ = text(query.country);
+  const partnerQ = text(query.partner);
 
-  if (_scope?.partnerId || _scope?.countryId) {
+  // A malformed id in a filter matches nothing (instead of a 500 from a failed cast)
+  for (const id of [countryQ, partnerQ, text(query.station)]) {
+    if (id && !mongoose.isValidObjectId(id)) {
+      return { disbursements: [], meta: { page: 1, limit: 0, total: 0, totalPage: 0 } };
+    }
+  }
+
+  // Stations the caller may see (partner / country scope), narrowed by the country and partner filters.
+  // A partner admin's own partner always wins over a partner filter.
+  if (_scope?.partnerId || _scope?.countryId || countryQ || partnerQ) {
     const { Station } = await import("../station/station.model");
     const stationFilter: Record<string, unknown> = {};
-    if (_scope.partnerId) stationFilter.partner = _scope.partnerId;
-    if (_scope.countryId) stationFilter.country = _scope.countryId;
+    if (_scope?.partnerId) stationFilter.partner = _scope.partnerId;
+    else if (partnerQ) stationFilter.partner = partnerQ;
+    if (_scope?.countryId) stationFilter.country = _scope.countryId;
+    if (countryQ) {
+      if (_scope?.countryId && String(_scope.countryId) !== countryQ) stationFilter._id = nothing;
+      else stationFilter.country = countryQ;
+    }
     const scopedStations = await Station.find(stationFilter).select("_id").lean();
     const scopedStationIds = scopedStations.map((s) => s._id);
 
@@ -657,6 +675,20 @@ const getDisbursements = async (
 
   if (query.status) {
     filter.status = query.status;
+  }
+
+  if (text(query.prizeType)) {
+    filter.prizeTypeKey = text(query.prizeType);
+  }
+
+  // Date range on when the prize was created (ISO dates / datetimes from the dashboard)
+  const from = text(query.from) ? new Date(text(query.from)) : null;
+  const to = text(query.to) ? new Date(text(query.to)) : null;
+  if ((from && Number.isNaN(from.getTime())) || (to && Number.isNaN(to.getTime()))) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Invalid date filter");
+  }
+  if (from || to) {
+    filter.createdAt = { ...(from ? { $gte: from } : {}), ...(to ? { $lte: to } : {}) };
   }
 
   if (query.search) {
