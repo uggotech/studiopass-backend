@@ -15,7 +15,7 @@ router.get("/public", auth(UserRole.USER), StationController.getPublicStations);
 router.get("/", auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN), StationController.getAllStations);
 
 // Super admin + partner admin + station admin + user: get single station
-router.get("/:id", auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.USER), StationController.getStationById);
+router.get("/:id", auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION, UserRole.PRESENTER, UserRole.USER), StationController.getStationById);
 
 // Super admin + partner admin: create station + station admin
 router.post(

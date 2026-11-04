@@ -33,6 +33,13 @@ const getStationById = catchAsync(async (req: Request, res: Response) => {
     }
   }
 
+  // Scope check: media station / presenter can only view their own station (needed by the poll and show forms)
+  if (user.role === "media_station" || user.role === "presenter") {
+    if (!user.stationId || user.stationId.toString() !== stationId) {
+      throw new AppError(StatusCodes.FORBIDDEN, "You can only view your own station");
+    }
+  }
+
   // Scope check: partner_admin can only view stations in their partner
   if (user.role === "partner_admin" && user.partnerId) {
     const station = await StationService.getStationById(stationId);
@@ -41,7 +48,9 @@ const getStationById = catchAsync(async (req: Request, res: Response) => {
     }
   }
 
-  const result = await StationService.getStationById(stationId);
+  const result: any = await StationService.getStationById(stationId);
+  // The station admin's e-mail and phone are for staff only: a listener only needs the station itself
+  if (user.role === "user") delete result.adminUser;
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
