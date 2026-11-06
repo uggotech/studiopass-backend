@@ -65,6 +65,12 @@ const getThreads = z.object({
   }),
 });
 
+const markThreadRead = z.object({
+  params: z.object({
+    stationId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid station ID format"),
+  }),
+});
+
 const approveMessage = z.object({
   params: z.object({
     id: z.string().min(1, "Message ID is required"),
@@ -151,6 +157,7 @@ export const MessageDto = {
   sendReply,
   getThread,
   getThreads,
+  markThreadRead,
   approveMessage,
   rejectMessage,
   sendToOutput,

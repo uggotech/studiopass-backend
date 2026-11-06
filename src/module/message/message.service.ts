@@ -567,6 +567,16 @@ const getUserThreads = async (
   };
 };
 
+/** The listener opened the chat: the station's replies up to now are read. */
+const markThreadRead = async (userId: string, stationId: string) => {
+  const station = await StationRepository.findById(stationId);
+  if (!station) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
+  }
+  const row = await MessageRepository.markThreadRead(userId, stationId);
+  return { stationId, lastReadAt: row?.lastReadAt ?? new Date() };
+};
+
 const normalizeMessage = (msg: any, showName?: string) => {
   const deletedForEveryone = Boolean(msg.deletedForEveryone);
   const mediaType =
@@ -1104,6 +1114,7 @@ export const MessageService = {
   getPresenterThreads,
   getPresenterActiveShowId,
   getUserThreads,
+  markThreadRead,
   findMessageForAuth,
   getMessageById,
   approveMessage,

@@ -1,5 +1,12 @@
 import mongoose from "mongoose";
 import Message from "./message.model";
+import { ThreadRead } from "./threadRead.model";
+
+/**
+ * Station replies older than this are never "unread": when unread tracking started nothing had been recorded, so
+ * without a start date every old reply of every listener would suddenly count as new. Override with UNREAD_TRACKING_SINCE.
+ */
+const UNREAD_TRACKING_SINCE = new Date(process.env.UNREAD_TRACKING_SINCE || "2026-11-07T00:00:00.000Z");
 
 const createMessage = (data: Record<string, unknown>, session?: mongoose.ClientSession) => {
   const doc = new Message(data);
@@ -580,7 +587,7 @@ const findThreadsByUserPhone = (
     const rx = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     afterBuild.$or = [{ stationName: rx }, { lastMessage: rx }];
   }
-  if (options.filter === "unread") afterBuild.unrepliedCount = { $gt: 0 };
+  if (options.filter === "unread") afterBuild.unreadCount = { $gt: 0 };
   if (options.filter === "favourite") afterBuild.isFollowed = true;
   const filterStage = Object.keys(afterBuild).length > 0 ? [{ $match: afterBuild }] : [];
 
@@ -645,8 +652,59 @@ const findThreadsByUserPhone = (
         as: "followDoc",
       },
     },
+    // When this listener last opened the chat
+    {
+      $lookup: {
+        from: "threadreads",
+        let: { stationId: "$_id" },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [{ $eq: ["$station", "$$stationId"] }, { $eq: ["$user", userObjectId] }],
+              },
+            },
+          },
+          { $limit: 1 },
+        ],
+        as: "readDoc",
+      },
+    },
+    // Unread = the station's replies (not deleted for this listener) newer than the last time the chat was opened
+    {
+      $lookup: {
+        from: "messages",
+        let: {
+          stationId: "$_id",
+          readAt: { $ifNull: [{ $arrayElemAt: ["$readDoc.lastReadAt", 0] }, UNREAD_TRACKING_SINCE] },
+        },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [
+                  { $eq: ["$station", "$$stationId"] },
+                  { $eq: ["$senderType", "station"] },
+                  { $eq: ["$msisdn", phone] },
+                  { $gt: ["$createdAt", "$$readAt"] },
+                  { $ne: ["$isDeleted", true] },
+                  { $ne: ["$deletedForEveryone", true] },
+                  { $not: [{ $in: [userObjectId, { $ifNull: ["$deletedFor", []] }] }] },
+                ],
+              },
+            },
+          },
+          { $count: "n" },
+        ],
+        as: "unreadDoc",
+      },
+    },
     {
       $addFields: {
+        // Replies the listener has not seen yet (what the Unread tab and the badge show)
+        unreadCount: { $ifNull: [{ $arrayElemAt: ["$unreadDoc.n", 0] }, 0] },
+        // Own messages still waiting for an answer (the old meaning of "unread")
+        waitingCount: "$unrepliedCount",
         stationName: {
           $let: {
             vars: { first: { $arrayElemAt: ["$stationDoc", 0] } },
@@ -709,12 +767,21 @@ const findThreadsByUserPhone = (
         msisdn: phone,
       },
     },
-    { $project: { stationDoc: 0, showDoc: 0, followDoc: 0 } },
+    { $project: { stationDoc: 0, showDoc: 0, followDoc: 0, readDoc: 0, unreadDoc: 0 } },
     ...filterStage,
     { $sort: { lastMessageTime: -1 } },
     { $skip: skip },
     { $limit: limit },
   ]);
+};
+
+/** The listener opened the chat with [stationId]: everything the station sent so far counts as read. Never moves backwards. */
+const markThreadRead = (userId: string, stationId: string) => {
+  return ThreadRead.findOneAndUpdate(
+    { user: new mongoose.Types.ObjectId(userId), station: new mongoose.Types.ObjectId(stationId) },
+    { $max: { lastReadAt: new Date() } },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
+  ).lean();
 };
 
 const countThreadsByUserPhone = (phone: string) => {
@@ -751,6 +818,7 @@ export const MessageRepository = {
   findThreadsByPresenter,
   countThreadsByPresenter,
   findThreadsByUserPhone,
+  markThreadRead,
   countThreadsByUserPhone,
   markAsReplied,
   countByStationAndFilter,

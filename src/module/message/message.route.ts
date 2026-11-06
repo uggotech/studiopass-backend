@@ -87,6 +87,13 @@ router.get(
   MessageController.getThreads,
 );
 
+router.post(
+  "/threads/:stationId/read",
+  auth(UserRole.USER),
+  validateRequest(MessageDto.markThreadRead),
+  MessageController.markThreadRead,
+);
+
 router.get(
   "/thread",
   auth(UserRole.USER, UserRole.MEDIA_STATION, UserRole.PRESENTER, UserRole.STATION_ADMIN, UserRole.SUPER_ADMIN),

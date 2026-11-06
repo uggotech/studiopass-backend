@@ -225,6 +225,17 @@ const getThread = catchAsync(async (req, res) => {
   });
 });
 
+// Listener: "I opened this chat" (clears its unread badge)
+const markThreadRead = catchAsync(async (req, res) => {
+  const result = await MessageService.markThreadRead(req.user!._id.toString(), String(req.params.stationId));
+  sendResponse(res, {
+    success: true,
+    statusCode: StatusCodes.OK,
+    message: "Conversation marked as read",
+    data: result,
+  });
+});
+
 const getThreads = catchAsync(async (req, res) => {
   const { stationId, showId, todayOnly, page = 1, limit = 50, search, filter } = req.query;
 
@@ -604,6 +615,7 @@ export const MessageController = {
   sendStationReply,
   getThread,
   getThreads,
+  markThreadRead,
   getMessageById,
   approveMessage,
   rejectMessage,
