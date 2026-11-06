@@ -59,6 +59,9 @@ const getThreads = z.object({
     todayOnly: z.union([z.boolean(), z.enum(["true", "false"])]).optional(),
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(50),
+    // Listener chat list only: find a conversation among ALL of them, not just the loaded page
+    search: z.string().trim().max(100).optional(),
+    filter: z.enum(["all", "unread", "favourite"]).optional(),
   }),
 });
 

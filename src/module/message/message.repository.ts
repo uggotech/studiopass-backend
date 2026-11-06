@@ -568,8 +568,22 @@ const findThreadsByUserPhone = (
   userId: string,
   skip: number,
   limit: number,
+  options: { search?: string; filter?: "unread" | "favourite" } = {},
 ) => {
   const userObjectId = new mongoose.Types.ObjectId(userId);
+
+  // Search / Unread / Favourites run over EVERY conversation of the listener (the app used to filter only the 20 it
+  // had loaded). Same rules as the app: station name or last message contains the text; unread = unreplied; favourite = followed.
+  const afterBuild: Record<string, unknown> = {};
+  const needle = options.search?.trim();
+  if (needle) {
+    const rx = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    afterBuild.$or = [{ stationName: rx }, { lastMessage: rx }];
+  }
+  if (options.filter === "unread") afterBuild.unrepliedCount = { $gt: 0 };
+  if (options.filter === "favourite") afterBuild.isFollowed = true;
+  const filterStage = Object.keys(afterBuild).length > 0 ? [{ $match: afterBuild }] : [];
+
   return Message.aggregate([
     { $match: { msisdn: phone, isDeleted: { $ne: true } } },
     { $sort: { createdAt: -1 } },
@@ -696,6 +710,7 @@ const findThreadsByUserPhone = (
       },
     },
     { $project: { stationDoc: 0, showDoc: 0, followDoc: 0 } },
+    ...filterStage,
     { $sort: { lastMessageTime: -1 } },
     { $skip: skip },
     { $limit: limit },

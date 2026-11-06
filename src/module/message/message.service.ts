@@ -540,6 +540,7 @@ const getUserThreads = async (
   userId: string,
   page: number,
   limit: number,
+  options: { search?: string; filter?: "unread" | "favourite" } = {},
 ) => {
   const skip = (page - 1) * limit;
   const threads = await MessageRepository.findThreadsByUserPhone(
@@ -547,8 +548,13 @@ const getUserThreads = async (
     userId,
     skip,
     limit,
+    options,
   );
-  const total = await MessageRepository.countThreadsByUserPhone(phone);
+  const filtered = Boolean(options.search?.trim() || options.filter);
+  // A search / filter has no cheap exact count: "there is another page" is all the app needs
+  const total = filtered
+    ? skip + threads.length + (threads.length >= limit ? 1 : 0)
+    : await MessageRepository.countThreadsByUserPhone(phone);
 
   return {
     threads,

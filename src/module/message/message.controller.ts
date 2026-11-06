@@ -226,7 +226,7 @@ const getThread = catchAsync(async (req, res) => {
 });
 
 const getThreads = catchAsync(async (req, res) => {
-  const { stationId, showId, todayOnly, page = 1, limit = 50 } = req.query;
+  const { stationId, showId, todayOnly, page = 1, limit = 50, search, filter } = req.query;
 
   const userRole = req.user!.role;
 
@@ -242,6 +242,10 @@ const getThreads = catchAsync(async (req, res) => {
       userId,
       Number(page),
       Number(limit),
+      {
+        search: typeof search === "string" ? search : undefined,
+        filter: filter === "unread" || filter === "favourite" ? filter : undefined,
+      },
     );
     sendResponse(res, {
       success: true,
