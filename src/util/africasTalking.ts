@@ -52,6 +52,16 @@ const getAtClient = () => {
 
 // ─── SMS Sender ───────────────────────────────────────────────────────────────
 
+/**
+ * Optional branded sender ID (AT_SENDER_ID). The SDK rejects an empty `from`, so the
+ * field is only sent when a sender ID is set; otherwise Africa's Talking uses its default.
+ */
+const smsSenderOption = (): { from: string } => {
+  const senderId = (process.env.AT_SENDER_ID || "").trim();
+  // The SDK types mark `from` as required, but it accepts the field being absent
+  return (senderId ? { from: senderId } : {}) as { from: string };
+};
+
 export interface SmsSendResult {
   ok: boolean;
   detail?: string;
@@ -66,7 +76,7 @@ export interface SmsSendResult {
 export const sendSms = async (phone: string, message: string): Promise<SmsSendResult> => {
   try {
     const at = getAtClient();
-    const result: any = await at.SMS.send({ to: [phone], message, from: "" });
+    const result: any = await at.SMS.send({ to: [phone], message, ...smsSenderOption() });
     const recipient = result?.SMSMessageData?.Recipients?.[0];
     const code = Number(recipient?.statusCode);
     if (code >= 100 && code <= 102) return { ok: true, detail: recipient?.messageId };
@@ -74,7 +84,7 @@ export const sendSms = async (phone: string, message: string): Promise<SmsSendRe
     logger.warn(`[AT SMS] SMS to ${phone} not accepted: ${detail}`);
     return { ok: false, detail };
   } catch (error: any) {
-    logger.error(`[AT SMS] Failed to send SMS to ${phone}`, { error });
+    logger.error(`[AT SMS] Failed to send SMS to ${phone}: ${error?.message || error}`);
     return { ok: false, detail: error?.message || "SMS request failed" };
   }
 };
@@ -89,7 +99,7 @@ export const sendAtOtp = async (phone: string, otp: string): Promise<void> => {
     const result = await sms.send({
       to: [phone],
       message,
-      from: "", // uses AT default shortcode; set a sender ID here if registered
+      ...smsSenderOption(), // empty = AT default sender
     });
 
     logger.info(`[AT SMS] Sent OTP to ${phone}`, { result });
