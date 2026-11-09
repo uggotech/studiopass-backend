@@ -79,7 +79,11 @@ export const sendSms = async (phone: string, message: string): Promise<SmsSendRe
     const result: any = await at.SMS.send({ to: [phone], message, ...smsSenderOption() });
     const recipient = result?.SMSMessageData?.Recipients?.[0];
     const code = Number(recipient?.statusCode);
-    if (code >= 100 && code <= 102) return { ok: true, detail: recipient?.messageId };
+    if (code >= 100 && code <= 102) {
+      // The messageId lets the later delivery report ([AT SMS Delivery]) be matched to this SMS
+      logger.info(`[AT SMS] Accepted SMS to ${phone}: messageId=${recipient?.messageId}, status=${recipient?.status}`);
+      return { ok: true, detail: recipient?.messageId };
+    }
     const detail = recipient?.status || result?.SMSMessageData?.Message || "Unknown Africa's Talking response";
     logger.warn(`[AT SMS] SMS to ${phone} not accepted: ${detail}`);
     return { ok: false, detail };

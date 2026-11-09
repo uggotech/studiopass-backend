@@ -723,8 +723,24 @@ const handleAfricasTalkingWebhook = async (payload: {
   category?: string;
   description?: string;
   value?: string;
+  // Fields of an SMS delivery report (same callback URL as the airtime report)
+  id?: string;
+  phoneNumber?: string;
+  networkCode?: string;
+  failureReason?: string;
 }) => {
   const { requestId, status, description } = payload || {};
+
+  // An SMS delivery report has `id` (the SMS messageId) and no `requestId`: log it in full so a
+  // failed receipt/OTP SMS shows its reason, then stop (it never belongs to an airtime payout)
+  if (!requestId && payload?.id) {
+    logger.info(
+      `[AT SMS Delivery] messageId=${payload.id}, status=${status}, phone=${payload.phoneNumber}, ` +
+        `network=${payload.networkCode}, failureReason=${payload.failureReason || "-"}`,
+    );
+    return { received: true };
+  }
+
   logger.info(`[AT Airtime Webhook] Delivery report: requestId=${requestId}, status=${status}`);
 
   if (!requestId) return { received: true };

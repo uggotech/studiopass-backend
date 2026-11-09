@@ -27,6 +27,12 @@ router.post("/webhook/payleo", PaymentController.ipAllowlist("payleo"), PaymentC
 // Webhook for Airtel OpenAPI - Airtel Uganda (receives JSON)
 router.post("/webhook/airtel", PaymentController.ipAllowlist("airtel"), PaymentController.handleAirtelWebhook);
 
+// Plain reachability check (GET/HEAD): Airtel's portal may probe a callback URL when it is saved,
+// and a 404 there can stop callbacks being sent. Returns nothing sensitive and changes no state.
+router.get("/webhook/airtel", (_req, res) => {
+  res.status(200).json({ ok: true });
+});
+
 // ── Super Admin: credit packages and prize payout limits ────────────────────
 // (two path segments, so they never collide with GET /:transactionId below)
 router.get("/admin/packages", auth(UserRole.SUPER_ADMIN), PaymentAdminController.listPackages);
