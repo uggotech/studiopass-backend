@@ -8,8 +8,8 @@ const createPoll = catchAsync(async (req, res) => {
   const { stationId: bodyStationId, question, options, showId, expiresAt } = req.body;
   const createdBy = req.user!._id.toString();
 
-  // Auto-assign station from auth token for station_admin / media_station
-  let stationId = bodyStationId;
+  // A station admin always works on their own station, whatever the request names (super / partner admins choose)
+  let stationId = req.user!.role === "station_admin" ? req.user!.stationId?.toString() : bodyStationId;
   if (!stationId) {
     stationId = req.user!.stationId?.toString();
     if (!stationId) {
@@ -92,13 +92,23 @@ const getAllPolls = catchAsync(async (req, res) => {
   });
 });
 
+// Staff only reach polls of their own station / partner (listeners are not scoped)
+const callerScope = (req: any) =>
+  req.user!.role === "user"
+    ? undefined
+    : {
+        role: req.user!.role as string,
+        stationId: req.user!.stationId?.toString() as string | undefined,
+        partnerId: req.user!.partnerId?.toString() as string | undefined,
+      };
+
 const getPollById = catchAsync(async (req, res) => {
   const id = req.params.id as string;
 
   // Pass userId for isVotedByMe computation (only for app users)
   const userId = req.user!.role === "user" ? req.user!._id.toString() : undefined;
 
-  const result = await PollService.getPollById(id, userId);
+  const result = await PollService.getPollById(id, userId, callerScope(req));
 
   sendResponse(res, {
     success: true,
@@ -126,7 +136,7 @@ const updatePoll = catchAsync(async (req, res) => {
   const id = req.params.id as string;
   const { question, status } = req.body;
 
-  const result = await PollService.updatePoll(id, { question, status });
+  const result = await PollService.updatePoll(id, { question, status }, callerScope(req));
 
   sendResponse(res, {
     success: true,
@@ -138,7 +148,7 @@ const updatePoll = catchAsync(async (req, res) => {
 
 const deletePoll = catchAsync(async (req, res) => {
   const id = req.params.id as string;
-  await PollService.deletePoll(id);
+  await PollService.deletePoll(id, callerScope(req));
 
   sendResponse(res, {
     success: true,

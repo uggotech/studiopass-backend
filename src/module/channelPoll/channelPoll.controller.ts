@@ -6,7 +6,11 @@ import AppError from "../../errors/AppError";
 
 const createPoll = catchAsync(async (req, res) => {
   const createdBy = req.user!._id.toString();
-  let stationId = req.body.station || req.body.stationId || req.user!.stationId?.toString();
+  // A station admin always works on their own station, whatever the request names (super / partner admins choose)
+  let stationId =
+    req.user!.role === "station_admin"
+      ? req.user!.stationId?.toString()
+      : req.body.station || req.body.stationId || req.user!.stationId?.toString();
 
   if (!stationId) {
     throw new AppError(StatusCodes.BAD_REQUEST, "Station ID is required");

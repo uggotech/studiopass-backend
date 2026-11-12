@@ -4,6 +4,32 @@ import { PollRepository } from "./poll.repository";
 import { StationRepository } from "../station/station.repository";
 import { emitToStation } from "../../socket";
 
+type PollScope = { role?: string; stationId?: string; partnerId?: string };
+
+const stationIdOf = (poll: any): string => String(poll?.station?._id ?? poll?.station ?? "");
+
+/**
+ * A station admin / media station only reaches polls of their own station; a partner admin only polls of their
+ * partner's stations. Anything else answers "not found" (never reveals that the poll exists). Listeners and
+ * super admins are not scoped.
+ */
+const assertPollInScope = async (poll: any, scope?: PollScope) => {
+  if (!scope?.role) return;
+  if (scope.role === "station_admin" || scope.role === "media_station") {
+    if (!scope.stationId || stationIdOf(poll) !== String(scope.stationId)) {
+      throw new AppError(StatusCodes.NOT_FOUND, "Poll not found");
+    }
+    return;
+  }
+  if (scope.role === "partner_admin" && scope.partnerId) {
+    const station: any = await StationRepository.findById(stationIdOf(poll));
+    const stationPartnerId = station?.partner?._id || station?.partner?.id || station?.partner;
+    if (!station || String(stationPartnerId) !== String(scope.partnerId)) {
+      throw new AppError(StatusCodes.NOT_FOUND, "Poll not found");
+    }
+  }
+};
+
 const createPoll = async (
   stationId: string,
   question: string,
@@ -17,6 +43,14 @@ const createPoll = async (
   const station: any = await StationRepository.findById(stationId);
   if (!station) {
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
+  }
+
+  // Quick show polls are for Radio and TV. A Channel has no shows: it runs channel polls (nominees and categories).
+  if (station.category === "channel") {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Quick polls are for Radio and TV stations. A Channel uses channel polls instead.",
+    );
   }
 
   if (userRole === "partner_admin" && userPartnerId) {
@@ -75,10 +109,11 @@ const getStationPolls = async (stationId: string, page: number, limit: number, s
 const getAllPolls = async (query: Record<string, unknown>, scope?: { partnerId?: string; stationId?: string; role?: string }, userId?: string) => {
   const filter: Record<string, unknown> = {};
 
-  if (query.station) {
+  if (scope?.role === "station_admin" || scope?.role === "media_station") {
+    // Own station only, whatever the request asks for (a Media Station used to see every station's polls)
+    filter.station = scope.stationId || "000000000000000000000000";
+  } else if (query.station) {
     filter.station = query.station;
-  } else if (scope?.role === "station_admin" && scope.stationId) {
-    filter.station = scope.stationId;
   } else if (scope?.role === "partner_admin" && scope.partnerId) {
     const partnerStations = await StationRepository.findAll({ partner: scope.partnerId }, { limit: 1000 });
     filter.station = { $in: partnerStations.map((s: any) => s._id) };
@@ -115,11 +150,12 @@ const getAllPolls = async (query: Record<string, unknown>, scope?: { partnerId?:
   };
 };
 
-const getPollById = async (id: string, userId?: string) => {
+const getPollById = async (id: string, userId?: string, scope?: PollScope) => {
   const poll = await PollRepository.findById(id, userId);
   if (!poll) {
     throw new AppError(StatusCodes.NOT_FOUND, "Poll not found");
   }
+  await assertPollInScope(poll, scope);
   return poll;
 };
 
@@ -154,19 +190,21 @@ const votePoll = async (pollId: string, optionIndex: number, userId: string) => 
   return { ...updated, isVotedByMe: true };
 };
 
-const updatePoll = async (id: string, updates: { question?: string; status?: string }) => {
+const updatePoll = async (id: string, updates: { question?: string; status?: string }, scope?: PollScope) => {
   const poll = await PollRepository.findById(id);
   if (!poll) {
     throw new AppError(StatusCodes.NOT_FOUND, "Poll not found");
   }
+  await assertPollInScope(poll, scope);
   return PollRepository.updateById(id, updates);
 };
 
-const deletePoll = async (id: string) => {
+const deletePoll = async (id: string, scope?: PollScope) => {
   const poll = await PollRepository.findById(id);
   if (!poll) {
     throw new AppError(StatusCodes.NOT_FOUND, "Poll not found");
   }
+  await assertPollInScope(poll, scope);
   await PollRepository.deleteById(id);
   // Clean up votes (best-effort, non-blocking)
   try {

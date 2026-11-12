@@ -7,10 +7,10 @@ import validateRequest from "../../middlewares/validateRequest";
 
 const router = Router();
 
-// Create a poll (super admin, partner admin, station admin, media station)
+// Create a poll (super admin, partner admin, station admin). Media Station is read-only (owner decision 2026-11-11).
 router.post(
   "/",
-  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
   validateRequest(PollDto.createPoll),
   PollController.createPoll,
 );
@@ -49,7 +49,7 @@ router.post(
 // Update poll
 router.patch(
   "/:id",
-  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
   validateRequest(PollDto.updatePoll),
   PollController.updatePoll,
 );
@@ -57,7 +57,7 @@ router.patch(
 // Delete poll
 router.delete(
   "/:id",
-  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN, UserRole.MEDIA_STATION),
+  auth(UserRole.SUPER_ADMIN, UserRole.PARTNER_ADMIN, UserRole.STATION_ADMIN),
   validateRequest(PollDto.deletePoll),
   PollController.deletePoll,
 );

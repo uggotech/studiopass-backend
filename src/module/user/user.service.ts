@@ -220,6 +220,10 @@ const createMediaStation = async (data: {
     throw new AppError(StatusCodes.BAD_REQUEST, "Station not found");
   }
 
+  if (station.category === "channel") {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Channels do not have Media Station accounts.");
+  }
+
   // MVP: One media station account per station
   const existingMediaStation = await User.findOne({
     stationId: data.stationId as any,
@@ -636,6 +640,10 @@ const createPresenter = async (data: {
   const station = await StationRepository.findById(data.stationId);
   if (!station) {
     throw new AppError(StatusCodes.BAD_REQUEST, "Station not found");
+  }
+
+  if (station.category === "channel") {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Channels do not have Presenter accounts.");
   }
 
   // Check username uniqueness

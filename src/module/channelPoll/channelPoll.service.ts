@@ -30,6 +30,18 @@ const createPoll = async (
     throw new AppError(StatusCodes.NOT_FOUND, "Station not found");
   }
 
+  // Channel polls (categories and nominees) belong to Channels of type "polls". Radio and TV use quick show polls.
+  // A Channel with no type set (created before types existed) is still accepted.
+  if (station.category !== "channel") {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Channel polls are only for Channels. Radio and TV stations use quick polls instead.",
+    );
+  }
+  if (station.channelType && station.channelType !== "polls") {
+    throw new AppError(StatusCodes.BAD_REQUEST, "This Channel is not a polls channel.");
+  }
+
   if (station.category === "channel") {
     if (userRole && !["super_admin", "partner_admin", "station_admin"].includes(userRole)) {
       throw new AppError(
