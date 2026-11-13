@@ -96,6 +96,12 @@ export default {
   },
 
   // ============================================================================
+  // WELCOME CREDITS — free Studio Credits given once to every NEW app account
+  // (recorded as a super-admin grant). 0 = off.
+  // ============================================================================
+  welcomeCredits: Math.max(0, Math.floor(Number(process.env.WELCOME_CREDITS || 0)) || 0),
+
+  // ============================================================================
   // FIREBASE — Service Account (Phone OTP / Admin SDK)
   // ============================================================================
   firebase: {

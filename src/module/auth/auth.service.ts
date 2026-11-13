@@ -262,6 +262,41 @@ const initiate = async (data: { phone: string; countryCode: string; countryName:
   return { message: "OTP sent", phone: fullPhone };
 };
 
+/**
+ * Welcome credits: a brand-new app account gets `config.welcomeCredits` free Studio Credits once,
+ * recorded as an admin grant from the super admin (so the ledger and station revenue treat them as free).
+ * Never blocks a login: any problem is logged and the user simply gets no welcome credits.
+ */
+const grantWelcomeCredits = async (userId: string): Promise<void> => {
+  const amount = config.welcomeCredits;
+  if (!amount || amount <= 0) return;
+  try {
+    const { User } = await import("../user/user.model");
+    const { CreditService } = await import("../credit/credit.service");
+    const admin = await User.findOne({ role: UserRole.SUPER_ADMIN, isDeleted: { $ne: true } })
+      .sort({ createdAt: 1 })
+      .select("_id fullName role")
+      .lean<any>();
+    if (!admin) {
+      logger.warn("[WelcomeCredits] no super admin found, welcome credits skipped");
+      return;
+    }
+    await CreditService.addCredits(
+      userId,
+      amount,
+      admin._id.toString(),
+      true,
+      undefined,
+      `welcome:${userId}`, // stored on the grant, so it can only ever be given once per account
+      undefined,
+      "Welcome credits",
+      { role: admin.role, fullName: admin.fullName },
+    );
+  } catch (err) {
+    logger.error(`[WelcomeCredits] failed for user ${userId}`, err);
+  }
+};
+
 // ─── App Flow: Verify OTP ────────────────────────────────────────────────────
 
 const verifyOtp = async (data: { phone: string; countryCode: string; otp: string; countryName?: string }) => {
@@ -338,6 +373,7 @@ const verifyOtp = async (data: { phone: string; countryCode: string; otp: string
       isDeleted: false,
       preferences: { theme: "default", language: "english" },
     });
+    await grantWelcomeCredits(user._id.toString());
   } else if (countryId && !user.countryId) {
     // Update countryId if not already set (for existing users)
     user = await UserRepository.updateById(user._id.toString(), { countryId, countryName });
