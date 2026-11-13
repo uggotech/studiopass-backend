@@ -22,6 +22,15 @@ import { UserCache } from "./user.cacheManage";
 import { CarrierService } from "../../shared/telecom/carrier.service";
 import { AuditLogService } from "../auditLog/auditLog.service";
 import { emitToUser, disconnectUserSockets } from "../../socket";
+import { Follow } from "../follow/follow.model";
+import { Notification } from "../notification/notification.model";
+import { PaymentTransaction } from "../payment/payment.model";
+import { OTP } from "../otp/otp.model";
+import ListenerStatement from "../listenerStatement/listenerStatement.model";
+import { Disbursement } from "../disbursement/disbursement.model";
+import { DeviceSessionService } from "../device-session/device-session.service";
+import { deleteFile } from "../../util/minio";
+import { logger } from "../../logger/logger";
 
 const BCRYPT_SALT_ROUNDS = Number(config.bcrypt_salt_rounds) || 10;
 
@@ -577,6 +586,134 @@ const updateFcmToken = async (userId: string, fcmToken: string | null) => {
   }
   await UserRepository.updateById(userId, { fcmToken } as any);
   return { success: true };
+};
+
+/**
+ * Listener self-service account deletion.
+ *
+ * The account is soft-deleted (`isDeleted`) so records we must keep (payments, prize payouts and the
+ * credit ledger) still point at a valid document, but EVERY personal detail is erased at once: name,
+ * photo, phone number, e-mail, push token, OTP codes and follows. What stays is anonymous
+ * ("Deleted user", masked phone numbers). From the listener's side the account is gone and the same
+ * phone number can register again as a brand-new account.
+ */
+const deleteMyAccount = async (userId: string, meta?: { ip?: string; userAgent?: string }) => {
+  const user = await User.findById(userId);
+  if (!user || user.isDeleted) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Account not found");
+  }
+  if (user.role !== UserRole.USER) {
+    throw new AppError(
+      StatusCodes.FORBIDDEN,
+      "Only listener accounts can be deleted from the app. Staff accounts are removed by an administrator.",
+    );
+  }
+
+  const authId = user.auth.toString();
+  const authDoc = await Auth.findById(authId).select("phone").lean();
+  const oldPhone = authDoc?.phone || user.phone || "";
+  const oldAvatar = user.avatar;
+  const marker = `deleted-${authId}`;
+
+  // 1) Lock the account first: no login, no API access from this moment on.
+  await Auth.updateOne(
+    { _id: authId },
+    { $set: { status: "inactive", isPhoneVerified: false, phone: marker } },
+  );
+  await User.updateOne(
+    { _id: userId },
+    {
+      $set: { isDeleted: true, fullName: "Deleted user", profileCompleted: false },
+      $unset: { avatar: 1, email: 1, phone: 1, phoneCountryCode: 1, fcmToken: 1, username: 1 },
+    },
+  );
+
+  // 2) Kick out every device and clear caches.
+  await UserCache.invalidateAuthStatus(authId);
+  UserCache.invalidateProfile(userId);
+  UserCache.invalidateProfile(authId);
+  try {
+    await DeviceSessionService.revokeAllUserSessions(userId);
+  } catch (err) {
+    logger.warn(`[DeleteAccount] session revoke failed for ${userId}`, err);
+  }
+  try {
+    disconnectUserSockets(userId);
+  } catch (err) {
+    logger.warn(`[DeleteAccount] socket disconnect failed for ${userId}`, err);
+  }
+
+  // 3) Erase / anonymise personal data everywhere else. Best effort per step, failures are logged.
+  const maskPhone = (field: string) => ({
+    $concat: ["***", { $substrCP: [field, { $max: [0, { $subtract: [{ $strLenCP: field }, 3] }] }, 3] }],
+  });
+  const finishedPayment = ["completed", "failed", "cancelled"];
+  const finishedPayout = ["successful", "failed", "cancelled"];
+  const steps: Array<[string, () => Promise<unknown>]> = [
+    [
+      "messages",
+      () =>
+        Message.updateMany(
+          { $or: [{ user: userId }, ...(oldPhone ? [{ msisdn: oldPhone }] : [])] },
+          { $set: { msisdn: marker } },
+        ),
+    ],
+    ["statements", () => ListenerStatement.updateMany({ user: userId }, { $set: { msisdn: marker } })],
+    ["follows", () => Follow.deleteMany({ user: userId })],
+    ["notifications", () => Notification.deleteMany({ user: userId })],
+    [
+      "otp",
+      () => OTP.deleteMany({ $or: [{ userId: authId }, ...(oldPhone ? [{ target: oldPhone }] : [])] }),
+    ],
+    [
+      "payments",
+      () =>
+        PaymentTransaction.updateMany(
+          { user: userId, status: { $in: finishedPayment } },
+          [{ $set: { phoneNumber: maskPhone("$phoneNumber") } }],
+          { updatePipeline: true },
+        ),
+    ],
+    [
+      "payouts",
+      () =>
+        Disbursement.updateMany(
+          { winnerUser: userId, status: { $in: finishedPayout } },
+          [{ $set: { winnerName: "Deleted user", phone: maskPhone("$phone") } }],
+          { updatePipeline: true },
+        ),
+    ],
+    [
+      "avatar",
+      async () => {
+        if (!oldAvatar) return;
+        await deleteFile(oldAvatar.replace(new RegExp(`^${config.minio.bucket}/`), ""));
+      },
+    ],
+  ];
+  const failed: string[] = [];
+  for (const [name, run] of steps) {
+    try {
+      await run();
+    } catch (err) {
+      failed.push(name);
+      logger.error(`[DeleteAccount] step "${name}" failed for user ${userId}`, err);
+    }
+  }
+
+  // 4) Audit trail without any personal data.
+  await AuditLogService.logAuthEvent({
+    action: "ACCOUNT_DELETED",
+    status: "SUCCESS",
+    userId: user._id,
+    authId: user.auth as any,
+    role: user.role,
+    ipAddress: meta?.ip,
+    userAgent: meta?.userAgent,
+    metadata: { failedSteps: failed },
+  });
+
+  return { deleted: true };
 };
 
 const updateMyPreferences = async (
@@ -1468,5 +1605,6 @@ export const UserService = {
   updateMyProfile,
   updateMyPreferences,
   updateFcmToken,
+  deleteMyAccount,
   resetUser2FA,
 };

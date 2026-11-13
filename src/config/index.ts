@@ -253,7 +253,7 @@ export default {
   // IN-APP PURCHASE (IAP) - GOOGLE PLAY
   // ============================================================================
   google_play_iap: {
-    package_name: process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.studiopass.app",
+    package_name: process.env.GOOGLE_PLAY_PACKAGE_NAME || "africa.studiopass.app",
     service_account_json: process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON || "{}",
     fee_percent: process.env.GOOGLE_PLAY_FEE_PERCENT || "30",
     payout_buffer_days: process.env.GOOGLE_PLAY_PAYOUT_BUFFER_DAYS || "30",

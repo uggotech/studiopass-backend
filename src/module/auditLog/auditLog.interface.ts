@@ -8,7 +8,8 @@ export type TAuditAction =
   | "2FA_DISABLED"
   | "2FA_RESET"
   | "SESSION_REVOKED"
-  | "SETTINGS_UPDATED";
+  | "SETTINGS_UPDATED"
+  | "ACCOUNT_DELETED";
 
 export type TAuditStatus = "SUCCESS" | "FAILED";
 

@@ -14,6 +14,7 @@ const auditLogSchema = new Schema<TAuditLog>(
         "2FA_RESET",
         "SESSION_REVOKED",
         "SETTINGS_UPDATED",
+        "ACCOUNT_DELETED",
       ],
       required: true,
       index: true,

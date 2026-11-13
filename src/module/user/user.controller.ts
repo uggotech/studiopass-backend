@@ -228,6 +228,21 @@ const updateFcmToken = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const deleteMyAccount = catchAsync(async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const result = await UserService.deleteMyAccount(user._id.toString(), {
+    ip: req.ip,
+    userAgent: req.get("user-agent") || undefined,
+  });
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Your account has been deleted",
+    data: result,
+  });
+});
+
 const createPresenter = catchAsync(async (req: Request, res: Response) => {
   const user = req.user as any;
   const userStationId = user?.stationId?.toString();
@@ -423,5 +438,6 @@ export const UserController = {
   deactivateUser,
   reactivateUser,
   updateFcmToken,
+  deleteMyAccount,
   resetUser2FA,
 };

@@ -39,6 +39,9 @@ router.patch(
   UserController.updateMyProfile,
 );
 
+// App users: delete my own account (personal data is erased immediately)
+router.delete("/profile", auth(UserRole.USER), UserController.deleteMyAccount);
+
 // App users: update preferences
 router.patch(
   "/profile/preferences",
