@@ -23,66 +23,34 @@ const MAX_FCM_TOKENS_PER_REQUEST = 500;
 let firebaseApp: admin.app.App | null = null;
 
 const SERVICE_ACCOUNT_FILE = path.join(process.cwd(), "serviceAccount.json");
-const SERVICE_ACCOUNT_RUNTIME = path.join(process.cwd(), "serviceAccount-runtime.json");
 
-const ensureServiceAccountFile = (): string | null => {
-  // 1. If original serviceAccount.json exists and is a file, use it
+/**
+ * Build the Firebase credential. An optional `serviceAccount.json` next to the app wins (local development);
+ * otherwise the FIREBASE_* settings are used DIRECTLY from memory. The container runs as a non-root user and
+ * /app is read-only for it, so nothing may be written to disk here (a file write used to fail with EACCES and
+ * every push was silently skipped). The private key is never logged.
+ */
+const buildCredential = (): admin.credential.Credential | null => {
   try {
-    const stat = fs.statSync(SERVICE_ACCOUNT_FILE);
-    console.log("[Firebase Push] serviceAccount.json exists — isFile:", stat.isFile(), "isDir:", stat.isDirectory());
-    if (stat.isFile()) {
-      return SERVICE_ACCOUNT_FILE;
+    if (fs.statSync(SERVICE_ACCOUNT_FILE).isFile()) {
+      return admin.credential.cert(SERVICE_ACCOUNT_FILE);
     }
-  } catch (e: any) {
-    console.log("[Firebase Push] serviceAccount.json not found:", e.code);
+  } catch {
+    // no file: use the environment settings below
   }
 
-  // 2. If runtime file already generated, use it
-  try {
-    const stat = fs.statSync(SERVICE_ACCOUNT_RUNTIME);
-    if (stat.isFile()) {
-      return SERVICE_ACCOUNT_RUNTIME;
-    }
-  } catch {}
-
-  // 3. Generate from env vars — parse the JSON properly
-  const { project_id, client_email, private_key, private_key_id, client_id, auth_uri, token_uri, auth_provider_cert_url, client_cert_url, universe_domain, type } = config.firebase;
-
+  const { project_id, client_email, private_key } = config.firebase;
   if (!project_id || !client_email || !private_key) {
+    logger.warn("[Firebase Push] FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY are missing. Push skipped.");
     return null;
   }
 
-  try {
-    const fixedKey = private_key.replace(/\\n/g, "\n");
-    console.log("[Firebase Push] Private key BEFORE fix (first 80 chars):", private_key.substring(0, 80));
-    console.log("[Firebase Push] Private key AFTER fix (first 80 chars):", fixedKey.substring(0, 80));
-    console.log("[Firebase Push] Has literal backslash-n:", private_key.includes("\\n"));
-    console.log("[Firebase Push] Has real newlines after fix:", fixedKey.includes("\n") && !fixedKey.includes("\\n"));
-
-    const serviceAccount = {
-      type: type || "service_account",
-      project_id,
-      private_key_id,
-      private_key: fixedKey,
-      client_email,
-      client_id,
-      auth_uri,
-      token_uri,
-      auth_provider_x509_cert_url: auth_provider_cert_url,
-      client_x509_cert_url: client_cert_url,
-      universe_domain,
-    };
-
-    const jsonContent = JSON.stringify(serviceAccount, null, 2);
-    console.log("[Firebase Push] JSON private_key field (first 100 chars):", jsonContent.substring(jsonContent.indexOf('"private_key"'), jsonContent.indexOf('"private_key"') + 120));
-
-    fs.writeFileSync(SERVICE_ACCOUNT_RUNTIME, jsonContent, "utf-8");
-    console.log("[Firebase Push] Generated runtime service account file");
-    return SERVICE_ACCOUNT_RUNTIME;
-  } catch (e) {
-    console.error("[Firebase Push] Failed to write service account file:", e);
-    return null;
-  }
+  return admin.credential.cert({
+    projectId: project_id,
+    clientEmail: client_email,
+    // Environment files store the key on one line with literal "\n" sequences
+    privateKey: private_key.replace(/\\n/g, "\n"),
+  });
 };
 
 const getFirebaseApp = () => {
@@ -95,21 +63,16 @@ const getFirebaseApp = () => {
     return firebaseApp;
   }
 
-  const filePath = ensureServiceAccountFile();
-  if (!filePath) {
-    console.warn("[Firebase Push] No service account found — push will be skipped");
-    return null;
-  }
-
   try {
-    console.log("[Firebase Push] Loading service account from:", filePath);
-    firebaseApp = admin.initializeApp({
-      credential: admin.credential.cert(filePath),
-    });
-    console.log("[Firebase Push] Initialized successfully");
+    const credential = buildCredential();
+    if (!credential) {
+      return null;
+    }
+    firebaseApp = admin.initializeApp({ credential });
+    logger.info("[Firebase Push] Initialized");
     return firebaseApp;
   } catch (e: any) {
-    console.error("[Firebase Push] Failed to initialize:", e.message);
+    logger.error(`[Firebase Push] Failed to initialize: ${e?.message}`);
     return null;
   }
 };
@@ -183,6 +146,8 @@ export const sendFirebaseMulticastNotification = async (
           imageUrl: payload.imageUrl,
         },
         data: Object.keys(data).length > 0 ? data : undefined,
+        // High priority so phones show it at once (even in battery saver); the app creates this channel itself
+        android: { priority: "high", notification: { channelId: "studiopass_default" } },
       });
 
       console.log(`[Firebase Push] Response — success: ${response.successCount}, failure: ${response.failureCount}`);
